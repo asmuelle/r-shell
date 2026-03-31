@@ -1,6 +1,6 @@
 <div align="center">
 
-# R-Shell — Modern SSH Client
+# R-Shell — Lightweight, Fast SSH Client for macOS, Windows & Linux
 
 [![GitHub license](https://img.shields.io/github/license/GOODBOY008/r-shell)](https://github.com/GOODBOY008/r-shell/blob/main/LICENSE)
 [![Test](https://github.com/GOODBOY008/r-shell/actions/workflows/test.yml/badge.svg)](https://github.com/GOODBOY008/r-shell/actions/workflows/test.yml)
@@ -11,11 +11,11 @@
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react)](https://react.dev/)
 [![Rust](https://img.shields.io/badge/Rust-Latest-orange?logo=rust)](https://www.rust-lang.org/)
 
-A modern, feature-rich SSH/SFTP/FTP client built with React 19, TypeScript, and Tauri 2.
+A modern, lightweight SSH/SFTP/FTP client built with Rust and Tauri 2. Uses ~98% less memory than FinalShell (~34 MB vs ~1.7 GB). Installer under 10 MB — 12× smaller.
 
-**Multi-protocol** · **Split terminals** · **SFTP file manager** · **GPU monitoring** · **Log viewer** · **Directory sync**
+**Low memory** · **Native speed** · **Multi-protocol** · **Split terminals** · **SFTP file manager** · **GPU monitoring** · **Log viewer** · **Directory sync**
 
-[Features](#-features) · [Install](#-installation) · [Screenshots](#-screenshots) · [Contributing](CONTRIBUTING.md) · [License](LICENSE)
+[Why R-Shell?](#-why-r-shell) · [Features](#-features) · [Install](#-installation) · [Screenshots](#-screenshots) · [Contributing](CONTRIBUTING.md) · [License](LICENSE)
 
 </div>
 
@@ -30,13 +30,47 @@ A modern, feature-rich SSH/SFTP/FTP client built with React 19, TypeScript, and 
 
 ---
 
+## 🚀 Why R-Shell?
+
+Most popular SSH clients (FinalShell, MobaXterm, Xshell) are built on Java or Electron, which means high memory usage even when idle. R-Shell is built with Rust + Tauri 2, delivering native performance with a fraction of the memory footprint.
+
+### Memory Comparison (Real-World Test)
+
+Both apps running side-by-side on macOS (Apple Silicon, 16 GB RAM), measured with macOS `footprint` (same metric as Activity Monitor):
+
+| App | Technology | Memory | Relative |
+|-----|-----------|--------|----------|
+| **R-Shell** | Rust + Tauri 2 | **~34 MB** | **1×** |
+| FinalShell | Java (Identifier: st) | **~1.7 GB** | **~50×** |
+
+> R-Shell uses approximately **98% less memory** than FinalShell — that's **~1.7 GB saved** for your IDE, browser, and Docker.
+
+### Installer Size Comparison
+
+| Platform | R-Shell | FinalShell | Savings |
+|----------|---------|-----------|---------|
+| **Windows** | **3.99 MB** | 64 MB | **~16×** smaller |
+| **macOS** | **8.13 MB** | 102 MB | **~12×** smaller |
+
+> No bundled JVM, no Chromium — Tauri uses the OS native webview, so the installer stays tiny.
+
+### Why does this matter?
+
+- Developers often keep SSH clients open all day alongside IDEs, browsers, and Docker
+- FinalShell alone can consume over 10% of a 16 GB machine's RAM while idle
+- Rust's zero-cost abstractions mean low memory without sacrificing features
+- No JVM startup overhead — R-Shell launches instantly
+
+---
+
 ## 🎯 About
 
-R-Shell is a desktop SSH client that combines an interactive terminal, a dual-panel file manager, real-time system & GPU monitoring, and log viewing — all in one VS Code-like workspace. It is a **learning and practice project for vibe coding** methodology:
+R-Shell is a free, open-source, cross-platform SSH client that combines an interactive terminal, a dual-panel file manager, real-time system & GPU monitoring, and log viewing — all in one VS Code-like workspace. Built with Rust for native performance and minimal resource usage, it's a lightweight alternative to FinalShell, MobaXterm, and Xshell.
 
+- 🚀 **Native Performance** — Tauri 2 + Rust backend, not Electron or Java. ~34 MB memory footprint vs FinalShell's ~1.7 GB.
 - 🎨 **AI-Generated Frontend** — The UI was generated from [Figma designs](https://www.figma.com/make/uUd7WO54vPnv03SmioKWqj/SSH-Client-Application)
 - 🤖 **AI-Assisted Development** — The entire codebase is built with **GitHub Copilot**
-- 🚀 **Native Performance** — Tauri 2 + Rust backend, not Electron
+- 🌍 **Cross-Platform** — macOS, Windows, and Linux
 
 ---
 
@@ -152,6 +186,15 @@ R-Shell is a desktop SSH client that combines an interactive terminal, a dual-pa
 
 ## 🛠 Tech Stack
 
+### Backend — Why It's Lightweight
+- **Tauri 2** — native desktop framework, uses the OS webview instead of bundling Chromium (unlike Electron)
+- **Rust** — zero-cost abstractions, no garbage collector, no JVM — this is why R-Shell uses ~34 MB vs FinalShell's ~1.7 GB
+- **russh / russh-sftp** — pure Rust SSH & SFTP protocol implementation
+- **suppaftp** — FTP/FTPS client
+- **tokio** — async runtime with minimal overhead
+- **tokio-tungstenite** — WebSocket server for PTY streaming
+- **sysinfo** — system stats collection
+
 ### Frontend
 - **React 19** + **TypeScript** — type-safe modern React
 - **Tailwind CSS** — utility-first styling
@@ -160,15 +203,6 @@ R-Shell is a desktop SSH client that combines an interactive terminal, a dual-pa
 - **Recharts** — data visualization for monitoring
 - **React Hook Form** — form handling
 - **Lucide Icons** — icon set
-
-### Backend
-- **Tauri 2** — native desktop framework
-- **Rust** — fast, memory-efficient backend
-- **russh / russh-sftp** — SSH & SFTP protocol
-- **suppaftp** — FTP/FTPS client
-- **tokio** — async runtime
-- **tokio-tungstenite** — WebSocket server for PTY streaming
-- **sysinfo** — system stats collection
 
 ---
 
