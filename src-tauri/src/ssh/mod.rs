@@ -3,6 +3,7 @@ use russh::*;
 use russh_keys::*;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -75,6 +76,41 @@ impl client::Handler for Client {
     }
 }
 
+fn expand_home_path(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return path.replacen("~", &home, 1);
+        }
+    }
+
+    path.to_string()
+}
+
+fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Result<key::KeyPair> {
+    let expanded_path = expand_home_path(key_path);
+    let path = Path::new(&expanded_path);
+
+    if !path.exists() {
+        return Err(anyhow::anyhow!(
+            "SSH key file not found: {}. Please check the file path and try again.",
+            key_path
+        ));
+    }
+
+    load_secret_key(path, passphrase).map_err(|e| {
+        if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
+            anyhow::anyhow!(
+                "Failed to decrypt SSH key. The key may be encrypted. Please provide the correct passphrase."
+            )
+        } else {
+            anyhow::anyhow!(
+                "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key (RSA, Ed25519, or ECDSA).",
+                key_path, e
+            )
+        }
+    })
+}
+
 impl SshClient {
     pub fn new() -> Self {
         Self { session: None }
@@ -107,39 +143,7 @@ impl SshClient {
                     .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?
             }
             AuthMethod::PublicKey { key_path, passphrase } => {
-                // Expand tilde in path
-                let expanded_path = if key_path.starts_with("~/") {
-                    if let Some(home) = std::env::var("HOME").ok() {
-                        key_path.replacen("~", &home, 1)
-                    } else {
-                        key_path.clone()
-                    }
-                } else {
-                    key_path.clone()
-                };
-
-                // Check if file exists
-                if !std::path::Path::new(&expanded_path).exists() {
-                    return Err(anyhow::anyhow!(
-                        "SSH key file not found: {}. Please check the file path and try again.",
-                        key_path
-                    ));
-                }
-
-                // Try to load the key
-                let key = decode_secret_key(&expanded_path, passphrase.as_deref())
-                    .map_err(|e| {
-                        if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
-                            anyhow::anyhow!(
-                                "Failed to decrypt SSH key. The key may be encrypted. Please provide the correct passphrase."
-                            )
-                        } else {
-                            anyhow::anyhow!(
-                                "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key (RSA, Ed25519, or ECDSA).",
-                                key_path, e
-                            )
-                        }
-                    })?;
+                let key = load_private_key(key_path, passphrase.as_deref())?;
 
                 ssh_session
                     .authenticate_publickey(&config.username, Arc::new(key))
@@ -468,6 +472,38 @@ impl SshClient {
         } else {
             Err(anyhow::anyhow!("Not connected"))
         }
+    }
+}
+
+#[cfg(test)]
+mod key_loading_tests {
+    use super::load_private_key;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    const TEST_OPENSSH_PRIVATE_KEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
+QyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYgAAAJgAIAxdACAM\n\
+XQAAAAtzc2gtZWQyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYg\n\
+AAAEC2BsIi0QwW2uFscKTUUXNHLsYX4FxlaSDSblbAj7WR7bM+rvN+ot98qgEN796jTiQf\n\
+ZfG1KaT0PtFDJ/XFSqtiAAAAEHVzZXJAZXhhbXBsZS5jb20BAgMEBQ==\n\
+-----END OPENSSH PRIVATE KEY-----\n";
+
+    #[test]
+    fn load_private_key_reads_key_file_contents() {
+        let mut key_file = NamedTempFile::new().expect("failed to create temp key file");
+        key_file
+            .write_all(TEST_OPENSSH_PRIVATE_KEY.as_bytes())
+            .expect("failed to write temp key file");
+
+        let key = load_private_key(
+            key_file.path().to_str().expect("temp key path must be valid UTF-8"),
+            None,
+        )
+        .expect("expected key file to load successfully");
+
+        assert_eq!(key.name(), "ssh-ed25519");
     }
 }
 
