@@ -369,18 +369,41 @@ pub(crate) fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Resu
     })?;
     let path = Path::new(&expanded);
 
-    if !path.exists() {
-        // Surface both forms when they differ so the user can tell that
-        // expansion happened (and went where they expected).
-        let location = if expanded != key_path {
-            format!("{} (expanded from {})", expanded, key_path)
-        } else {
-            expanded.clone()
-        };
-        return Err(anyhow::anyhow!(
-            "SSH key file not found: {}. Please check the file path and try again.",
-            location
-        ));
+    // Surface both forms when they differ so the user can see that expansion
+    // happened and went where they expected.
+    let location = if expanded != key_path {
+        format!("{} (expanded from {})", expanded, key_path)
+    } else {
+        expanded.clone()
+    };
+
+    // Use `metadata()` (not `exists()`) so we can distinguish "not found" from
+    // "found but unreadable". On macOS the latter is usually a TCC / Full Disk
+    // Access denial, which the previous code silently reported as "not found".
+    match path.metadata() {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(anyhow::anyhow!(
+                "SSH key file not found: {}. Please check the file path and try again.",
+                location
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(anyhow::anyhow!(
+                "Permission denied reading SSH key at {}.\n\
+                 On macOS this usually means r-shell hasn't been granted access to this file. \
+                 Open System Settings → Privacy & Security → Full Disk Access (or App Management / Files and Folders), \
+                 add r-shell to the list, then try again.",
+                location
+            ));
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "Cannot access SSH key at {}: {}",
+                location,
+                e
+            ));
+        }
     }
 
     load_secret_key(path, passphrase).map_err(|e| {

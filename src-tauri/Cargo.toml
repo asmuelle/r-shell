@@ -45,8 +45,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # macOS-only: native Keychain for password + key-passphrase storage.
 # Other platforms build cleanly with non-functional stubs in src/keychain.rs.
+# v3 is used for the PasswordOptions label/comment setters exposed at the
+# `passwords` module level (v2 keeps those fields private).
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "2"
+security-framework = "3"
 security-framework-sys = "2"
 
 [dev-dependencies]

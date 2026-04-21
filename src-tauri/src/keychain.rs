@@ -46,6 +46,19 @@ impl CredentialKind {
             CredentialKind::FtpPassword => "com.r-shell.ftp.password",
         }
     }
+
+    /// Short human label used in Keychain Access.app when a credential is
+    /// first saved. Paired with the account string to form the full entry
+    /// name the user sees.
+    pub fn friendly_label(self) -> &'static str {
+        match self {
+            CredentialKind::SshPassword => "SSH password",
+            CredentialKind::SshKeyPassphrase => "SSH key passphrase",
+            CredentialKind::SftpPassword => "SFTP password",
+            CredentialKind::SftpKeyPassphrase => "SFTP key passphrase",
+            CredentialKind::FtpPassword => "FTP password",
+        }
+    }
 }
 
 /// Whether this build can actually read / write the OS keychain.
@@ -64,18 +77,57 @@ mod platform {
     use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
+        set_generic_password_options, PasswordOptions,
     };
     use security_framework_sys::base::errSecItemNotFound;
 
     pub fn save_password(kind: CredentialKind, account: &str, secret: &str) -> Result<()> {
-        set_generic_password(kind.service(), account, secret.as_bytes()).map_err(|e| {
-            anyhow::anyhow!(
-                "keychain save failed for {}/{}: {}",
+        // Probe first: if an entry exists, just update its password so the
+        // user's custom label/comment edits (made in Keychain Access.app)
+        // aren't clobbered. If it doesn't exist, create it with friendly
+        // attributes so it's easy to identify / audit.
+        match get_generic_password(kind.service(), account) {
+            Ok(_) => set_generic_password(kind.service(), account, secret.as_bytes()).map_err(|e| {
+                anyhow::anyhow!(
+                    "keychain update failed for {}/{}: {}",
+                    kind.service(),
+                    account,
+                    e
+                )
+            }),
+            Err(e) if e.code() == errSecItemNotFound => {
+                let mut options = PasswordOptions::new_generic_password(kind.service(), account);
+                // Label: shown as "Name" in Keychain Access.app.
+                options.set_label(&format!(
+                    "r-shell: {} ({})",
+                    kind.friendly_label(),
+                    account
+                ));
+                // Comment: provenance for the user and any auditor who opens
+                // the entry in Keychain Access.
+                options.set_comment(
+                    "Saved by r-shell. Remove from r-shell → Settings → Security → Saved Credentials, \
+                     or delete here to force a re-prompt on the next connect.",
+                );
+                // Do not sync to iCloud Keychain — credentials for a specific
+                // desktop device shouldn't roam.
+                options.set_access_synchronized(Some(false));
+                set_generic_password_options(secret.as_bytes(), options).map_err(|e| {
+                    anyhow::anyhow!(
+                        "keychain create failed for {}/{}: {}",
+                        kind.service(),
+                        account,
+                        e
+                    )
+                })
+            }
+            Err(e) => Err(anyhow::anyhow!(
+                "keychain pre-save probe failed for {}/{}: {}",
                 kind.service(),
                 account,
                 e
-            )
-        })
+            )),
+        }
     }
 
     pub fn list_accounts(kind: CredentialKind) -> Result<Vec<String>> {
