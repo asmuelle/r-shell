@@ -2,7 +2,7 @@ use crate::desktop_protocol::{DesktopConnectRequest, DesktopProtocol, FrameUpdat
 use crate::ftp_client::FtpClient;
 use crate::rdp_client::RdpClient;
 use crate::sftp_client::StandaloneSftpClient;
-use crate::ssh::{PtySession, SshClient, SshConfig};
+use crate::ssh::{HostKeyStore, PtySession, SshClient, SshConfig};
 use crate::vnc_client::VncClient;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -11,39 +11,157 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// Canonical protocol tag for a managed connection.
+///
+/// Using an enum instead of a free-form string means every branch that inspects
+/// a connection is exhaustiveness-checked and callers can't typo a tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolKind {
+    Ssh,
+    Sftp,
+    Ftp,
+    Rdp,
+    Vnc,
+}
+
+impl ProtocolKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProtocolKind::Ssh => "SSH",
+            ProtocolKind::Sftp => "SFTP",
+            ProtocolKind::Ftp => "FTP",
+            ProtocolKind::Rdp => "RDP",
+            ProtocolKind::Vnc => "VNC",
+        }
+    }
+}
+
+/// A single managed connection, tagged by protocol.
+///
+/// Each variant owns its own `Arc<RwLock<_>>` — giving per-connection locking
+/// granularity, instead of a global map-level RwLock that would serialise
+/// every operation across unrelated connections.
+pub enum ManagedConnection {
+    Ssh(Arc<RwLock<SshClient>>),
+    Sftp(Arc<RwLock<StandaloneSftpClient>>),
+    Ftp(Arc<RwLock<FtpClient>>),
+    Desktop {
+        kind: ProtocolKind, // Rdp or Vnc
+        client: Arc<RwLock<Box<dyn DesktopProtocol>>>,
+    },
+}
+
+impl ManagedConnection {
+    pub fn kind(&self) -> ProtocolKind {
+        match self {
+            ManagedConnection::Ssh(_) => ProtocolKind::Ssh,
+            ManagedConnection::Sftp(_) => ProtocolKind::Sftp,
+            ManagedConnection::Ftp(_) => ProtocolKind::Ftp,
+            ManagedConnection::Desktop { kind, .. } => *kind,
+        }
+    }
+}
+
+/// The connection manager owns the mapping from connection_id → its backing
+/// protocol state. Previously this was eight parallel hashmaps held together
+/// by convention; invariants (e.g. "if connection_types says SFTP, the sftp
+/// hashmap contains the id") are now enforced by the variant tag itself.
 pub struct ConnectionManager {
-    connections: Arc<RwLock<HashMap<String, Arc<RwLock<SshClient>>>>>,
+    connections: Arc<RwLock<HashMap<String, ManagedConnection>>>,
     pty_sessions: Arc<RwLock<HashMap<String, Arc<PtySession>>>>,
     /// Generation counter per connection_id — incremented on each StartPty.
     /// Used to prevent a stale Close from killing a newly created session.
     pty_generations: Arc<RwLock<HashMap<String, u64>>>,
     pending_connections: Arc<RwLock<HashMap<String, CancellationToken>>>,
-    /// Standalone SFTP connections (no PTY)
-    sftp_connections: Arc<RwLock<HashMap<String, StandaloneSftpClient>>>,
-    /// FTP/FTPS connections
-    ftp_connections: Arc<RwLock<HashMap<String, FtpClient>>>,
-    /// Remote desktop (RDP/VNC) connections
-    desktop_connections: Arc<RwLock<HashMap<String, Arc<RwLock<Box<dyn DesktopProtocol>>>>>>,
-    /// Track protocol type per connection ID ("SSH", "SFTP", "FTP", "RDP", "VNC")
-    connection_types: Arc<RwLock<HashMap<String, String>>>,
+    /// Shared TOFU host-key store used by every SSH/SFTP connection.
+    host_keys: Arc<HostKeyStore>,
 }
 
 impl ConnectionManager {
     pub fn new() -> Self {
+        Self::with_host_keys(Arc::new(HostKeyStore::new(HostKeyStore::default_path())))
+    }
+
+    pub fn with_host_keys(host_keys: Arc<HostKeyStore>) -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             pty_sessions: Arc::new(RwLock::new(HashMap::new())),
             pty_generations: Arc::new(RwLock::new(HashMap::new())),
             pending_connections: Arc::new(RwLock::new(HashMap::new())),
-            sftp_connections: Arc::new(RwLock::new(HashMap::new())),
-            ftp_connections: Arc::new(RwLock::new(HashMap::new())),
-            desktop_connections: Arc::new(RwLock::new(HashMap::new())),
-            connection_types: Arc::new(RwLock::new(HashMap::new())),
+            host_keys,
         }
     }
 
+    pub fn host_keys(&self) -> Arc<HostKeyStore> {
+        self.host_keys.clone()
+    }
+
+    // =========================================================================
+    // Inspection
+    // =========================================================================
+
+    /// Protocol of an existing connection, or None if not registered.
+    pub async fn connection_kind(&self, id: &str) -> Option<ProtocolKind> {
+        let connections = self.connections.read().await;
+        connections.get(id).map(|c| c.kind())
+    }
+
+    /// Backward-compatible string form of `connection_kind`. Returns "SSH",
+    /// "SFTP", "FTP", "RDP", or "VNC". Prefer `connection_kind` in new code.
+    pub async fn get_connection_type(&self, id: &str) -> Option<String> {
+        self.connection_kind(id).await.map(|k| k.as_str().to_string())
+    }
+
+    pub async fn list_connections(&self) -> Vec<String> {
+        let connections = self.connections.read().await;
+        connections.keys().cloned().collect()
+    }
+
+    /// Return the SSH client for a connection if it is an SSH connection.
+    pub async fn get_connection(&self, id: &str) -> Option<Arc<RwLock<SshClient>>> {
+        let connections = self.connections.read().await;
+        match connections.get(id) {
+            Some(ManagedConnection::Ssh(c)) => Some(c.clone()),
+            _ => None,
+        }
+    }
+
+    pub async fn get_sftp_client(
+        &self,
+        id: &str,
+    ) -> Option<Arc<RwLock<StandaloneSftpClient>>> {
+        let connections = self.connections.read().await;
+        match connections.get(id) {
+            Some(ManagedConnection::Sftp(c)) => Some(c.clone()),
+            _ => None,
+        }
+    }
+
+    pub async fn get_ftp_client(&self, id: &str) -> Option<Arc<RwLock<FtpClient>>> {
+        let connections = self.connections.read().await;
+        match connections.get(id) {
+            Some(ManagedConnection::Ftp(c)) => Some(c.clone()),
+            _ => None,
+        }
+    }
+
+    pub async fn get_desktop_connection(
+        &self,
+        id: &str,
+    ) -> Option<Arc<RwLock<Box<dyn DesktopProtocol>>>> {
+        let connections = self.connections.read().await;
+        match connections.get(id) {
+            Some(ManagedConnection::Desktop { client, .. }) => Some(client.clone()),
+            _ => None,
+        }
+    }
+
+    // =========================================================================
+    // SSH connection lifecycle (supports cancellation of a pending connect)
+    // =========================================================================
+
     pub async fn create_connection(&self, connection_id: String, config: SshConfig) -> Result<()> {
-        let mut client = SshClient::new();
+        let mut client = SshClient::new(self.host_keys.clone());
         let cancel_token = self.register_pending_connection(&connection_id).await;
 
         let connect_result = tokio::select! {
@@ -56,7 +174,10 @@ impl ConnectionManager {
         connect_result?;
 
         let mut connections = self.connections.write().await;
-        connections.insert(connection_id, Arc::new(RwLock::new(client)));
+        connections.insert(
+            connection_id,
+            ManagedConnection::Ssh(Arc::new(RwLock::new(client))),
+        );
 
         Ok(())
     }
@@ -83,28 +204,36 @@ impl ConnectionManager {
         }
     }
 
-    pub async fn get_connection(&self, connection_id: &str) -> Option<Arc<RwLock<SshClient>>> {
-        let connections = self.connections.read().await;
-        connections.get(connection_id).cloned()
-    }
-
+    /// Close the SSH connection for `connection_id` (if it is SSH). Also tears
+    /// down any associated PTY session and prunes the generation counter so it
+    /// cannot leak across reconnects.
     pub async fn close_connection(&self, connection_id: &str) -> Result<()> {
+        // Tear down any PTY session first so its tasks unblock before we drop
+        // the SSH handle they depend on.
+        {
+            let mut pty_sessions = self.pty_sessions.write().await;
+            if let Some(session) = pty_sessions.remove(connection_id) {
+                session.cancel.cancel();
+            }
+        }
+        {
+            let mut generations = self.pty_generations.write().await;
+            generations.remove(connection_id);
+        }
+
         let mut connections = self.connections.write().await;
-        if let Some(client) = connections.remove(connection_id) {
+        if let Some(ManagedConnection::Ssh(client)) = connections.remove(connection_id) {
             let mut client = client.write().await;
             client.disconnect().await?;
         }
         Ok(())
     }
 
-    pub async fn list_connections(&self) -> Vec<String> {
-        let connections = self.connections.read().await;
-        connections.keys().cloned().collect()
-    }
+    // =========================================================================
+    // PTY (interactive shell) management — only valid on SSH connections.
+    // =========================================================================
 
-    // ===== PTY Connection Management (Interactive Terminal) =====
-
-    /// Start a PTY shell connection (like ttyd does)
+    /// Start a PTY shell connection (like ttyd does).
     /// Enables interactive commands: vim, less, more, top, htop, etc.
     pub async fn start_pty_connection(
         &self,
@@ -112,13 +241,10 @@ impl ConnectionManager {
         cols: u32,
         rows: u32,
     ) -> Result<u64> {
-        // Get the SSH client
-        let connections = self.connections.read().await;
-        let client = connections
-            .get(connection_id)
+        let client = self
+            .get_connection(connection_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Connection not found"))?;
-
-        let client = client.read().await;
 
         // Cancel and remove any existing PTY session for this connection first.
         // This ensures the old SSH channel and reader task are torn down before
@@ -131,80 +257,76 @@ impl ConnectionManager {
             }
         }
 
-        // Create PTY session
-        let pty = client.create_pty_session(cols, rows).await?;
+        let pty = {
+            let client = client.read().await;
+            client.create_pty_session(cols, rows).await?
+        };
 
-        // Bump generation so any in-flight Close for the old session is ignored
+        // Bump generation so any in-flight Close for the old session is ignored.
         let mut generations = self.pty_generations.write().await;
         let gen = generations.entry(connection_id.to_string()).or_insert(0);
         *gen += 1;
         let current_gen = *gen;
         drop(generations);
 
-        // Store PTY session
         let mut pty_sessions = self.pty_sessions.write().await;
         pty_sessions.insert(connection_id.to_string(), Arc::new(pty));
 
         Ok(current_gen)
     }
 
-    /// Send data to PTY (user input)
-    /// Uses try_send for better performance (non-blocking)
+    /// Send data to PTY (user input).
+    ///
+    /// Backpressure: if the input channel is full we await `send`, preserving
+    /// keystroke order.
     pub async fn write_to_pty(&self, connection_id: &str, data: Vec<u8>) -> Result<()> {
-        let pty_sessions = self.pty_sessions.read().await;
-        let pty = pty_sessions
-            .get(connection_id)
-            .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+        let tx = {
+            let pty_sessions = self.pty_sessions.read().await;
+            let pty = pty_sessions
+                .get(connection_id)
+                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+            pty.input_tx.clone()
+        };
 
-        // Use try_send for better performance (like ttyd's immediate send)
-        match pty.input_tx.try_send(data) {
-            Ok(_) => Ok(()),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(data)) => {
-                // If channel is full, fall back to async send in background
-                let tx = pty.input_tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(data).await;
-                });
-                Ok(())
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                Err(anyhow::anyhow!("PTY channel closed"))
-            }
-        }
+        tx.send(data)
+            .await
+            .map_err(|_| anyhow::anyhow!("PTY channel closed"))
     }
 
-    /// Read data from PTY (output for display)
-    /// OPTIMIZED: Use try_recv first for immediate data, then short timeout
-    pub async fn read_from_pty(&self, connection_id: &str) -> Result<Vec<u8>> {
-        let pty_sessions = self.pty_sessions.read().await;
-        let pty = pty_sessions
-            .get(connection_id)
-            .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+    /// Read a burst of PTY output — blocks until data arrives, then drains any
+    /// additional already-queued chunks up to `max_bytes`.
+    pub async fn read_pty_burst(
+        &self,
+        connection_id: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>> {
+        let pty = {
+            let pty_sessions = self.pty_sessions.read().await;
+            pty_sessions
+                .get(connection_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?
+        };
 
         let mut rx = pty.output_rx.lock().await;
 
-        // Try immediate read first (non-blocking)
-        match rx.try_recv() {
-            Ok(data) => return Ok(data),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                // No immediate data, use short timeout
-            }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                return Err(anyhow::anyhow!("PTY connection closed"));
+        let mut out = match rx.recv().await {
+            Some(data) => data,
+            None => return Err(anyhow::anyhow!("PTY connection closed")),
+        };
+
+        while out.len() < max_bytes {
+            match rx.try_recv() {
+                Ok(more) => out.extend_from_slice(&more),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
             }
         }
 
-        // Fall back to short timeout wait (1ms for ultra-low latency)
-        match tokio::time::timeout(tokio::time::Duration::from_millis(1), rx.recv()).await {
-            Ok(Some(data)) => Ok(data),
-            Ok(None) => Err(anyhow::anyhow!("PTY connection closed")),
-            Err(_) => Ok(Vec::new()), // Timeout - no data available
-        }
+        Ok(out)
     }
 
     /// Close PTY connection, but only if the generation matches.
-    /// This prevents a stale Close (from a remounting component) from killing
-    /// a newly created PTY session.
     pub async fn close_pty_connection(
         &self,
         connection_id: &str,
@@ -225,13 +347,12 @@ impl ConnectionManager {
         }
         let mut pty_sessions = self.pty_sessions.write().await;
         if let Some(session) = pty_sessions.remove(connection_id) {
-            // Cancel the session so the WebSocket reader task stops immediately
             session.cancel.cancel();
         }
         Ok(())
     }
 
-    /// Get the cancellation token for a PTY session (used by WebSocket reader tasks)
+    /// Get the cancellation token for a PTY session (used by WebSocket reader tasks).
     pub async fn get_pty_cancel_token(&self, connection_id: &str) -> Option<CancellationToken> {
         let sessions = self.pty_sessions.read().await;
         sessions.get(connection_id).map(|s| s.cancel.clone())
@@ -250,36 +371,36 @@ impl ConnectionManager {
             .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
     }
 
-    // ===== Standalone SFTP Connection Management =====
+    // =========================================================================
+    // Standalone SFTP
+    // =========================================================================
 
     pub async fn create_sftp_connection(
         &self,
         connection_id: String,
         config: crate::sftp_client::SftpConfig,
     ) -> Result<()> {
-        let client = StandaloneSftpClient::connect(&config).await?;
-        let mut sftp_connections = self.sftp_connections.write().await;
-        sftp_connections.insert(connection_id.clone(), client);
-        let mut types = self.connection_types.write().await;
-        types.insert(connection_id, "SFTP".to_string());
+        let client = StandaloneSftpClient::connect(&config, self.host_keys.clone()).await?;
+        let mut connections = self.connections.write().await;
+        connections.insert(
+            connection_id,
+            ManagedConnection::Sftp(Arc::new(RwLock::new(client))),
+        );
         Ok(())
-    }
-
-    pub async fn get_sftp_connection(&self) -> Arc<RwLock<HashMap<String, StandaloneSftpClient>>> {
-        self.sftp_connections.clone()
     }
 
     pub async fn close_sftp_connection(&self, connection_id: &str) -> Result<()> {
-        let mut sftp_connections = self.sftp_connections.write().await;
-        if let Some(mut client) = sftp_connections.remove(connection_id) {
+        let mut connections = self.connections.write().await;
+        if let Some(ManagedConnection::Sftp(client)) = connections.remove(connection_id) {
+            let mut client = client.write().await;
             client.disconnect().await?;
         }
-        let mut types = self.connection_types.write().await;
-        types.remove(connection_id);
         Ok(())
     }
 
-    // ===== FTP Connection Management =====
+    // =========================================================================
+    // FTP / FTPS
+    // =========================================================================
 
     pub async fn create_ftp_connection(
         &self,
@@ -287,83 +408,65 @@ impl ConnectionManager {
         config: crate::ftp_client::FtpConfig,
     ) -> Result<()> {
         let client = FtpClient::connect(&config).await?;
-        let mut ftp_connections = self.ftp_connections.write().await;
-        ftp_connections.insert(connection_id.clone(), client);
-        let mut types = self.connection_types.write().await;
-        types.insert(connection_id, "FTP".to_string());
+        let mut connections = self.connections.write().await;
+        connections.insert(
+            connection_id,
+            ManagedConnection::Ftp(Arc::new(RwLock::new(client))),
+        );
         Ok(())
-    }
-
-    pub async fn get_ftp_connection(&self) -> Arc<RwLock<HashMap<String, FtpClient>>> {
-        self.ftp_connections.clone()
     }
 
     pub async fn close_ftp_connection(&self, connection_id: &str) -> Result<()> {
-        let mut ftp_connections = self.ftp_connections.write().await;
-        if let Some(mut client) = ftp_connections.remove(connection_id) {
+        let mut connections = self.connections.write().await;
+        if let Some(ManagedConnection::Ftp(client)) = connections.remove(connection_id) {
+            let mut client = client.write().await;
             client.disconnect().await?;
         }
-        let mut types = self.connection_types.write().await;
-        types.remove(connection_id);
         Ok(())
     }
 
-    /// Get the protocol type for a connection ID.
-    pub async fn get_connection_type(&self, connection_id: &str) -> Option<String> {
-        let types = self.connection_types.read().await;
-        types.get(connection_id).cloned()
-    }
+    // =========================================================================
+    // Remote desktop (RDP / VNC)
+    // =========================================================================
 
-    // ===== Desktop (RDP/VNC) Connection Management =====
-
-    /// Create a desktop connection (RDP or VNC) based on the request.
     pub async fn create_desktop_connection(
         &self,
         connection_id: String,
         request: &DesktopConnectRequest,
     ) -> Result<(u16, u16)> {
         let protocol = request.protocol.to_uppercase();
-        let client: Box<dyn DesktopProtocol> = match protocol.as_str() {
+        let (kind, client): (ProtocolKind, Box<dyn DesktopProtocol>) = match protocol.as_str() {
             "RDP" => {
                 let config = request.to_rdp_config();
-                Box::new(RdpClient::connect(&config).await?)
+                (ProtocolKind::Rdp, Box::new(RdpClient::connect(&config).await?))
             }
             "VNC" => {
                 let config = request.to_vnc_config();
-                Box::new(VncClient::connect(&config).await?)
+                (ProtocolKind::Vnc, Box::new(VncClient::connect(&config).await?))
             }
             _ => return Err(anyhow::anyhow!("Unknown desktop protocol: {}", protocol)),
         };
 
         let (w, h) = client.desktop_size();
 
-        let mut desktop = self.desktop_connections.write().await;
-        desktop.insert(connection_id.clone(), Arc::new(RwLock::new(client)));
-
-        let mut types = self.connection_types.write().await;
-        types.insert(connection_id, protocol);
+        let mut connections = self.connections.write().await;
+        connections.insert(
+            connection_id,
+            ManagedConnection::Desktop {
+                kind,
+                client: Arc::new(RwLock::new(client)),
+            },
+        );
 
         Ok((w, h))
     }
 
-    /// Get a desktop connection by ID.
-    pub async fn get_desktop_connection(
-        &self,
-        connection_id: &str,
-    ) -> Option<Arc<RwLock<Box<dyn DesktopProtocol>>>> {
-        let desktop = self.desktop_connections.read().await;
-        desktop.get(connection_id).cloned()
-    }
-
-    /// Close and remove a desktop connection.
     pub async fn close_desktop_connection(&self, connection_id: &str) -> Result<()> {
-        let mut desktop = self.desktop_connections.write().await;
-        if let Some(client) = desktop.remove(connection_id) {
+        let mut connections = self.connections.write().await;
+        if let Some(ManagedConnection::Desktop { client, .. }) = connections.remove(connection_id) {
             let mut client = client.write().await;
             client.disconnect().await?;
         }
-        let mut types = self.connection_types.write().await;
-        types.remove(connection_id);
         Ok(())
     }
 
@@ -374,9 +477,9 @@ impl ConnectionManager {
         frame_tx: mpsc::UnboundedSender<FrameUpdate>,
         cancel: CancellationToken,
     ) -> Result<()> {
-        let desktop = self.desktop_connections.read().await;
-        let client = desktop
-            .get(connection_id)
+        let client = self
+            .get_desktop_connection(connection_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Desktop connection not found: {}", connection_id))?;
         let client = client.read().await;
         client.start_frame_loop(frame_tx, cancel).await
@@ -384,7 +487,7 @@ impl ConnectionManager {
 }
 
 // =============================================================================
-// Unit tests — Task 6.4: Connection manager dispatch / protocol routing
+// Unit tests
 // =============================================================================
 #[cfg(test)]
 mod tests {
@@ -393,116 +496,42 @@ mod tests {
     #[tokio::test]
     async fn test_new_manager_has_no_connections() {
         let mgr = ConnectionManager::new();
-        let connections = mgr.list_connections().await;
-        assert!(connections.is_empty());
+        assert!(mgr.list_connections().await.is_empty());
     }
 
     #[tokio::test]
-    async fn test_get_connection_type_returns_none_for_unknown() {
+    async fn test_connection_kind_returns_none_for_unknown() {
         let mgr = ConnectionManager::new();
+        assert!(mgr.connection_kind("unknown-id").await.is_none());
         assert!(mgr.get_connection_type("unknown-id").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_connection_type_set_for_sftp() {
-        let mgr = ConnectionManager::new();
-        // Manually insert a connection type (simulating what create_sftp_connection does)
-        {
-            let mut types = mgr.connection_types.write().await;
-            types.insert("sftp-1".to_string(), "SFTP".to_string());
-        }
-        assert_eq!(
-            mgr.get_connection_type("sftp-1").await,
-            Some("SFTP".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_connection_type_set_for_ftp() {
-        let mgr = ConnectionManager::new();
-        {
-            let mut types = mgr.connection_types.write().await;
-            types.insert("ftp-1".to_string(), "FTP".to_string());
-        }
-        assert_eq!(
-            mgr.get_connection_type("ftp-1").await,
-            Some("FTP".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_close_sftp_removes_connection_type() {
-        let mgr = ConnectionManager::new();
-        // Simulate having an SFTP connection
-        {
-            let mut types = mgr.connection_types.write().await;
-            types.insert("sftp-close".to_string(), "SFTP".to_string());
-        }
-        // close_sftp_connection removes from both maps
-        let result = mgr.close_sftp_connection("sftp-close").await;
-        assert!(result.is_ok());
-        assert!(mgr.get_connection_type("sftp-close").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_close_ftp_removes_connection_type() {
-        let mgr = ConnectionManager::new();
-        {
-            let mut types = mgr.connection_types.write().await;
-            types.insert("ftp-close".to_string(), "FTP".to_string());
-        }
-        let result = mgr.close_ftp_connection("ftp-close").await;
-        assert!(result.is_ok());
-        assert!(mgr.get_connection_type("ftp-close").await.is_none());
     }
 
     #[tokio::test]
     async fn test_cancel_nonexistent_pending_connection() {
         let mgr = ConnectionManager::new();
-        let cancelled = mgr.cancel_pending_connection("ghost").await;
-        assert!(!cancelled);
+        assert!(!mgr.cancel_pending_connection("ghost").await);
     }
 
     #[tokio::test]
-    async fn test_multiple_protocol_types_tracked() {
-        let mgr = ConnectionManager::new();
-        {
-            let mut types = mgr.connection_types.write().await;
-            types.insert("ssh-1".to_string(), "SSH".to_string());
-            types.insert("sftp-1".to_string(), "SFTP".to_string());
-            types.insert("ftp-1".to_string(), "FTP".to_string());
-        }
-        assert_eq!(
-            mgr.get_connection_type("ssh-1").await,
-            Some("SSH".to_string())
-        );
-        assert_eq!(
-            mgr.get_connection_type("sftp-1").await,
-            Some("SFTP".to_string())
-        );
-        assert_eq!(
-            mgr.get_connection_type("ftp-1").await,
-            Some("FTP".to_string())
-        );
+    async fn test_protocol_kind_round_trip() {
+        assert_eq!(ProtocolKind::Ssh.as_str(), "SSH");
+        assert_eq!(ProtocolKind::Sftp.as_str(), "SFTP");
+        assert_eq!(ProtocolKind::Ftp.as_str(), "FTP");
+        assert_eq!(ProtocolKind::Rdp.as_str(), "RDP");
+        assert_eq!(ProtocolKind::Vnc.as_str(), "VNC");
     }
 
     #[tokio::test]
-    async fn test_dispatch_routing_sftp_vs_ftp() {
+    async fn test_close_sftp_of_unknown_id_is_noop() {
         let mgr = ConnectionManager::new();
-        {
-            let mut types = mgr.connection_types.write().await;
-            types.insert("conn-sftp".to_string(), "SFTP".to_string());
-            types.insert("conn-ftp".to_string(), "FTP".to_string());
-        }
+        let result = mgr.close_sftp_connection("ghost").await;
+        assert!(result.is_ok());
+    }
 
-        // Simulate dispatch logic from list_remote_files command
-        let sftp_type = mgr.get_connection_type("conn-sftp").await.unwrap();
-        assert_eq!(sftp_type, "SFTP");
-
-        let ftp_type = mgr.get_connection_type("conn-ftp").await.unwrap();
-        assert_eq!(ftp_type, "FTP");
-
-        // Unknown connection returns None
-        assert!(mgr.get_connection_type("conn-unknown").await.is_none());
+    #[tokio::test]
+    async fn test_close_ftp_of_unknown_id_is_noop() {
+        let mgr = ConnectionManager::new();
+        let result = mgr.close_ftp_connection("ghost").await;
+        assert!(result.is_ok());
     }
 }

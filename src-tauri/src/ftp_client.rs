@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::sftp_client::{FileEntry, FileEntryType};
 
 /// Configuration for an FTP/FTPS connection.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct FtpConfig {
     pub host: String,
     pub port: u16,
@@ -14,6 +14,11 @@ pub struct FtpConfig {
     pub password: String,
     pub ftps_enabled: bool,
     pub anonymous: bool,
+    /// Explicit opt-in to skip TLS certificate validation for FTPS. Defaults to
+    /// `false` so an untrusted/self-signed cert aborts the handshake. The
+    /// frontend must set this to `true` *with the user's informed consent*.
+    #[serde(default)]
+    pub allow_invalid_certs: bool,
 }
 
 /// Wrapper enum to handle both plain and TLS FTP streams.
@@ -77,15 +82,27 @@ impl FtpClient {
 
             tracing::info!("FTPS TCP connected, starting TLS handshake...");
 
-            let tls_connector =
-                suppaftp::async_native_tls::TlsConnector::new().danger_accept_invalid_certs(true);
+            let mut tls_connector = suppaftp::async_native_tls::TlsConnector::new();
+            if config.allow_invalid_certs {
+                tracing::warn!(
+                    "FTPS: TLS certificate validation DISABLED for {} — insecure, user opt-in",
+                    config.host
+                );
+                tls_connector = tls_connector.danger_accept_invalid_certs(true);
+            }
             let secure_stream = ftp_stream
                 .into_secure(
                     suppaftp::AsyncNativeTlsConnector::from(tls_connector),
                     &config.host,
                 )
                 .await
-                .map_err(|e| anyhow::anyhow!("FTPS TLS handshake failed: {}", e))?;
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "FTPS TLS handshake failed: {}. \
+                         If the server uses a self-signed certificate, re-connect with 'Allow invalid TLS certificates' enabled.",
+                        e
+                    )
+                })?;
 
             tracing::info!("FTPS TLS handshake complete");
             FtpStreamKind::Secure(secure_stream)
@@ -367,6 +384,7 @@ mod tests {
             password: pass,
             ftps_enabled: false,
             anonymous: false,
+            allow_invalid_certs: false,
         })
     }
 

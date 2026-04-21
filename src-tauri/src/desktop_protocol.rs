@@ -58,7 +58,7 @@ pub trait DesktopProtocol: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Request to establish an RDP or VNC connection.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct DesktopConnectRequest {
     pub protocol: String, // "RDP" or "VNC"
     pub host: String,
@@ -72,6 +72,24 @@ pub struct DesktopConnectRequest {
     pub color_depth: Option<u8>,
 }
 
+impl std::fmt::Debug for DesktopConnectRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopConnectRequest")
+            .field("protocol", &self.protocol)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field(
+                "password",
+                &self.password.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+            )
+            .field("domain", &self.domain)
+            .field("resolution", &self.resolution)
+            .field("color_depth", &self.color_depth)
+            .finish()
+    }
+}
+
 /// Response after a successful desktop connection.
 #[derive(Debug, Serialize)]
 pub struct DesktopConnectResponse {
@@ -83,7 +101,7 @@ pub struct DesktopConnectResponse {
 // Protocol-specific config structs (used internally by the clients)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RdpConfig {
     pub host: String,
     pub port: u16,
@@ -94,12 +112,40 @@ pub struct RdpConfig {
     pub height: u16,
 }
 
-#[derive(Debug, Clone)]
+impl std::fmt::Debug for RdpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RdpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("domain", &self.domain)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct VncConfig {
     pub host: String,
     pub port: u16,
     pub password: Option<String>,
     pub color_depth: u8, // 24, 16, or 8
+}
+
+impl std::fmt::Debug for VncConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VncConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field(
+                "password",
+                &self.password.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+            )
+            .field("color_depth", &self.color_depth)
+            .finish()
+    }
 }
 
 impl DesktopConnectRequest {

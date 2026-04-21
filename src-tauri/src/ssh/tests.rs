@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::ssh::{AuthMethod, SshClient, SshConfig};
+    use crate::ssh::{AuthMethod, HostKeyStore, SshClient, SshConfig};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -9,6 +9,15 @@ mod tests {
     const TEST_USERNAME: &str = "testuser"; // Replace with your test username
     const TEST_PASSWORD: &str = "testpass"; // Replace with your test password
     const TEST_PORT: u16 = 22;
+
+    /// A scratch host-key store backed by a temp file.
+    fn test_host_keys() -> Arc<HostKeyStore> {
+        let tmp = std::env::temp_dir().join(format!(
+            "r-shell-test-known_hosts-{}",
+            std::process::id()
+        ));
+        Arc::new(HostKeyStore::new(tmp))
+    }
 
     fn create_test_config() -> SshConfig {
         SshConfig {
@@ -37,7 +46,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_ssh_connection() {
-        let client = Arc::new(RwLock::new(SshClient::new()));
+        let client = Arc::new(RwLock::new(SshClient::new(test_host_keys())));
         let mut client_write = client.write().await;
         let config = create_test_config();
 
@@ -57,7 +66,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_execute_command() {
-        let client = Arc::new(RwLock::new(SshClient::new()));
+        let client = Arc::new(RwLock::new(SshClient::new(test_host_keys())));
         let mut client_write = client.write().await;
         let config = create_test_config();
 
@@ -85,7 +94,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_invalid_credentials() {
-        let client = Arc::new(RwLock::new(SshClient::new()));
+        let client = Arc::new(RwLock::new(SshClient::new(test_host_keys())));
         let mut client_write = client.write().await;
 
         let config = SshConfig {
@@ -108,7 +117,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_get_system_stats() {
-        let client = Arc::new(RwLock::new(SshClient::new()));
+        let client = Arc::new(RwLock::new(SshClient::new(test_host_keys())));
         let mut client_write = client.write().await;
         let config = create_test_config();
 
@@ -137,7 +146,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_process_list() {
-        let client = Arc::new(RwLock::new(SshClient::new()));
+        let client = Arc::new(RwLock::new(SshClient::new(test_host_keys())));
         let mut client_write = client.write().await;
         let config = create_test_config();
 

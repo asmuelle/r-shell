@@ -11,10 +11,23 @@ mod websocket_server;
 use connection_manager::ConnectionManager;
 use std::sync::atomic::AtomicU16;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use websocket_server::WebSocketServer;
 
 // Global atomic to store the WebSocket port (shared between backend and frontend)
 pub static WEBSOCKET_PORT: AtomicU16 = AtomicU16::new(0);
+
+/// Per-process auth token required on every WebSocket upgrade. Set once at
+/// startup. Callers read it via the `get_websocket_token` Tauri command and
+/// include it as the `?token=` query parameter when opening the WS URL.
+pub static WEBSOCKET_AUTH_TOKEN: OnceLock<String> = OnceLock::new();
+
+fn generate_auth_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,6 +36,13 @@ pub fn run() {
 
     // Create connection manager
     let connection_manager = Arc::new(ConnectionManager::new());
+
+    // Generate a fresh WebSocket auth token for this process lifetime.
+    // Stored in a OnceLock so it cannot be changed after startup.
+    let token = generate_auth_token();
+    WEBSOCKET_AUTH_TOKEN
+        .set(token.clone())
+        .expect("WEBSOCKET_AUTH_TOKEN set twice");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -33,7 +53,10 @@ pub fn run() {
             move |_app| {
                 // Start WebSocket server for terminal I/O
                 // Try ports 9001-9010 to avoid conflicts with other instances
-                let ws_server = Arc::new(WebSocketServer::new(connection_manager_clone));
+                let ws_server = Arc::new(WebSocketServer::new(
+                    connection_manager_clone,
+                    token.clone(),
+                ));
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = ws_server.start().await {
                         tracing::error!("WebSocket server error: {}", e);
@@ -75,6 +98,7 @@ pub fn run() {
             commands::detect_gpu,
             commands::get_gpu_stats,
             commands::get_websocket_port,
+            commands::get_websocket_token,
             // Standalone SFTP/FTP commands
             commands::sftp_connect,
             commands::sftp_standalone_disconnect,

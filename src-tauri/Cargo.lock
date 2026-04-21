@@ -2345,6 +2345,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "open",
+ "rand 0.8.5",
  "russh",
  "russh-keys",
  "russh-sftp",

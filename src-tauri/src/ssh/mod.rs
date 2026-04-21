@@ -10,6 +10,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+pub mod host_keys;
+pub mod shell;
+pub use host_keys::{HostKeyMismatch, HostKeyStore, MismatchSlot, Verdict};
+
+/// Chunk size used for streaming SFTP transfers. 32 KiB balances throughput
+/// against memory overhead for concurrent transfers. Larger sizes hit
+/// diminishing returns because SFTP's window management caps effective
+/// pipelining anyway.
+pub const SFTP_CHUNK_SIZE: usize = 32 * 1024;
+
 /// Preferred host-key algorithms advertised to the server, ordered from most to
 /// least preferred.  RSA variants (including the legacy `ssh-rsa` / SHA-1) are
 /// included so that older servers that only offer RSA host keys are still
@@ -24,7 +34,7 @@ pub static PREFERRED_HOST_KEY_ALGOS: &[russh_keys::key::Name] = &[
     russh_keys::key::SSH_RSA,
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
@@ -32,7 +42,18 @@ pub struct SshConfig {
     pub auth_method: AuthMethod,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for SshConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("auth_method", &self.auth_method)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthMethod {
     Password {
@@ -44,6 +65,28 @@ pub enum AuthMethod {
     },
 }
 
+impl std::fmt::Debug for AuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthMethod::Password { .. } => f
+                .debug_struct("AuthMethod::Password")
+                .field("password", &"<redacted>")
+                .finish(),
+            AuthMethod::PublicKey {
+                key_path,
+                passphrase,
+            } => f
+                .debug_struct("AuthMethod::PublicKey")
+                .field("key_path", key_path)
+                .field(
+                    "passphrase",
+                    &passphrase.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                )
+                .finish(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SshSession {
     pub id: String,
@@ -53,6 +96,47 @@ pub struct SshSession {
 
 pub struct SshClient {
     session: Option<Arc<client::Handle<Client>>>,
+    host_keys: Arc<HostKeyStore>,
+    /// Cached SFTP subsystem channel, opened lazily on first file op and
+    /// reused thereafter. Avoids a channel-open round-trip per file op.
+    /// Cleared by `disconnect`.
+    sftp: tokio::sync::OnceCell<Arc<SftpSession>>,
+}
+
+/// Structured result of running a remote command. Callers that need to branch
+/// on the exit code or separate the streams should consume this directly; the
+/// convenience `execute_command` merges the streams for display.
+#[derive(Debug, Clone, Default)]
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<u32>,
+}
+
+impl CommandOutput {
+    /// Did the command report a zero exit status?
+    pub fn is_success(&self) -> bool {
+        matches!(self.exit_code, Some(0))
+    }
+
+    /// stdout followed by stderr (separated by a newline only when both are
+    /// non-empty). This is the legacy shape `execute_command` returned before
+    /// the stderr fix, but now includes stderr instead of dropping it.
+    pub fn combined(&self) -> String {
+        if self.stderr.is_empty() {
+            self.stdout.clone()
+        } else if self.stdout.is_empty() {
+            self.stderr.clone()
+        } else {
+            let mut out = String::with_capacity(self.stdout.len() + self.stderr.len() + 1);
+            out.push_str(&self.stdout);
+            if !self.stdout.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&self.stderr);
+            out
+        }
+    }
 }
 
 // PTY session handle for interactive shell
@@ -67,7 +151,31 @@ pub struct PtySession {
     pub cancel: CancellationToken,
 }
 
-pub struct Client;
+/// russh Handler that verifies each server host key against a `HostKeyStore`.
+///
+/// On `Verdict::Known` the handshake proceeds. On `Verdict::Unknown` the key is
+/// TOFU-trusted and persisted. On `Verdict::Mismatch` the handshake is rejected
+/// and details are written to the shared `mismatch_slot` so the caller can
+/// build a descriptive user-facing error.
+pub struct Client {
+    host: String,
+    port: u16,
+    store: Arc<HostKeyStore>,
+    mismatch_slot: MismatchSlot,
+}
+
+impl Client {
+    pub fn new(host: impl Into<String>, port: u16, store: Arc<HostKeyStore>) -> (Self, MismatchSlot) {
+        let slot: MismatchSlot = Arc::new(std::sync::Mutex::new(None));
+        let client = Self {
+            host: host.into(),
+            port,
+            store,
+            mismatch_slot: slot.clone(),
+        };
+        (client, slot)
+    }
+}
 
 #[async_trait::async_trait]
 impl client::Handler for Client {
@@ -75,169 +183,372 @@ impl client::Handler for Client {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &key::PublicKey,
+        server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true) // In production, verify the server key
+        match self
+            .store
+            .verify(&self.host, self.port, server_public_key)
+            .await
+        {
+            Verdict::Known => {
+                tracing::debug!(
+                    "host key for {}:{} matches known_hosts",
+                    self.host,
+                    self.port
+                );
+                Ok(true)
+            }
+            Verdict::Unknown => {
+                tracing::warn!(
+                    "TOFU: trusting new host key for {}:{} (fingerprint SHA256:{})",
+                    self.host,
+                    self.port,
+                    server_public_key.fingerprint()
+                );
+                if let Err(e) = self
+                    .store
+                    .trust(&self.host, self.port, server_public_key)
+                    .await
+                {
+                    tracing::error!("failed to persist host key: {}", e);
+                }
+                Ok(true)
+            }
+            Verdict::Mismatch {
+                expected_fingerprint,
+                got_fingerprint,
+            } => {
+                tracing::error!(
+                    "host key mismatch for {}:{} — expected SHA256:{}, got SHA256:{}",
+                    self.host,
+                    self.port,
+                    expected_fingerprint,
+                    got_fingerprint
+                );
+                if let Ok(mut slot) = self.mismatch_slot.lock() {
+                    *slot = Some(HostKeyMismatch {
+                        host: self.host.clone(),
+                        port: self.port,
+                        expected_fingerprint,
+                        got_fingerprint,
+                        store_path: self.store.path().to_path_buf(),
+                    });
+                }
+                Ok(false)
+            }
+        }
     }
 }
 
-pub(crate) fn expand_home_path(path: &str) -> String {
-    if path.starts_with("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return path.replacen("~", &home, 1);
+/// A resolved authentication payload, shared between SSH and standalone-SFTP
+/// connection paths so they can use a single `connect_authenticated` helper
+/// instead of duplicating the config-building / error-wrapping logic.
+pub(crate) enum ResolvedAuth<'a> {
+    Password {
+        password: &'a str,
+    },
+    Key {
+        key: key::KeyPair,
+        /// Optional hint for user-facing error messages (the key path the
+        /// user asked us to load). Not used for the authentication itself.
+        key_path_hint: Option<&'a str>,
+    },
+}
+
+/// Perform the full SSH connect + authenticate sequence with host-key
+/// verification and a timeout. Produces a descriptive error if the key
+/// verification fails.
+pub(crate) async fn connect_authenticated(
+    host: &str,
+    port: u16,
+    username: &str,
+    auth: ResolvedAuth<'_>,
+    timeout: Duration,
+    host_keys: Arc<HostKeyStore>,
+) -> Result<client::Handle<Client>> {
+    let ssh_config = client::Config {
+        preferred: russh::Preferred {
+            key: PREFERRED_HOST_KEY_ALGOS,
+            ..russh::Preferred::DEFAULT
+        },
+        ..client::Config::default()
+    };
+
+    let (handler, mismatch_slot) = Client::new(host, port, host_keys);
+
+    let mut session = tokio::time::timeout(
+        timeout,
+        client::connect(Arc::new(ssh_config), (host, port), handler),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "Connection timed out after {}s. Please check the host address and network.",
+            timeout.as_secs()
+        )
+    })?
+    .map_err(|e| {
+        if let Ok(mut guard) = mismatch_slot.lock() {
+            if let Some(mismatch) = guard.take() {
+                return anyhow::anyhow!(format_mismatch(&mismatch));
+            }
         }
+        anyhow::anyhow!("Failed to connect to {}:{}: {}", host, port, e)
+    })?;
+
+    // Capture what we need for the `!authenticated` error before moving `auth`
+    // into the matching branch.
+    let key_hint_for_error = match &auth {
+        ResolvedAuth::Password { .. } => None,
+        ResolvedAuth::Key { key_path_hint, .. } => key_path_hint.map(String::from),
+    };
+
+    let authenticated = match auth {
+        ResolvedAuth::Password { password } => session
+            .authenticate_password(username, password)
+            .await
+            .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?,
+        ResolvedAuth::Key { key, .. } => session
+            .authenticate_publickey(username, Arc::new(key))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Public key authentication failed: {}. The key may not be authorized on the server.",
+                    e
+                )
+            })?,
+    };
+
+    if !authenticated {
+        return Err(match key_hint_for_error {
+            None => anyhow::anyhow!(
+                "Authentication failed for {}@{} with password authentication.",
+                username,
+                host
+            ),
+            Some(path) => anyhow::anyhow!(
+                "Authentication failed for {}@{} using public key {}.",
+                username,
+                host,
+                path
+            ),
+        });
     }
 
-    path.to_string()
+    Ok(session)
+}
+
+/// Render a mismatch into a user-facing error message.
+pub fn format_mismatch(m: &HostKeyMismatch) -> String {
+    format!(
+        "Host key verification failed for {}:{}.\n\
+         Expected fingerprint (stored): SHA256:{}\n\
+         Offered fingerprint (server):  SHA256:{}\n\
+         If the remote host legitimately rotated its key, remove the entry from:\n  {}",
+        m.host,
+        m.port,
+        m.expected_fingerprint,
+        m.got_fingerprint,
+        m.store_path.display()
+    )
+}
+
+/// Expand a leading `~/` to the user's home directory via `dirs::home_dir()`.
+/// Returns `None` if the path starts with `~/` but we cannot resolve home,
+/// letting callers produce a specific error instead of silently returning the
+/// literal tilde path.
+pub(crate) fn expand_home_path(path: &str) -> Option<String> {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = dirs::home_dir()?;
+        Some(home.join(rest).to_string_lossy().into_owned())
+    } else if path == "~" {
+        dirs::home_dir().map(|h| h.to_string_lossy().into_owned())
+    } else {
+        Some(path.to_string())
+    }
 }
 
 pub(crate) fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Result<key::KeyPair> {
-    let expanded_path = expand_home_path(key_path);
-    let path = Path::new(&expanded_path);
+    let expanded = expand_home_path(key_path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Cannot resolve '~' in SSH key path '{}': home directory unknown.",
+            key_path
+        )
+    })?;
+    let path = Path::new(&expanded);
 
     if !path.exists() {
+        // Surface both forms when they differ so the user can tell that
+        // expansion happened (and went where they expected).
+        let location = if expanded != key_path {
+            format!("{} (expanded from {})", expanded, key_path)
+        } else {
+            expanded.clone()
+        };
         return Err(anyhow::anyhow!(
             "SSH key file not found: {}. Please check the file path and try again.",
-            key_path
+            location
         ));
     }
 
     load_secret_key(path, passphrase).map_err(|e| {
-        if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
+        let msg = e.to_string();
+        if msg.contains("encrypted") || msg.contains("passphrase") {
             anyhow::anyhow!(
-                "Failed to decrypt SSH key. The key may be encrypted. Please provide the correct passphrase."
+                "Failed to decrypt SSH key at {}. The key may be encrypted. Please provide the correct passphrase.",
+                expanded
             )
         } else {
             anyhow::anyhow!(
                 "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key (RSA, Ed25519, or ECDSA).",
-                key_path, e
+                expanded, e
             )
         }
     })
 }
 
 impl SshClient {
-    pub fn new() -> Self {
-        Self { session: None }
+    pub fn new(host_keys: Arc<HostKeyStore>) -> Self {
+        Self {
+            session: None,
+            host_keys,
+            sftp: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// Return a handle to a cached SFTP session, opening the subsystem on
+    /// first call. Subsequent calls reuse the same session, saving the
+    /// channel-open + subsystem-negotiation round-trip.
+    async fn sftp_session(&self) -> Result<Arc<SftpSession>> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Not connected"))?
+            .clone();
+        let sftp = self
+            .sftp
+            .get_or_try_init(|| async move {
+                let channel = session.channel_open_session().await?;
+                channel.request_subsystem(true, "sftp").await?;
+                let session = SftpSession::new(channel.into_stream()).await?;
+                Ok::<_, anyhow::Error>(Arc::new(session))
+            })
+            .await?;
+        Ok(sftp.clone())
     }
 
     pub async fn connect(&mut self, config: &SshConfig) -> Result<()> {
-        let ssh_config = client::Config {
-            preferred: russh::Preferred {
-                key: PREFERRED_HOST_KEY_ALGOS,
-                ..russh::Preferred::DEFAULT
-            },
-            ..client::Config::default()
-        };
-
-        // Connection timeout: 3 seconds
-        let connection_timeout = Duration::from_secs(3);
-
-        let mut ssh_session = tokio::time::timeout(
-            connection_timeout,
-            client::connect(Arc::new(ssh_config), (&config.host[..], config.port), Client)
-        ).await
-            .map_err(|_| anyhow::anyhow!("Connection timed out after 3 seconds. Please check the host address and network connectivity."))?
-            .map_err(|e| anyhow::anyhow!("Failed to connect to {}:{}: {}", config.host, config.port, e))?;
-
-        let authenticated = match &config.auth_method {
-            AuthMethod::Password { password } => ssh_session
-                .authenticate_password(&config.username, password)
-                .await
-                .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?,
+        let auth = match &config.auth_method {
+            AuthMethod::Password { password } => ResolvedAuth::Password { password },
             AuthMethod::PublicKey {
                 key_path,
                 passphrase,
-            } => {
-                let key = load_private_key(key_path, passphrase.as_deref())?;
-
-                ssh_session
-                    .authenticate_publickey(&config.username, Arc::new(key))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Public key authentication failed: {}. The key may not be authorized on the server.", e))?
-            }
+            } => ResolvedAuth::Key {
+                key: load_private_key(key_path, passphrase.as_deref())?,
+                key_path_hint: Some(key_path),
+            },
         };
 
-        if !authenticated {
-            return Err(match &config.auth_method {
-                AuthMethod::Password { .. } => anyhow::anyhow!(
-                    "Authentication failed for {}@{} with password authentication.",
-                    config.username,
-                    config.host
-                ),
-                AuthMethod::PublicKey { key_path, .. } => anyhow::anyhow!(
-                    "Authentication failed for {}@{} using public key {}.",
-                    config.username,
-                    config.host,
-                    key_path
-                ),
-            });
-        }
+        let session = connect_authenticated(
+            &config.host,
+            config.port,
+            &config.username,
+            auth,
+            Duration::from_secs(3),
+            self.host_keys.clone(),
+        )
+        .await?;
 
-        self.session = Some(Arc::new(ssh_session));
+        self.session = Some(Arc::new(session));
         Ok(())
     }
 
-    // Changed to &self instead of &mut self to allow concurrent access
+    /// Execute a remote command and return the combined stdout+stderr as a
+    /// string, matching the shell-convention where both streams are interleaved
+    /// in the user's view. Returns `Err` only for transport-level failures
+    /// (session gone, channel couldn't open) — a nonzero exit code is a valid
+    /// result, not an error, and its stdout/stderr is still returned.
+    ///
+    /// For callers that need to branch on the exit code or separate streams,
+    /// use [`SshClient::execute_command_full`] instead.
     pub async fn execute_command(&self, command: &str) -> Result<String> {
-        if let Some(session) = &self.session {
-            let mut channel = session.channel_open_session().await?;
-            channel.exec(true, command).await?;
+        let out = self.execute_command_full(command).await?;
+        Ok(out.combined())
+    }
 
-            let mut output = String::new();
-            let mut code = None;
-            let mut eof_received = false;
+    /// Execute a remote command and return full stdout/stderr/exit-code.
+    pub async fn execute_command_full(&self, command: &str) -> Result<CommandOutput> {
+        let Some(session) = &self.session else {
+            return Err(anyhow::anyhow!("Not connected"));
+        };
 
-            loop {
-                let msg = channel.wait().await;
-                match msg {
-                    Some(ChannelMsg::Data { ref data }) => {
-                        output.push_str(&String::from_utf8_lossy(data));
-                    }
-                    Some(ChannelMsg::ExitStatus { exit_status }) => {
-                        code = Some(exit_status);
-                        if eof_received {
-                            break;
-                        }
-                    }
-                    Some(ChannelMsg::Eof) => {
-                        eof_received = true;
-                        if code.is_some() {
-                            break;
-                        }
-                    }
-                    Some(ChannelMsg::Close) => {
-                        break;
-                    }
-                    None => {
-                        break;
-                    }
-                    _ => {}
+        let mut channel = session.channel_open_session().await?;
+        channel.exec(true, command).await?;
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut exit_code: Option<u32> = None;
+        let mut eof_received = false;
+
+        loop {
+            let msg = channel.wait().await;
+            match msg {
+                Some(ChannelMsg::Data { ref data }) => {
+                    stdout.push_str(&String::from_utf8_lossy(data));
                 }
+                Some(ChannelMsg::ExtendedData { ref data, .. }) => {
+                    // Extended data channel 1 = stderr (per RFC 4254 §5.2).
+                    // Capture regardless of the `ext` code — servers occasionally
+                    // send other codes and dropping them silently is worse than
+                    // merging them into the stderr buffer.
+                    stderr.push_str(&String::from_utf8_lossy(data));
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    exit_code = Some(exit_status);
+                    if eof_received {
+                        break;
+                    }
+                }
+                Some(ChannelMsg::Eof) => {
+                    eof_received = true;
+                    if exit_code.is_some() {
+                        break;
+                    }
+                }
+                Some(ChannelMsg::Close) | None => {
+                    break;
+                }
+                _ => {}
             }
-
-            // Consider success if we got output and no explicit error code, or code 0
-            match code {
-                Some(0) => Ok(output),
-                None if !output.is_empty() => Ok(output), // No exit code but got output = success
-                _ => Err(anyhow::anyhow!("Command failed with code: {:?}", code)),
-            }
-        } else {
-            Err(anyhow::anyhow!("Not connected"))
         }
+
+        Ok(CommandOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
     }
 
     pub async fn disconnect(&mut self) -> Result<()> {
+        // Drop the cached SFTP session first so its channel shuts cleanly
+        // before we tear down the underlying SSH transport.
+        self.sftp.take();
+
         if let Some(session) = self.session.take() {
-            // Try to unwrap Arc, if we're the only owner
             match Arc::try_unwrap(session) {
                 Ok(session) => {
-                    session
-                        .disconnect(Disconnect::ByApplication, "", "English")
-                        .await?;
+                    if let Err(e) = session
+                        .disconnect(Disconnect::ByApplication, "", "")
+                        .await
+                    {
+                        tracing::warn!("SSH disconnect failed cleanly: {}", e);
+                    }
                 }
                 Err(arc_session) => {
-                    // Other references exist, just drop our reference
+                    // Other references (typically spawned PTY tasks) still
+                    // exist. Drop ours — the session ends when the last
+                    // reference dies.
+                    tracing::debug!("SSH disconnect: other refs still alive, dropping handle");
                     drop(arc_session);
                 }
             }
@@ -286,22 +597,38 @@ impl SshClient {
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
 
+            // The cancel token is created here and shared with both spawned
+            // tasks *and* returned in `PtySession`. When `close_pty_connection`
+            // cancels, every long-lived future on this session unblocks.
+            let cancel = CancellationToken::new();
+
             // Spawn task to handle input (frontend → SSH)
             // This is similar to ttyd's pty_write and INPUT command handling
             // Key: immediate write + flush for responsiveness
+            let input_cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut writer = input_channel;
-                while let Some(data) = input_rx.recv().await {
-                    // Write data immediately
-                    if let Err(e) = writer.write_all(&data).await {
-                        eprintln!("[PTY] Failed to send data to SSH: {}", e);
-                        break;
-                    }
-                    // Critical: flush immediately after write (like ttyd)
-                    // This ensures data is sent to PTY without buffering delay
-                    if let Err(e) = writer.flush().await {
-                        eprintln!("[PTY] Failed to flush data to SSH: {}", e);
-                        break;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = input_cancel.cancelled() => {
+                            tracing::debug!("[PTY] input task cancelled");
+                            break;
+                        }
+                        maybe_data = input_rx.recv() => {
+                            let Some(data) = maybe_data else {
+                                // sender dropped — session torn down
+                                break;
+                            };
+                            if let Err(e) = writer.write_all(&data).await {
+                                tracing::error!("[PTY] failed to send data to SSH: {}", e);
+                                break;
+                            }
+                            if let Err(e) = writer.flush().await {
+                                tracing::error!("[PTY] failed to flush data to SSH: {}", e);
+                                break;
+                            }
+                        }
                     }
                 }
             });
@@ -309,10 +636,19 @@ impl SshClient {
             // Spawn task to handle output (SSH → frontend) AND resize requests.
             // The channel must stay in this task because `wait()` requires `&mut self`,
             // but we also need `window_change()` which only requires `&self`.
-            // We use `tokio::select!` to multiplex between output reading and resize.
+            // We use `tokio::select!` to multiplex between output reading, resize,
+            // and cancellation. Without the cancel arm the task would outlive
+            // `close_pty_connection` until the remote side eventually closes the
+            // channel — see audit finding #7.
+            let output_cancel = cancel.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
+                        biased;
+                        _ = output_cancel.cancelled() => {
+                            tracing::debug!("[PTY] output task cancelled");
+                            break;
+                        }
                         msg = channel.wait() => {
                             match msg {
                                 Some(ChannelMsg::Data { data }) => {
@@ -327,11 +663,11 @@ impl SshClient {
                                     }
                                 }
                                 Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                                    eprintln!("[PTY] Channel closed");
+                                    tracing::debug!("[PTY] channel closed");
                                     break;
                                 }
                                 Some(ChannelMsg::ExitStatus { exit_status }) => {
-                                    eprintln!("[PTY] Process exited with status: {}", exit_status);
+                                    tracing::info!("[PTY] process exited with status: {}", exit_status);
                                 }
                                 _ => {}
                             }
@@ -340,9 +676,9 @@ impl SshClient {
                             match resize {
                                 Some((cols, rows)) => {
                                     if let Err(e) = channel.window_change(cols, rows, 0, 0).await {
-                                        eprintln!("[PTY] Failed to send window change: {}", e);
+                                        tracing::error!("[PTY] failed to send window change: {}", e);
                                     } else {
-                                        eprintln!("[PTY] Window changed to {}x{}", cols, rows);
+                                        tracing::debug!("[PTY] window changed to {}x{}", cols, rows);
                                     }
                                 }
                                 None => {
@@ -360,7 +696,7 @@ impl SshClient {
                 output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
                 channel_id,
                 resize_tx,
-                cancel: CancellationToken::new(),
+                cancel,
             })
         } else {
             Err(anyhow::anyhow!("Not connected"))
@@ -368,126 +704,215 @@ impl SshClient {
     }
 
     pub async fn download_file(&self, remote_path: &str, local_path: &str) -> Result<u64> {
-        if let Some(session) = &self.session {
-            // Open SFTP subsystem
-            let channel = session.channel_open_session().await?;
-            channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
+        let sftp = self.sftp_session().await?;
+        let mut remote_file = sftp.open(remote_path).await?;
+        let mut local_file = tokio::fs::File::create(local_path).await?;
 
-            // Open remote file for reading
-            let mut remote_file = sftp.open(remote_path).await?;
-
-            // Read file content
-            let mut buffer = Vec::new();
-            let mut temp_buf = vec![0u8; 8192];
-            let mut total_bytes = 0u64;
-
-            loop {
-                let n = remote_file.read(&mut temp_buf).await?;
-                if n == 0 {
-                    break;
-                }
-                buffer.extend_from_slice(&temp_buf[..n]);
-                total_bytes += n as u64;
+        // Stream: read a chunk, write it, drop it. No whole-file allocation.
+        let mut buf = vec![0u8; SFTP_CHUNK_SIZE];
+        let mut total_bytes = 0u64;
+        loop {
+            let n = remote_file.read(&mut buf).await?;
+            if n == 0 {
+                break;
             }
-
-            // Write to local file
-            tokio::fs::write(local_path, buffer).await?;
-
-            Ok(total_bytes)
-        } else {
-            Err(anyhow::anyhow!("Not connected"))
+            local_file.write_all(&buf[..n]).await?;
+            total_bytes += n as u64;
         }
+        local_file.flush().await?;
+
+        Ok(total_bytes)
     }
 
     pub async fn download_file_to_memory(&self, remote_path: &str) -> Result<Vec<u8>> {
-        if let Some(session) = &self.session {
-            // Open SFTP subsystem
-            let channel = session.channel_open_session().await?;
-            channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
+        let sftp = self.sftp_session().await?;
+        let mut remote_file = sftp.open(remote_path).await?;
 
-            // Open remote file for reading
-            let mut remote_file = sftp.open(remote_path).await?;
-
-            // Read file content
-            let mut buffer = Vec::new();
-            let mut temp_buf = vec![0u8; 8192];
-
-            loop {
-                let n = remote_file.read(&mut temp_buf).await?;
-                if n == 0 {
-                    break;
-                }
-                buffer.extend_from_slice(&temp_buf[..n]);
+        let mut buffer = Vec::new();
+        let mut temp_buf = vec![0u8; SFTP_CHUNK_SIZE];
+        loop {
+            let n = remote_file.read(&mut temp_buf).await?;
+            if n == 0 {
+                break;
             }
-
-            Ok(buffer)
-        } else {
-            Err(anyhow::anyhow!("Not connected"))
+            buffer.extend_from_slice(&temp_buf[..n]);
         }
+        Ok(buffer)
     }
 
     pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<u64> {
-        if let Some(session) = &self.session {
-            // Read local file
-            let data = tokio::fs::read(local_path).await?;
-            let total_bytes = data.len() as u64;
+        let sftp = self.sftp_session().await?;
+        let mut local_file = tokio::fs::File::open(local_path).await?;
+        let mut remote_file = sftp.create(remote_path).await?;
 
-            // Open SFTP subsystem
-            let channel = session.channel_open_session().await?;
-            channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
-
-            // Create remote file for writing
-            let mut remote_file = sftp.create(remote_path).await?;
-
-            // Write data in chunks
-            let mut offset = 0;
-            let chunk_size = 8192;
-
-            while offset < data.len() {
-                let end = std::cmp::min(offset + chunk_size, data.len());
-                remote_file.write_all(&data[offset..end]).await?;
-                offset = end;
+        let mut buf = vec![0u8; SFTP_CHUNK_SIZE];
+        let mut total_bytes = 0u64;
+        loop {
+            let n = local_file.read(&mut buf).await?;
+            if n == 0 {
+                break;
             }
-
-            remote_file.flush().await?;
-
-            Ok(total_bytes)
-        } else {
-            Err(anyhow::anyhow!("Not connected"))
+            remote_file.write_all(&buf[..n]).await?;
+            total_bytes += n as u64;
         }
+        remote_file.flush().await?;
+
+        Ok(total_bytes)
     }
 
     pub async fn upload_file_from_bytes(&self, data: &[u8], remote_path: &str) -> Result<u64> {
-        if let Some(session) = &self.session {
-            let total_bytes = data.len() as u64;
+        let sftp = self.sftp_session().await?;
+        let mut remote_file = sftp.create(remote_path).await?;
 
-            // Open SFTP subsystem
-            let channel = session.channel_open_session().await?;
-            channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
-
-            // Create remote file for writing
-            let mut remote_file = sftp.create(remote_path).await?;
-
-            // Write data in chunks
-            let mut offset = 0;
-            let chunk_size = 8192;
-
-            while offset < data.len() {
-                let end = std::cmp::min(offset + chunk_size, data.len());
-                remote_file.write_all(&data[offset..end]).await?;
-                offset = end;
-            }
-
-            remote_file.flush().await?;
-
-            Ok(total_bytes)
-        } else {
-            Err(anyhow::anyhow!("Not connected"))
+        for chunk in data.chunks(SFTP_CHUNK_SIZE) {
+            remote_file.write_all(chunk).await?;
         }
+        remote_file.flush().await?;
+
+        Ok(data.len() as u64)
+    }
+}
+
+#[cfg(test)]
+mod expand_home_tests {
+    use super::expand_home_path;
+
+    #[test]
+    fn returns_non_tilde_paths_unchanged() {
+        assert_eq!(
+            expand_home_path("/absolute/path").as_deref(),
+            Some("/absolute/path")
+        );
+        assert_eq!(expand_home_path("relative/dir").as_deref(), Some("relative/dir"));
+        assert_eq!(expand_home_path("").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn expands_tilde_slash_prefix_when_home_is_known() {
+        // We can't rely on a specific home_dir() value here, but we can assert
+        // that the tilde is replaced and the suffix is preserved.
+        let expanded = expand_home_path("~/.ssh/id_rsa");
+        // When CI doesn't set HOME, dirs::home_dir may return None — tolerate both
+        // outcomes and only assert the happy path.
+        if let Some(result) = expanded {
+            assert!(!result.starts_with("~/"), "tilde must be expanded: {}", result);
+            assert!(result.ends_with("/.ssh/id_rsa"), "suffix preserved: {}", result);
+        }
+    }
+}
+
+#[cfg(test)]
+mod command_output_tests {
+    use super::CommandOutput;
+
+    #[test]
+    fn is_success_requires_zero_exit() {
+        assert!(CommandOutput {
+            stdout: "x".into(),
+            stderr: "".into(),
+            exit_code: Some(0),
+        }
+        .is_success());
+        assert!(!CommandOutput {
+            stdout: "x".into(),
+            stderr: "".into(),
+            exit_code: Some(1),
+        }
+        .is_success());
+        assert!(!CommandOutput {
+            stdout: "x".into(),
+            stderr: "".into(),
+            exit_code: None,
+        }
+        .is_success());
+    }
+
+    #[test]
+    fn combined_merges_streams_with_separator() {
+        let c = CommandOutput {
+            stdout: "out".into(),
+            stderr: "err".into(),
+            exit_code: Some(0),
+        };
+        assert_eq!(c.combined(), "out\nerr");
+    }
+
+    #[test]
+    fn combined_preserves_trailing_newline() {
+        let c = CommandOutput {
+            stdout: "out\n".into(),
+            stderr: "err".into(),
+            exit_code: Some(0),
+        };
+        assert_eq!(c.combined(), "out\nerr");
+    }
+
+    #[test]
+    fn combined_returns_single_stream_when_other_empty() {
+        assert_eq!(
+            CommandOutput {
+                stdout: "only".into(),
+                stderr: "".into(),
+                exit_code: Some(0),
+            }
+            .combined(),
+            "only"
+        );
+        assert_eq!(
+            CommandOutput {
+                stdout: "".into(),
+                stderr: "only-err".into(),
+                exit_code: Some(1),
+            }
+            .combined(),
+            "only-err"
+        );
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::{AuthMethod, SshConfig};
+
+    #[test]
+    fn debug_redacts_password() {
+        let cfg = SshConfig {
+            host: "h".into(),
+            port: 22,
+            username: "u".into(),
+            auth_method: AuthMethod::Password {
+                password: "super-secret-123".into(),
+            },
+        };
+        let rendered = format!("{:?}", cfg);
+        assert!(
+            !rendered.contains("super-secret-123"),
+            "password must not appear in Debug output: {}",
+            rendered
+        );
+        assert!(rendered.contains("<redacted>"), "expected redaction marker");
+    }
+
+    #[test]
+    fn debug_redacts_passphrase() {
+        let m = AuthMethod::PublicKey {
+            key_path: "/tmp/id".into(),
+            passphrase: Some("xyz-passphrase".into()),
+        };
+        let rendered = format!("{:?}", m);
+        assert!(!rendered.contains("xyz-passphrase"));
+        assert!(rendered.contains("<redacted>"));
+        assert!(rendered.contains("/tmp/id"));
+    }
+
+    #[test]
+    fn debug_shows_none_when_no_passphrase() {
+        let m = AuthMethod::PublicKey {
+            key_path: "/tmp/id".into(),
+            passphrase: None,
+        };
+        let rendered = format!("{:?}", m);
+        assert!(rendered.contains("<none>"));
     }
 }
 

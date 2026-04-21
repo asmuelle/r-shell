@@ -7,11 +7,19 @@ use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::handshake::server::{
+    ErrorResponse, Request, Response,
+};
+use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Messages sent by the frontend to the backend. Deserialising into this enum
+/// rejects anything the server is only supposed to *emit* (e.g. `Output`,
+/// `PtyStarted`) — a client can no longer forge those by sending the JSON
+/// directly.
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-pub enum WsMessage {
+pub enum InboundWs {
     /// Start a new PTY connection
     StartPty {
         connection_id: String,
@@ -20,11 +28,6 @@ pub enum WsMessage {
     },
     /// Terminal input (user typing)
     Input {
-        connection_id: String,
-        data: Vec<u8>,
-    },
-    /// Terminal output (from PTY)
-    Output {
         connection_id: String,
         data: Vec<u8>,
     },
@@ -47,9 +50,42 @@ pub enum WsMessage {
         #[serde(default)]
         generation: Option<u64>,
     },
-    /// Error message
+
+    // Desktop (RDP/VNC)
+    StartDesktop {
+        connection_id: String,
+        width: u16,
+        height: u16,
+    },
+    DesktopKeyEvent {
+        connection_id: String,
+        key_code: u32,
+        down: bool,
+    },
+    DesktopPointerEvent {
+        connection_id: String,
+        x: u16,
+        y: u16,
+        button_mask: u8,
+    },
+    ClipboardUpdate { connection_id: String, text: String },
+    RequestFullFrame { connection_id: String },
+    CloseDesktop { connection_id: String },
+}
+
+/// Messages emitted by the backend. Never deserialised — the server is the
+/// sole authority for these frames.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum OutboundWs {
+    /// Terminal output (from PTY)
+    Output {
+        connection_id: String,
+        data: Vec<u8>,
+    },
+    /// Generic error from the server
     Error { message: String },
-    /// Success confirmation
+    /// Acknowledgement / success confirmation
     Success { message: String },
     /// PTY session started — includes the generation counter so the frontend
     /// can send it back in Close to avoid stale-close races.
@@ -57,50 +93,105 @@ pub enum WsMessage {
         connection_id: String,
         generation: u64,
     },
-
-    // ===== Desktop (RDP/VNC) messages =====
-    /// Start a desktop streaming session
-    StartDesktop {
-        connection_id: String,
-        width: u16,
-        height: u16,
-    },
     /// Desktop session started confirmation
     DesktopStarted {
         connection_id: String,
         width: u16,
         height: u16,
     },
-    /// Desktop keyboard event from frontend
-    DesktopKeyEvent {
-        connection_id: String,
-        key_code: u32,
-        down: bool,
-    },
-    /// Desktop pointer (mouse) event from frontend
-    DesktopPointerEvent {
-        connection_id: String,
-        x: u16,
-        y: u16,
-        button_mask: u8,
-    },
-    /// Clipboard update (bidirectional)
-    ClipboardUpdate { connection_id: String, text: String },
-    /// Request full framebuffer refresh
-    RequestFullFrame { connection_id: String },
-    /// Close desktop session
-    CloseDesktop { connection_id: String },
+}
+
+/// Constant-time comparison. Avoids leaking token length or prefix via the
+/// timing side-channel that naive `==` exposes.
+fn secure_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.bytes().zip(b.bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Extract the `token` query parameter from the WS upgrade request URI and
+/// check it against the expected token using constant-time comparison.
+fn token_matches(req: &Request, expected: &str) -> bool {
+    let Some(query) = req.uri().query() else {
+        return false;
+    };
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == "token" {
+                let decoded = url_decode(v);
+                return secure_eq(&decoded, expected);
+            }
+        }
+    }
+    false
+}
+
+/// Minimal percent-decoder. The token is hex so in practice no escapes are
+/// needed, but handling `%xx` defensively keeps us compatible with browsers
+/// that might encode the query string.
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = from_hex(bytes[i + 1]);
+                let lo = from_hex(bytes[i + 2]);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push((h << 4) | l);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// WebSocket server for terminal I/O
 /// Handles bidirectional communication between frontend and PTY connections
 pub struct WebSocketServer {
     connection_manager: Arc<ConnectionManager>,
+    /// Token required on every upgrade. Any connection that does not present a
+    /// matching `?token=` query parameter is rejected with HTTP 401 before a
+    /// single byte of WS traffic is exchanged.
+    expected_token: String,
 }
 
 impl WebSocketServer {
-    pub fn new(connection_manager: Arc<ConnectionManager>) -> Self {
-        Self { connection_manager }
+    pub fn new(connection_manager: Arc<ConnectionManager>, expected_token: String) -> Self {
+        Self {
+            connection_manager,
+            expected_token,
+        }
     }
 
     /// Start the WebSocket server, trying ports 9001-9010 to find an available one
@@ -149,9 +240,25 @@ impl WebSocketServer {
         }
     }
 
-    /// Handle a single WebSocket connection
+    /// Handle a single WebSocket connection. Rejects the upgrade with 401 if
+    /// the `token` query parameter does not match the per-process expected
+    /// token. This prevents any other local process (or a web page loaded in
+    /// the system browser reaching `127.0.0.1`) from hijacking live sessions.
     async fn handle_connection(&self, stream: TcpStream) -> Result<()> {
-        let ws_stream = accept_async(stream).await?;
+        let expected = self.expected_token.clone();
+        let ws_stream = accept_hdr_async(stream, move |req: &Request, resp: Response| {
+            if !token_matches(req, &expected) {
+                tracing::warn!(
+                    "rejecting WebSocket upgrade: missing or invalid token (uri={})",
+                    req.uri()
+                );
+                let mut err = ErrorResponse::new(Some("invalid or missing token".into()));
+                *err.status_mut() = StatusCode::UNAUTHORIZED;
+                return Err(err);
+            }
+            Ok(resp)
+        })
+        .await?;
         let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
         // Create a channel for sending messages back to WebSocket from PTY reader task
@@ -204,14 +311,16 @@ impl WebSocketServer {
                     }
                 }
                 Ok(Message::Text(text)) => {
-                    // Fallback: JSON protocol for control messages
+                    // Fallback: JSON protocol for control messages. Only
+                    // client→server variants deserialise into `InboundWs`;
+                    // any server-only variant sent by a client is rejected as
+                    // an unknown tag.
                     tracing::debug!("Received text message: {}", text);
 
-                    // Parse the message
-                    let ws_msg: WsMessage = match serde_json::from_str(&text) {
+                    let ws_msg: InboundWs = match serde_json::from_str(&text) {
                         Ok(msg) => msg,
                         Err(e) => {
-                            let error = WsMessage::Error {
+                            let error = OutboundWs::Error {
                                 message: format!("Invalid message format: {}", e),
                             };
                             let _ = tx.send(serde_json::to_string(&error)?);
@@ -219,11 +328,10 @@ impl WebSocketServer {
                         }
                     };
 
-                    // Handle the message
                     match self.handle_message(ws_msg, tx.clone()).await {
                         Ok(_) => {}
                         Err(e) => {
-                            let error = WsMessage::Error {
+                            let error = OutboundWs::Error {
                                 message: format!("Error handling message: {}", e),
                             };
                             let _ = tx.send(serde_json::to_string(&error)?);
@@ -256,11 +364,11 @@ impl WebSocketServer {
     /// Handle a WebSocket message
     async fn handle_message(
         &self,
-        msg: WsMessage,
+        msg: InboundWs,
         tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         match msg {
-            WsMessage::StartPty {
+            InboundWs::StartPty {
                 connection_id,
                 cols,
                 rows,
@@ -289,93 +397,64 @@ impl WebSocketServer {
                     })?;
 
                 // Send success response with generation so frontend can use it in Close
-                let response = WsMessage::Success {
+                let response = OutboundWs::Success {
                     message: format!("PTY connection started: {}", connection_id),
                 };
                 tx.send(serde_json::to_string(&response)?)?;
 
-                let started = WsMessage::PtyStarted {
+                let started = OutboundWs::PtyStarted {
                     connection_id: connection_id.clone(),
                     generation,
                 };
                 tx.send(serde_json::to_string(&started)?)?;
 
-                // Start reading from PTY and sending to WebSocket
+                // Start reading from PTY and forwarding bursts to WebSocket.
+                //
+                // `read_pty_burst` blocks until at least one chunk arrives and
+                // then drains any already-queued chunks up to 32 KiB. No
+                // polling, no time-based coalescing — natural backpressure.
+                const BURST_MAX_BYTES: usize = 32 * 1024;
                 let connection_manager = self.connection_manager.clone();
                 let connection_id_clone = connection_id.clone();
                 let tx_clone = tx.clone();
 
                 tokio::spawn(async move {
-                    // Buffer for accumulating small chunks
-                    let mut accumulated = Vec::with_capacity(8192);
-                    let mut last_send = tokio::time::Instant::now();
-
                     loop {
-                        // Check cancellation before each read
-                        if cancel_token.is_cancelled() {
-                            tracing::info!("PTY reader task cancelled for {}", connection_id_clone);
-                            break;
-                        }
-
-                        let read_result = tokio::select! {
+                        let result = tokio::select! {
+                            biased;
                             _ = cancel_token.cancelled() => {
-                                tracing::info!("PTY reader task cancelled for {}", connection_id_clone);
+                                tracing::info!("PTY reader cancelled for {}", connection_id_clone);
                                 break;
                             }
-                            result = connection_manager.read_from_pty(&connection_id_clone) => result,
+                            r = connection_manager.read_pty_burst(
+                                &connection_id_clone, BURST_MAX_BYTES
+                            ) => r,
                         };
 
-                        match read_result {
+                        match result {
                             Ok(data) => {
-                                if data.is_empty() {
-                                    // Send accumulated data if we have any and timeout reached
-                                    if !accumulated.is_empty()
-                                        && last_send.elapsed().as_millis() > 5
-                                    {
-                                        let output = WsMessage::Output {
-                                            connection_id: connection_id_clone.clone(),
-                                            data: accumulated.clone(),
-                                        };
-
-                                        if let Ok(json) = serde_json::to_string(&output) {
-                                            if tx_clone.send(json).is_err() {
-                                                tracing::error!(
-                                                    "Failed to send output to WebSocket"
-                                                );
-                                                break;
-                                            }
-                                        }
-                                        accumulated.clear();
-                                        last_send = tokio::time::Instant::now();
-                                    }
-                                    continue;
-                                }
-
-                                // Accumulate data
-                                accumulated.extend_from_slice(&data);
-
-                                // Send immediately if:
-                                // 1. Buffer is large enough (> 4KB)
-                                // 2. Or 5ms has passed since last send
-                                if accumulated.len() > 4096 || last_send.elapsed().as_millis() > 5 {
-                                    let output = WsMessage::Output {
-                                        connection_id: connection_id_clone.clone(),
-                                        data: accumulated.clone(),
-                                    };
-
-                                    if let Ok(json) = serde_json::to_string(&output) {
+                                let output = OutboundWs::Output {
+                                    connection_id: connection_id_clone.clone(),
+                                    data,
+                                };
+                                match serde_json::to_string(&output) {
+                                    Ok(json) => {
                                         if tx_clone.send(json).is_err() {
-                                            tracing::error!("Failed to send output to WebSocket");
+                                            tracing::debug!(
+                                                "WS sender closed, stopping PTY reader"
+                                            );
                                             break;
                                         }
                                     }
-                                    accumulated.clear();
-                                    last_send = tokio::time::Instant::now();
+                                    Err(e) => {
+                                        tracing::error!("serialize WS Output failed: {}", e);
+                                        break;
+                                    }
                                 }
                             }
                             Err(e) => {
-                                tracing::error!("Error reading from PTY: {}", e);
-                                let error_msg = WsMessage::Error {
+                                tracing::info!("PTY reader ending for {}: {}", connection_id_clone, e);
+                                let error_msg = OutboundWs::Error {
                                     message: format!("Connection lost: {}", e),
                                 };
                                 if let Ok(json) = serde_json::to_string(&error_msg) {
@@ -387,7 +466,7 @@ impl WebSocketServer {
                     }
                 });
             }
-            WsMessage::Input {
+            InboundWs::Input {
                 connection_id,
                 data,
             } => {
@@ -400,7 +479,7 @@ impl WebSocketServer {
                     .write_to_pty(&connection_id, data)
                     .await?;
             }
-            WsMessage::Resize {
+            InboundWs::Resize {
                 connection_id,
                 cols,
                 rows,
@@ -409,24 +488,24 @@ impl WebSocketServer {
                 self.connection_manager
                     .resize_pty(&connection_id, cols, rows)
                     .await?;
-                let response = WsMessage::Success {
+                let response = OutboundWs::Success {
                     message: format!("Terminal resized: {}x{}", cols, rows),
                 };
                 tx.send(serde_json::to_string(&response)?)?;
             }
-            WsMessage::Pause { connection_id } => {
+            InboundWs::Pause { connection_id } => {
                 tracing::debug!("Pausing output for connection: {}", connection_id);
                 // Flow control: pause reading from PTY
                 // In a full implementation, we'd pause the output task
                 // For now, just acknowledge
             }
-            WsMessage::Resume { connection_id } => {
+            InboundWs::Resume { connection_id } => {
                 tracing::debug!("Resuming output for connection: {}", connection_id);
                 // Flow control: resume reading from PTY
                 // In a full implementation, we'd resume the output task
                 // For now, just acknowledge
             }
-            WsMessage::Close {
+            InboundWs::Close {
                 connection_id,
                 generation,
             } => {
@@ -438,14 +517,14 @@ impl WebSocketServer {
                 self.connection_manager
                     .close_pty_connection(&connection_id, generation)
                     .await?;
-                let response = WsMessage::Success {
+                let response = OutboundWs::Success {
                     message: format!("PTY connection closed: {}", connection_id),
                 };
                 tx.send(serde_json::to_string(&response)?)?;
             }
 
             // ===== Desktop (RDP/VNC) message handling =====
-            WsMessage::StartDesktop {
+            InboundWs::StartDesktop {
                 connection_id,
                 width: _width,
                 height: _height,
@@ -462,7 +541,7 @@ impl WebSocketServer {
                         let c = client.read().await;
                         c.desktop_size()
                     };
-                    let started = WsMessage::DesktopStarted {
+                    let started = OutboundWs::DesktopStarted {
                         connection_id: connection_id.clone(),
                         width: w,
                         height: h,
@@ -471,14 +550,14 @@ impl WebSocketServer {
 
                     // TODO: start frame streaming loop when protocol clients are implemented
                 } else {
-                    let error = WsMessage::Error {
+                    let error = OutboundWs::Error {
                         message: format!("Desktop connection not found: {}", connection_id),
                     };
                     tx.send(serde_json::to_string(&error)?)?;
                 }
             }
 
-            WsMessage::DesktopKeyEvent {
+            InboundWs::DesktopKeyEvent {
                 connection_id,
                 key_code,
                 down,
@@ -495,7 +574,7 @@ impl WebSocketServer {
                 }
             }
 
-            WsMessage::DesktopPointerEvent {
+            InboundWs::DesktopPointerEvent {
                 connection_id,
                 x,
                 y,
@@ -513,7 +592,7 @@ impl WebSocketServer {
                 }
             }
 
-            WsMessage::ClipboardUpdate {
+            InboundWs::ClipboardUpdate {
                 connection_id,
                 text,
             } => {
@@ -529,7 +608,7 @@ impl WebSocketServer {
                 }
             }
 
-            WsMessage::RequestFullFrame { connection_id } => {
+            InboundWs::RequestFullFrame { connection_id } => {
                 if let Some(client) = self
                     .connection_manager
                     .get_desktop_connection(&connection_id)
@@ -542,7 +621,7 @@ impl WebSocketServer {
                 }
             }
 
-            WsMessage::CloseDesktop { connection_id } => {
+            InboundWs::CloseDesktop { connection_id } => {
                 tracing::info!("Closing desktop session: {}", connection_id);
                 if let Err(e) = self
                     .connection_manager
@@ -551,17 +630,44 @@ impl WebSocketServer {
                 {
                     tracing::error!("Failed to close desktop connection: {}", e);
                 }
-                let response = WsMessage::Success {
+                let response = OutboundWs::Success {
                     message: format!("Desktop connection closed: {}", connection_id),
                 };
                 tx.send(serde_json::to_string(&response)?)?;
             }
 
-            _ => {
-                tracing::warn!("Unexpected message type received");
-            }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::{from_hex, secure_eq, url_decode};
+
+    #[test]
+    fn secure_eq_matches_on_equal() {
+        assert!(secure_eq("abc", "abc"));
+        assert!(!secure_eq("abc", "abd"));
+        assert!(!secure_eq("abc", "abcd"));
+        assert!(!secure_eq("", "x"));
+    }
+
+    #[test]
+    fn url_decode_passthrough_and_escapes() {
+        assert_eq!(url_decode("abc123"), "abc123");
+        assert_eq!(url_decode("hello%20world"), "hello world");
+        assert_eq!(url_decode("a+b"), "a b");
+        assert_eq!(url_decode("%41%42"), "AB");
+    }
+
+    #[test]
+    fn from_hex_digits() {
+        assert_eq!(from_hex(b'0'), Some(0));
+        assert_eq!(from_hex(b'9'), Some(9));
+        assert_eq!(from_hex(b'a'), Some(10));
+        assert_eq!(from_hex(b'F'), Some(15));
+        assert_eq!(from_hex(b'g'), None);
     }
 }

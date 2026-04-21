@@ -40,6 +40,7 @@ suppaftp = { version = "6", features = ["async-native-tls"] }
 async-std = "1"
 dirs = "5"
 open = "5"
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

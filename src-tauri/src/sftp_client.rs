@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::ssh::Client;
+use crate::ssh::{Client, HostKeyStore};
 
 /// Configuration for a standalone SFTP connection (SSH transport, no PTY).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct SftpConfig {
     pub host: String,
     pub port: u16,
@@ -17,7 +17,18 @@ pub struct SftpConfig {
     pub auth_method: SftpAuthMethod,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+impl std::fmt::Debug for SftpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SftpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("auth_method", &self.auth_method)
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum SftpAuthMethod {
     Password {
@@ -27,6 +38,28 @@ pub enum SftpAuthMethod {
         key_path: String,
         passphrase: Option<String>,
     },
+}
+
+impl std::fmt::Debug for SftpAuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SftpAuthMethod::Password { .. } => f
+                .debug_struct("SftpAuthMethod::Password")
+                .field("password", &"<redacted>")
+                .finish(),
+            SftpAuthMethod::PublicKey {
+                key_path,
+                passphrase,
+            } => f
+                .debug_struct("SftpAuthMethod::PublicKey")
+                .field("key_path", key_path)
+                .field(
+                    "passphrase",
+                    &passphrase.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                )
+                .finish(),
+        }
+    }
 }
 
 /// A single file/directory entry returned from directory listings.
@@ -66,79 +99,27 @@ impl StandaloneSftpClient {
     }
 
     /// Establish an SSH connection, authenticate, and open the SFTP subsystem.
-    pub async fn connect(config: &SftpConfig) -> Result<Self> {
-        let ssh_config = client::Config {
-            preferred: russh::Preferred {
-                key: crate::ssh::PREFERRED_HOST_KEY_ALGOS,
-                ..russh::Preferred::DEFAULT
-            },
-            ..client::Config::default()
-        };
-        let connection_timeout = Duration::from_secs(10);
-
-        let mut ssh_session = tokio::time::timeout(
-            connection_timeout,
-            client::connect(
-                Arc::new(ssh_config),
-                (&config.host[..], config.port),
-                Client,
-            ),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "SFTP connection timed out after 10 seconds. Please check the host and network."
-            )
-        })?
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to connect to {}:{}: {}",
-                config.host,
-                config.port,
-                e
-            )
-        })?;
-
-        // Authenticate
-        let authenticated = match &config.auth_method {
-            SftpAuthMethod::Password { password } => ssh_session
-                .authenticate_password(&config.username, password)
-                .await
-                .map_err(|e| anyhow::anyhow!("SFTP password authentication failed: {}", e))?,
+    pub async fn connect(config: &SftpConfig, host_keys: Arc<HostKeyStore>) -> Result<Self> {
+        let auth = match &config.auth_method {
+            SftpAuthMethod::Password { password } => crate::ssh::ResolvedAuth::Password { password },
             SftpAuthMethod::PublicKey {
                 key_path,
                 passphrase,
-            } => {
-                let key = crate::ssh::load_private_key(key_path, passphrase.as_deref())?;
-
-                ssh_session
-                    .authenticate_publickey(&config.username, Arc::new(key))
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "SFTP public key authentication failed: {}. The key may not be authorized on the server.",
-                            e
-                        )
-                    })?
-            }
+            } => crate::ssh::ResolvedAuth::Key {
+                key: crate::ssh::load_private_key(key_path, passphrase.as_deref())?,
+                key_path_hint: Some(key_path),
+            },
         };
 
-        if !authenticated {
-            return Err(match &config.auth_method {
-                SftpAuthMethod::Password { .. } => anyhow::anyhow!(
-                    "SFTP authentication failed for {}@{} with password authentication.",
-                    config.username,
-                    config.host
-                ),
-                SftpAuthMethod::PublicKey { key_path, .. } => anyhow::anyhow!(
-                    "SFTP authentication failed for {}@{} using public key {}.",
-                    config.username,
-                    config.host,
-                    key_path
-                ),
-            });
-        }
-
+        let ssh_session = crate::ssh::connect_authenticated(
+            &config.host,
+            config.port,
+            &config.username,
+            auth,
+            Duration::from_secs(10),
+            host_keys,
+        )
+        .await?;
         let session = Arc::new(ssh_session);
 
         // Open an SFTP subsystem channel (no PTY)
@@ -163,11 +144,16 @@ impl StandaloneSftpClient {
         if let Some(session) = self.session.take() {
             match Arc::try_unwrap(session) {
                 Ok(session) => {
-                    let _ = session
-                        .disconnect(Disconnect::ByApplication, "", "English")
-                        .await;
+                    if let Err(e) = session
+                        .disconnect(Disconnect::ByApplication, "", "")
+                        .await
+                    {
+                        tracing::warn!("SFTP SSH disconnect failed cleanly: {}", e);
+                    }
                 }
                 Err(arc_session) => {
+                    // Other references (e.g. pending SFTP ops) still exist;
+                    // drop ours. The session ends when the last reference dies.
                     drop(arc_session);
                 }
             }
@@ -232,7 +218,8 @@ impl StandaloneSftpClient {
         Ok(result)
     }
 
-    /// Download a remote file to a local path. Returns bytes downloaded.
+    /// Download a remote file to a local path. Streams chunks — never buffers
+    /// the whole file. Returns bytes downloaded.
     pub async fn download_file(&self, remote_path: &str, local_path: &str) -> Result<u64> {
         let sftp = self
             .sftp
@@ -243,46 +230,48 @@ impl StandaloneSftpClient {
             .open(remote_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?;
+        let mut local_file = tokio::fs::File::create(local_path).await.map_err(|e| {
+            anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e)
+        })?;
 
-        let mut buffer = Vec::new();
-        let mut temp_buf = vec![0u8; 32768];
+        let mut buf = vec![0u8; crate::ssh::SFTP_CHUNK_SIZE];
         let mut total_bytes = 0u64;
-
         loop {
-            let n = remote_file.read(&mut temp_buf).await?;
+            let n = remote_file.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
-            buffer.extend_from_slice(&temp_buf[..n]);
+            local_file.write_all(&buf[..n]).await?;
             total_bytes += n as u64;
         }
-
-        tokio::fs::write(local_path, buffer).await?;
+        local_file.flush().await?;
         Ok(total_bytes)
     }
 
-    /// Upload a local file to a remote path. Returns bytes uploaded.
+    /// Upload a local file to a remote path. Streams chunks — never buffers
+    /// the whole file. Returns bytes uploaded.
     pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<u64> {
         let sftp = self
             .sftp
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("SFTP session not connected"))?;
 
-        let data = tokio::fs::read(local_path)
+        let mut local_file = tokio::fs::File::open(local_path)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e))?;
-        let total_bytes = data.len() as u64;
-
+            .map_err(|e| anyhow::anyhow!("Failed to open local file '{}': {}", local_path, e))?;
         let mut remote_file = sftp.create(remote_path).await.map_err(|e| {
             anyhow::anyhow!("Failed to create remote file '{}': {}", remote_path, e)
         })?;
 
-        let chunk_size = 32768;
-        let mut offset = 0;
-        while offset < data.len() {
-            let end = std::cmp::min(offset + chunk_size, data.len());
-            remote_file.write_all(&data[offset..end]).await?;
-            offset = end;
+        let mut buf = vec![0u8; crate::ssh::SFTP_CHUNK_SIZE];
+        let mut total_bytes = 0u64;
+        loop {
+            let n = local_file.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            remote_file.write_all(&buf[..n]).await?;
+            total_bytes += n as u64;
         }
         remote_file.flush().await?;
 
