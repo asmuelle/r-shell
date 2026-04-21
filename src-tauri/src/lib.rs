@@ -2,6 +2,7 @@ mod commands;
 mod connection_manager;
 mod desktop_protocol;
 mod ftp_client;
+mod keychain;
 mod rdp_client;
 mod sftp_client;
 mod ssh;
@@ -99,6 +100,11 @@ pub fn run() {
             commands::get_gpu_stats,
             commands::get_websocket_port,
             commands::get_websocket_token,
+            // macOS Keychain
+            commands::keychain_available,
+            commands::keychain_save,
+            commands::keychain_load,
+            commands::keychain_delete,
             // Standalone SFTP/FTP commands
             commands::sftp_connect,
             commands::sftp_standalone_disconnect,

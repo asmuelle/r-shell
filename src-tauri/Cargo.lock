@@ -2350,6 +2350,8 @@ dependencies = [
  "russh",
  "russh-keys",
  "russh-sftp",
+ "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "suppaftp",

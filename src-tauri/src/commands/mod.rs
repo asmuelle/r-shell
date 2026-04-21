@@ -22,6 +22,7 @@ pub enum AuthMethodTag {
 pub mod desktop;
 pub mod ftp;
 pub mod gpu;
+pub mod keychain;
 pub mod local_fs;
 pub mod logs;
 pub mod network;
@@ -98,6 +99,7 @@ pub struct FileTransferResponse {
 pub use desktop::*;
 pub use ftp::*;
 pub use gpu::*;
+pub use keychain::*;
 pub use local_fs::*;
 pub use logs::*;
 pub use network::*;
