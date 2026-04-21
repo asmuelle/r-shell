@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { ChevronRight, ChevronDown, Folder, FolderOpen, Monitor, Server, HardDrive, Plus, Pencil, Copy, Trash2, FolderPlus, FolderEdit } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, FolderOpen, Monitor, Server, HardDrive, Plus, Pencil, Copy, Trash2, FolderPlus, FolderEdit, GripVertical } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Separator } from './ui/separator';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import {
   Dialog,
   DialogContent,
@@ -60,19 +61,181 @@ interface ConnectionManagerProps {
   onDuplicateConnection?: (connection: ConnectionNode) => void; // Callback to duplicate connection
 }
 
+const CONNECTION_MANAGER_DRAG_MIME = 'application/x-r-shell-connection-node';
+
+interface DraggedConnectionNode {
+  id: string;
+  name: string;
+  type: 'folder' | 'connection';
+  path?: string;
+}
+
+type DropTargetFolderNode = Pick<ConnectionNode, 'id' | 'name' | 'type' | 'path'>;
+
+type MoveDraggedNodeResult =
+  | { status: 'success'; message: string }
+  | { status: 'error'; message: string; description?: string }
+  | { status: 'noop' };
+
+const EMPTY_ACTIVE_CONNECTIONS = new Set<string>();
+
+export function encodeDraggedConnectionNode(node: ConnectionNode): string {
+  return JSON.stringify({
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    path: node.path,
+  } satisfies DraggedConnectionNode);
+}
+
+export function decodeDraggedConnectionNode(raw: string): DraggedConnectionNode | null {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<DraggedConnectionNode>;
+    if (
+      typeof parsed.id !== 'string' ||
+      typeof parsed.name !== 'string' ||
+      (parsed.type !== 'folder' && parsed.type !== 'connection')
+    ) {
+      return null;
+    }
+
+    return {
+      id: parsed.id,
+      name: parsed.name,
+      type: parsed.type,
+      path: typeof parsed.path === 'string' ? parsed.path : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function moveDraggedConnectionNodeToFolder(
+  droppedNode: DraggedConnectionNode,
+  targetNode: DropTargetFolderNode,
+): MoveDraggedNodeResult {
+  if (targetNode.type !== 'folder' || !targetNode.path) {
+    return { status: 'noop' };
+  }
+
+  if (droppedNode.id === targetNode.id) {
+    return { status: 'noop' };
+  }
+
+  if (
+    droppedNode.type === 'folder' &&
+    droppedNode.path &&
+    targetNode.path.startsWith(`${droppedNode.path}/`)
+  ) {
+    return {
+      status: 'error',
+      message: 'Cannot move folder into its own subfolder',
+    };
+  }
+
+  if (droppedNode.type === 'connection') {
+    const connection = ConnectionStorageManager.getConnection(droppedNode.id);
+    if (!connection) {
+      return { status: 'error', message: 'Failed to move connection' };
+    }
+
+    if (connection.folder === targetNode.path) {
+      return { status: 'noop' };
+    }
+
+    if (!ConnectionStorageManager.moveConnection(droppedNode.id, targetNode.path)) {
+      return { status: 'error', message: 'Failed to move connection' };
+    }
+
+    return {
+      status: 'success',
+      message: `Moved "${droppedNode.name}" to "${targetNode.name}"`,
+    };
+  }
+
+  if (!droppedNode.path) {
+    return {
+      status: 'error',
+      message: 'Failed to Move Folder',
+      description: 'Dragged folder has no source path.',
+    };
+  }
+
+  try {
+    const oldPath = droppedNode.path;
+    const newPath = `${targetNode.path}/${droppedNode.name}`;
+    if (oldPath === newPath) {
+      return { status: 'noop' };
+    }
+
+    const existingFolder = ConnectionStorageManager.getFolders().find(
+      (folder) => folder.path === newPath,
+    );
+    if (existingFolder) {
+      return {
+        status: 'error',
+        message: `Folder "${droppedNode.name}" already exists in "${targetNode.name}"`,
+      };
+    }
+
+    const connections = ConnectionStorageManager.getConnectionsByFolderRecursive(oldPath);
+    const subfolders = ConnectionStorageManager.getSubfoldersRecursive(oldPath);
+
+    ConnectionStorageManager.createFolder(droppedNode.name, targetNode.path);
+
+    subfolders.forEach((subfolder) => {
+      const relativePath = subfolder.path.substring(oldPath.length + 1);
+      const parts = relativePath.split('/');
+      const subfolderName = parts[parts.length - 1];
+      const subfolderParentPath =
+        parts.length > 1 ? `${newPath}/${parts.slice(0, -1).join('/')}` : newPath;
+
+      ConnectionStorageManager.createFolder(subfolderName, subfolderParentPath);
+    });
+
+    connections.forEach((connection) => {
+      const movedPath =
+        connection.folder === oldPath
+          ? newPath
+          : `${newPath}/${connection.folder!.substring(oldPath.length + 1)}`;
+      ConnectionStorageManager.moveConnection(connection.id, movedPath);
+    });
+
+    ConnectionStorageManager.deleteFolder(oldPath, true);
+
+    return {
+      status: 'success',
+      message: `Moved folder "${droppedNode.name}" to "${targetNode.name}"`,
+    };
+  } catch (error) {
+    return {
+      status: 'error',
+      message: 'Failed to Move Folder',
+      description:
+        error instanceof Error ? error.message : 'Unable to move folder to new location.',
+    };
+  }
+}
+
 export function ConnectionManager({
   onConnectionSelect,
   onConnectionConnect,
   selectedConnectionId,
-  activeConnections = new Set(),
+  activeConnections,
   onNewConnection,
   onEditConnection,
   onDeleteConnection,
   onDuplicateConnection
 }: ConnectionManagerProps) {
+  const activeConnectionIds = activeConnections ?? EMPTY_ACTIVE_CONNECTIONS;
+
   // Load connections from storage
   const loadConnections = (): ConnectionNode[] => {
-    const tree = ConnectionStorageManager.buildConnectionTree(activeConnections);
+    const tree = ConnectionStorageManager.buildConnectionTree(activeConnectionIds);
     return tree.length > 0 ? tree : [];
   };
 
@@ -87,6 +250,10 @@ export function ConnectionManager({
   const [renameFolderDialogOpen, setRenameFolderDialogOpen] = useState(false);
   const [folderToRename, setFolderToRename] = useState<{ path: string; name: string; parentPath?: string } | null>(null);
   const [renameFolderNewName, setRenameFolderNewName] = useState('');
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [moveTargetPath, setMoveTargetPath] = useState('All Connections');
+  const [itemToMove, setItemToMove] = useState<DraggedConnectionNode | null>(null);
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
 
   // Drag and drop state
   const [draggedItem, setDraggedItem] = useState<{ node: ConnectionNode; type: 'connection' | 'folder' } | null>(null);
@@ -94,7 +261,7 @@ export function ConnectionManager({
   // Reload connections when active connections change
   useEffect(() => {
     setConnections(loadConnections());
-  }, [activeConnections]);
+  }, [activeConnectionIds]);
 
   // Handle connection deletion
   const handleDelete = (connectionId: string) => {
@@ -255,67 +422,192 @@ export function ConnectionManager({
     setDeleteFolderDialogOpen(true);
   };
 
+  const getMoveTargetFolders = (item: DraggedConnectionNode | null) => {
+    const folders = [
+      { name: 'All Connections', path: 'All Connections' },
+      ...ConnectionStorageManager.getValidFolders()
+        .filter((folder) => folder.path !== 'All Connections')
+        .map((folder) => ({ name: folder.name, path: folder.path })),
+    ];
+
+    if (!item) {
+      return folders;
+    }
+
+    if (item.type === 'connection') {
+      const currentFolder =
+        ConnectionStorageManager.getConnection(item.id)?.folder || 'All Connections';
+      return folders.filter((folder) => folder.path !== currentFolder);
+    }
+
+    return folders.filter((folder) => {
+      if (!item.path) {
+        return false;
+      }
+
+      return (
+        folder.path !== item.path &&
+        !folder.path.startsWith(`${item.path}/`)
+      );
+    });
+  };
+
+  const openMoveDialog = (node: ConnectionNode) => {
+    const item: DraggedConnectionNode = {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      path: node.path,
+    };
+    const availableTargets = getMoveTargetFolders(item);
+    setItemToMove(item);
+    setMoveTargetPath(availableTargets[0]?.path || 'All Connections');
+    setMoveDialogOpen(true);
+  };
+
+  const handleMoveToFolder = () => {
+    if (!itemToMove) {
+      return;
+    }
+
+    const targetName =
+      moveTargetPath === 'All Connections'
+        ? 'All Connections'
+        : moveTargetPath.split('/').pop() || moveTargetPath;
+    const result = moveDraggedConnectionNodeToFolder(itemToMove, {
+      id: `move-target:${moveTargetPath}`,
+      name: targetName,
+      type: 'folder',
+      path: moveTargetPath,
+    });
+
+    if (result.status === 'success') {
+      setConnections(loadConnections());
+      toast.success(result.message);
+      setMoveDialogOpen(false);
+      setItemToMove(null);
+      return;
+    }
+
+    if (result.status === 'error') {
+      toast.error(result.message, result.description ? { description: result.description } : undefined);
+      return;
+    }
+
+    setMoveDialogOpen(false);
+    setItemToMove(null);
+  };
+
+  const getDraggedNodeFromEvent = (e: Pick<React.DragEvent, 'dataTransfer'>) =>
+    decodeDraggedConnectionNode(e.dataTransfer.getData(CONNECTION_MANAGER_DRAG_MIME)) ||
+    decodeDraggedConnectionNode(e.dataTransfer.getData('text/plain')) ||
+    (draggedItem
+      ? {
+          id: draggedItem.node.id,
+          name: draggedItem.node.name,
+          type: draggedItem.type,
+          path: draggedItem.node.path,
+        }
+      : null);
+
+  const canDropIntoFolder = (droppedNode: DraggedConnectionNode | null, targetNode: ConnectionNode) => {
+    if (!droppedNode || targetNode.type !== 'folder' || !targetNode.path) {
+      return false;
+    }
+
+    if (droppedNode.id === targetNode.id) {
+      return false;
+    }
+
+    if (
+      droppedNode.type === 'folder' &&
+      droppedNode.path &&
+      targetNode.path.startsWith(`${droppedNode.path}/`)
+    ) {
+      return false;
+    }
+
+    return true;
+  };
+
   // Drag and drop handlers
   const handleDragStart = (e: React.DragEvent, node: ConnectionNode) => {
     setDraggedItem({ node, type: node.type });
+    setDragOverFolderId(null);
     e.dataTransfer.effectAllowed = 'move';
+    const payload = encodeDraggedConnectionNode(node);
+    e.dataTransfer.setData(CONNECTION_MANAGER_DRAG_MIME, payload);
+    e.dataTransfer.setData('text/plain', payload);
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleFolderDragEnter = (e: React.DragEvent, targetNode: ConnectionNode) => {
+    const droppedNode = getDraggedNodeFromEvent(e);
+    if (!canDropIntoFolder(droppedNode, targetNode)) {
+      return;
+    }
+
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
+    setDragOverFolderId(targetNode.id);
+  };
+
+  const handleFolderDragOver = (e: React.DragEvent, targetNode: ConnectionNode) => {
+    const droppedNode = getDraggedNodeFromEvent(e);
+    if (!canDropIntoFolder(droppedNode, targetNode)) {
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverFolderId(targetNode.id);
+  };
+
+  const handleFolderDragLeave = (e: React.DragEvent, targetNode: ConnectionNode) => {
+    e.stopPropagation();
+
+    const nextTarget = e.relatedTarget as Node | null;
+    if (nextTarget && e.currentTarget.contains(nextTarget)) {
+      return;
+    }
+
+    if (dragOverFolderId === targetNode.id) {
+      setDragOverFolderId(null);
+    }
   };
 
   const handleDrop = (e: React.DragEvent, targetNode: ConnectionNode) => {
     e.preventDefault();
     e.stopPropagation();
+    setDragOverFolderId(null);
 
-    if (!draggedItem) return;
+    const droppedNode = getDraggedNodeFromEvent(e);
+
+    if (!droppedNode) return;
 
     // Can only drop into folders
-    if (targetNode.type !== 'folder') return;
+    if (targetNode.type !== 'folder' || !targetNode.path) return;
 
     // Don't drop into itself
-    if (draggedItem.node.id === targetNode.id) return;
+    if (droppedNode.id === targetNode.id) return;
 
     // Don't drop folder into its own child
-    if (draggedItem.type === 'folder' && targetNode.path?.startsWith(draggedItem.node.path + '/')) {
+    if (
+      droppedNode.type === 'folder' &&
+      droppedNode.path &&
+      targetNode.path.startsWith(`${droppedNode.path}/`)
+    ) {
       toast.error('Cannot move folder into its own subfolder');
       return;
     }
 
-    if (draggedItem.type === 'connection') {
-      // Move connection to target folder
-      if (ConnectionStorageManager.moveConnection(draggedItem.node.id, targetNode.path!)) {
-        setConnections(loadConnections());
-        toast.success(`Moved "${draggedItem.node.name}" to "${targetNode.name}"`);
-      } else {
-        toast.error('Failed to move connection');
-      }
-    } else if (draggedItem.type === 'folder') {
-      // Move folder by renaming its path
-      try {
-        const connections = ConnectionStorageManager.getConnectionsByFolder(draggedItem.node.path!);
-        const newPath = `${targetNode.path}/${draggedItem.node.name}`;
-
-        // Create new folder
-        ConnectionStorageManager.createFolder(draggedItem.node.name, targetNode.path);
-
-        // Move all connections
-        connections.forEach(connection => {
-          ConnectionStorageManager.moveConnection(connection.id, newPath);
-        });
-
-        // Delete old folder
-        ConnectionStorageManager.deleteFolder(draggedItem.node.path!, false);
-
-        setConnections(loadConnections());
-        toast.success(`Moved folder "${draggedItem.node.name}" to "${targetNode.name}"`);
-      } catch (error) {
-        toast.error('Failed to Move Folder', {
-          description: error instanceof Error ? error.message : 'Unable to move folder to new location.',
-        });
-      }
+    const result = moveDraggedConnectionNodeToFolder(droppedNode, targetNode);
+    if (result.status === 'success') {
+      setConnections(loadConnections());
+      toast.success(result.message);
+    } else if (result.status === 'error') {
+      toast.error(result.message, result.description ? { description: result.description } : undefined);
     }
 
     setDraggedItem(null);
@@ -323,6 +615,7 @@ export function ConnectionManager({
 
   const handleDragEnd = () => {
     setDraggedItem(null);
+    setDragOverFolderId(null);
   };
 
   // Find the selected connection details
@@ -379,6 +672,8 @@ export function ConnectionManager({
     const isSelected = selectedConnectionId === node.id;
     const isConnected = node.type === 'connection' && node.isConnected;
     const isDragging = draggedItem?.node.id === node.id;
+    const isDropTarget = node.type === 'folder' && dragOverFolderId === node.id;
+    const canDragNode = node.type === 'connection' || node.path !== 'All Connections';
 
     const handleNodeClick = () => {
       // Always select the node first
@@ -403,17 +698,14 @@ export function ConnectionManager({
 
     const nodeContent = (
       <div
-        className={`flex items-center gap-2 px-2 py-1 hover:bg-accent cursor-pointer ${
+        className={`group flex items-center gap-2 px-2 py-1 cursor-pointer ${
           isSelected ? 'bg-accent' : ''
-        } ${isDragging ? 'opacity-50' : ''}`}
+        } ${isDragging ? 'opacity-50' : 'hover:bg-accent'} ${
+          isDropTarget ? 'bg-accent ring-1 ring-primary/60' : ''
+        }`}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={handleNodeClick}
         onDoubleClick={handleNodeDoubleClick}
-        draggable={node.path !== 'All Connections'}
-        onDragStart={(e) => handleDragStart(e, node)}
-        onDragOver={node.type === 'folder' ? handleDragOver : undefined}
-        onDrop={node.type === 'folder' ? (e) => handleDrop(e, node) : undefined}
-        onDragEnd={handleDragEnd}
       >
         {node.type === 'folder' && (
           <Button variant="ghost" size="sm" className="p-0 h-4 w-4">
@@ -424,6 +716,23 @@ export function ConnectionManager({
           </Button>
         )}
         {node.type === 'connection' && <div className="w-4" />}
+
+        <div
+          className={`flex h-4 w-4 items-center justify-center rounded-sm ${
+            canDragNode
+              ? 'cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing'
+              : 'text-muted-foreground/30'
+          }`}
+          aria-label={canDragNode ? `Drag ${node.type} ${node.name}` : undefined}
+          title={canDragNode ? `Drag ${node.type}` : undefined}
+          draggable={canDragNode}
+          onDragStart={canDragNode ? (e) => handleDragStart(e, node) : undefined}
+          onDragEnd={canDragNode ? handleDragEnd : undefined}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <GripVertical className="w-3 h-3" />
+        </div>
 
         <div className="relative">
           {getIcon(node)}
@@ -436,7 +745,14 @@ export function ConnectionManager({
     );
 
     return (
-      <div key={node.id}>
+      <div
+        key={node.id}
+        data-testid={node.type === 'folder' ? `folder-drop-target-${node.id}` : undefined}
+        onDragEnter={node.type === 'folder' ? (e) => handleFolderDragEnter(e, node) : undefined}
+        onDragOver={node.type === 'folder' ? (e) => handleFolderDragOver(e, node) : undefined}
+        onDragLeave={node.type === 'folder' ? (e) => handleFolderDragLeave(e, node) : undefined}
+        onDrop={node.type === 'folder' ? (e) => handleDrop(e, node) : undefined}
+      >
         {node.type === 'connection' ? (
           <ContextMenu onOpenChange={(open) => {
             if (open) {
@@ -473,6 +789,12 @@ export function ConnectionManager({
                 <Copy className="w-4 h-4 mr-2" />
                 Duplicate
               </ContextMenuItem>
+              <ContextMenuItem
+                onClick={() => openMoveDialog(node)}
+              >
+                <Folder className="w-4 h-4 mr-2" />
+                Move to Folder
+              </ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem
                 onClick={() => handleDelete(node.id)}
@@ -502,6 +824,12 @@ export function ConnectionManager({
               </ContextMenuItem>
               {node.path !== 'All Connections' && (
                 <>
+                  <ContextMenuItem
+                    onClick={() => openMoveDialog(node)}
+                  >
+                    <Folder className="w-4 h-4 mr-2" />
+                    Move to Folder
+                  </ContextMenuItem>
                   <ContextMenuItem
                     onClick={() => {
                       const folders = ConnectionStorageManager.getFolders();
@@ -740,6 +1068,66 @@ export function ConnectionManager({
             Cancel
           </Button>
           <Button onClick={handleRenameFolder}>Rename</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog
+      open={moveDialogOpen}
+      onOpenChange={(open) => {
+        setMoveDialogOpen(open);
+        if (!open) {
+          setItemToMove(null);
+        }
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Move to Folder</DialogTitle>
+          <DialogDescription>
+            {itemToMove
+              ? `Move "${itemToMove.name}" to another folder.`
+              : 'Choose the destination folder.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+          <div className="space-y-2">
+            <Label htmlFor="move-folder-target">Destination Folder</Label>
+            <Select value={moveTargetPath} onValueChange={setMoveTargetPath}>
+              <SelectTrigger id="move-folder-target">
+                <SelectValue placeholder="Select destination folder" />
+              </SelectTrigger>
+              <SelectContent>
+                {getMoveTargetFolders(itemToMove).map((folder) => (
+                  <SelectItem key={folder.path} value={folder.path}>
+                    {folder.path}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {itemToMove && getMoveTargetFolders(itemToMove).length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No valid destination folders are available.
+              </p>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setMoveDialogOpen(false);
+              setItemToMove(null);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleMoveToFolder}
+            disabled={!itemToMove || getMoveTargetFolders(itemToMove).length === 0}
+          >
+            Move
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -3,6 +3,7 @@ use russh::*;
 use russh_keys::*;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -34,8 +35,13 @@ pub struct SshConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthMethod {
-    Password { password: String },
-    PublicKey { key_path: String, passphrase: Option<String> },
+    Password {
+        password: String,
+    },
+    PublicKey {
+        key_path: String,
+        passphrase: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +81,41 @@ impl client::Handler for Client {
     }
 }
 
+pub(crate) fn expand_home_path(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return path.replacen("~", &home, 1);
+        }
+    }
+
+    path.to_string()
+}
+
+pub(crate) fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Result<key::KeyPair> {
+    let expanded_path = expand_home_path(key_path);
+    let path = Path::new(&expanded_path);
+
+    if !path.exists() {
+        return Err(anyhow::anyhow!(
+            "SSH key file not found: {}. Please check the file path and try again.",
+            key_path
+        ));
+    }
+
+    load_secret_key(path, passphrase).map_err(|e| {
+        if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
+            anyhow::anyhow!(
+                "Failed to decrypt SSH key. The key may be encrypted. Please provide the correct passphrase."
+            )
+        } else {
+            anyhow::anyhow!(
+                "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key (RSA, Ed25519, or ECDSA).",
+                key_path, e
+            )
+        }
+    })
+}
+
 impl SshClient {
     pub fn new() -> Self {
         Self { session: None }
@@ -88,10 +129,10 @@ impl SshClient {
             },
             ..client::Config::default()
         };
-        
+
         // Connection timeout: 3 seconds
         let connection_timeout = Duration::from_secs(3);
-        
+
         let mut ssh_session = tokio::time::timeout(
             connection_timeout,
             client::connect(Arc::new(ssh_config), (&config.host[..], config.port), Client)
@@ -100,46 +141,15 @@ impl SshClient {
             .map_err(|e| anyhow::anyhow!("Failed to connect to {}:{}: {}", config.host, config.port, e))?;
 
         let authenticated = match &config.auth_method {
-            AuthMethod::Password { password } => {
-                ssh_session
-                    .authenticate_password(&config.username, password)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?
-            }
-            AuthMethod::PublicKey { key_path, passphrase } => {
-                // Expand tilde in path
-                let expanded_path = if key_path.starts_with("~/") {
-                    if let Some(home) = std::env::var("HOME").ok() {
-                        key_path.replacen("~", &home, 1)
-                    } else {
-                        key_path.clone()
-                    }
-                } else {
-                    key_path.clone()
-                };
-
-                // Check if file exists
-                if !std::path::Path::new(&expanded_path).exists() {
-                    return Err(anyhow::anyhow!(
-                        "SSH key file not found: {}. Please check the file path and try again.",
-                        key_path
-                    ));
-                }
-
-                // Try to load the key
-                let key = decode_secret_key(&expanded_path, passphrase.as_deref())
-                    .map_err(|e| {
-                        if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
-                            anyhow::anyhow!(
-                                "Failed to decrypt SSH key. The key may be encrypted. Please provide the correct passphrase."
-                            )
-                        } else {
-                            anyhow::anyhow!(
-                                "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key (RSA, Ed25519, or ECDSA).",
-                                key_path, e
-                            )
-                        }
-                    })?;
+            AuthMethod::Password { password } => ssh_session
+                .authenticate_password(&config.username, password)
+                .await
+                .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?,
+            AuthMethod::PublicKey {
+                key_path,
+                passphrase,
+            } => {
+                let key = load_private_key(key_path, passphrase.as_deref())?;
 
                 ssh_session
                     .authenticate_publickey(&config.username, Arc::new(key))
@@ -149,7 +159,19 @@ impl SshClient {
         };
 
         if !authenticated {
-            return Err(anyhow::anyhow!("Authentication failed. Please check your credentials and try again."));
+            return Err(match &config.auth_method {
+                AuthMethod::Password { .. } => anyhow::anyhow!(
+                    "Authentication failed for {}@{} with password authentication.",
+                    config.username,
+                    config.host
+                ),
+                AuthMethod::PublicKey { key_path, .. } => anyhow::anyhow!(
+                    "Authentication failed for {}@{} using public key {}.",
+                    config.username,
+                    config.host,
+                    key_path
+                ),
+            });
         }
 
         self.session = Some(Arc::new(ssh_session));
@@ -198,7 +220,7 @@ impl SshClient {
             match code {
                 Some(0) => Ok(output),
                 None if !output.is_empty() => Ok(output), // No exit code but got output = success
-                _ => Err(anyhow::anyhow!("Command failed with code: {:?}", code))
+                _ => Err(anyhow::anyhow!("Command failed with code: {:?}", code)),
             }
         } else {
             Err(anyhow::anyhow!("Not connected"))
@@ -210,7 +232,9 @@ impl SshClient {
             // Try to unwrap Arc, if we're the only owner
             match Arc::try_unwrap(session) {
                 Ok(session) => {
-                    session.disconnect(Disconnect::ByApplication, "", "English").await?;
+                    session
+                        .disconnect(Disconnect::ByApplication, "", "English")
+                        .await?;
                 }
                 Err(arc_session) => {
                     // Other references exist, just drop our reference
@@ -227,45 +251,41 @@ impl SshClient {
 
     /// Create a persistent PTY shell session (like ttyd)
     /// This enables interactive commands like vim, less, more, top, etc.
-    pub async fn create_pty_session(
-        &self,
-        cols: u32,
-        rows: u32,
-    ) -> Result<PtySession> {
+    pub async fn create_pty_session(&self, cols: u32, rows: u32) -> Result<PtySession> {
         if let Some(session) = &self.session {
             // Open a new SSH channel
             let mut channel = session.channel_open_session().await?;
-            
+
             // Request PTY with terminal type and dimensions
             // Similar to ttyd's approach: xterm-256color terminal
             channel
                 .request_pty(
-                    true,                    // want_reply
-                    "xterm-256color",        // terminal type (like ttyd)
-                    cols,                    // columns
-                    rows,                    // rows
-                    0,                       // pixel_width (not used)
-                    0,                       // pixel_height (not used)
-                    &[],                     // terminal modes
+                    true,             // want_reply
+                    "xterm-256color", // terminal type (like ttyd)
+                    cols,             // columns
+                    rows,             // rows
+                    0,                // pixel_width (not used)
+                    0,                // pixel_height (not used)
+                    &[],              // terminal modes
                 )
                 .await?;
-            
+
             // Start interactive shell
             channel.request_shell(true).await?;
-            
+
             // Create channels for bidirectional communication (like ttyd's pty_buf)
             // Increased capacity for better buffering during fast input
-            let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(1000);  // Increased from 100
-            let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(2000);    // Increased from 1000
-            
+            let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(1000); // Increased from 100
+            let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(2000); // Increased from 1000
+
             let channel_id = channel.id();
-            
+
             // Clone channel for input task
             let input_channel = channel.make_writer();
-            
+
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
-            
+
             // Spawn task to handle input (frontend → SSH)
             // This is similar to ttyd's pty_write and INPUT command handling
             // Key: immediate write + flush for responsiveness
@@ -285,7 +305,7 @@ impl SshClient {
                     }
                 }
             });
-            
+
             // Spawn task to handle output (SSH → frontend) AND resize requests.
             // The channel must stay in this task because `wait()` requires `&mut self`,
             // but we also need `window_change()` which only requires `&self`.
@@ -334,7 +354,7 @@ impl SshClient {
                     }
                 }
             });
-            
+
             Ok(PtySession {
                 input_tx,
                 output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
@@ -356,12 +376,12 @@ impl SshClient {
 
             // Open remote file for reading
             let mut remote_file = sftp.open(remote_path).await?;
-            
+
             // Read file content
             let mut buffer = Vec::new();
             let mut temp_buf = vec![0u8; 8192];
             let mut total_bytes = 0u64;
-            
+
             loop {
                 let n = remote_file.read(&mut temp_buf).await?;
                 if n == 0 {
@@ -373,7 +393,7 @@ impl SshClient {
 
             // Write to local file
             tokio::fs::write(local_path, buffer).await?;
-            
+
             Ok(total_bytes)
         } else {
             Err(anyhow::anyhow!("Not connected"))
@@ -389,11 +409,11 @@ impl SshClient {
 
             // Open remote file for reading
             let mut remote_file = sftp.open(remote_path).await?;
-            
+
             // Read file content
             let mut buffer = Vec::new();
             let mut temp_buf = vec![0u8; 8192];
-            
+
             loop {
                 let n = remote_file.read(&mut temp_buf).await?;
                 if n == 0 {
@@ -421,11 +441,11 @@ impl SshClient {
 
             // Create remote file for writing
             let mut remote_file = sftp.create(remote_path).await?;
-            
+
             // Write data in chunks
             let mut offset = 0;
             let chunk_size = 8192;
-            
+
             while offset < data.len() {
                 let end = std::cmp::min(offset + chunk_size, data.len());
                 remote_file.write_all(&data[offset..end]).await?;
@@ -433,7 +453,7 @@ impl SshClient {
             }
 
             remote_file.flush().await?;
-            
+
             Ok(total_bytes)
         } else {
             Err(anyhow::anyhow!("Not connected"))
@@ -451,11 +471,11 @@ impl SshClient {
 
             // Create remote file for writing
             let mut remote_file = sftp.create(remote_path).await?;
-            
+
             // Write data in chunks
             let mut offset = 0;
             let chunk_size = 8192;
-            
+
             while offset < data.len() {
                 let end = std::cmp::min(offset + chunk_size, data.len());
                 remote_file.write_all(&data[offset..end]).await?;
@@ -463,11 +483,46 @@ impl SshClient {
             }
 
             remote_file.flush().await?;
-            
+
             Ok(total_bytes)
         } else {
             Err(anyhow::anyhow!("Not connected"))
         }
+    }
+}
+
+#[cfg(test)]
+mod key_loading_tests {
+    use super::load_private_key;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    const TEST_OPENSSH_PRIVATE_KEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
+QyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYgAAAJgAIAxdACAM\n\
+XQAAAAtzc2gtZWQyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYg\n\
+AAAEC2BsIi0QwW2uFscKTUUXNHLsYX4FxlaSDSblbAj7WR7bM+rvN+ot98qgEN796jTiQf\n\
+ZfG1KaT0PtFDJ/XFSqtiAAAAEHVzZXJAZXhhbXBsZS5jb20BAgMEBQ==\n\
+-----END OPENSSH PRIVATE KEY-----\n";
+
+    #[test]
+    fn load_private_key_reads_key_file_contents() {
+        let mut key_file = NamedTempFile::new().expect("failed to create temp key file");
+        key_file
+            .write_all(TEST_OPENSSH_PRIVATE_KEY.as_bytes())
+            .expect("failed to write temp key file");
+
+        let key = load_private_key(
+            key_file
+                .path()
+                .to_str()
+                .expect("temp key path must be valid UTF-8"),
+            None,
+        )
+        .expect("expected key file to load successfully");
+
+        assert_eq!(key.name(), "ssh-ed25519");
     }
 }
 
