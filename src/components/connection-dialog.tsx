@@ -13,6 +13,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Separator } from './ui/separator';
 import { ConnectionProfileManager, type ConnectionProfile } from '../lib/connection-profiles';
 import { ConnectionStorageManager } from '../lib/connection-storage';
+import {
+  accountFor,
+  credentialKindFor,
+  keychainAvailable,
+  keychainDelete,
+  keychainLoad,
+  keychainSave,
+  type CredentialKind,
+} from '../lib/keychain';
 import { toast } from 'sonner';
 import {
   Server,
@@ -21,6 +30,7 @@ import {
   Network,
   Terminal as TerminalIcon,
   Monitor,
+  X as XIcon,
 } from 'lucide-react';
 import { getDefaultPort, getAuthMethods, getHiddenFields, isDesktopProtocol } from '@/lib/protocol-config';
 
@@ -103,14 +113,46 @@ export function ConnectionDialog({
   const [saveAsConnection, setSaveAsConnection] = useState(true);
   const [connectionFolder, setConnectionFolder] = useState('All Connections');
   const [availableFolders, setAvailableFolders] = useState<string[]>([]);
+  // Keychain integration state.
+  // `keychainSupported === null` means we haven't resolved it yet; the UI
+  // stays hidden until the backend reports a concrete answer.
+  const [keychainSupported, setKeychainSupported] = useState<boolean | null>(null);
+  const [saveToKeychain, setSaveToKeychain] = useState(false);
+  const [loadedFromKeychain, setLoadedFromKeychain] = useState(false);
+  // Which (protocol, authMethod, account) combinations we have already
+  // attempted to auto-load. Prevents us from re-firing the keychain prompt
+  // on every re-render once the user has typed a value into the form.
+  const attemptedKeychainLoadsRef = useRef<Set<string>>(new Set());
   const connectionIdRef = useRef<string | null>(null);
   const cancelRequestedRef = useRef(false);
+
+  // Resolve keychain availability once on mount. The result is cached for the
+  // lifetime of the component; it can't change at runtime.
+  useEffect(() => {
+    let cancelled = false;
+    keychainAvailable()
+      .then(available => {
+        if (!cancelled) setKeychainSupported(available);
+      })
+      .catch(() => {
+        if (!cancelled) setKeychainSupported(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Reset connection state and load saved profiles when dialog opens/closes
   useEffect(() => {
     if (open) {
       // Reset connection state when dialog opens
       resetConnectionState();
+
+      // Drop the auto-load memo each time the dialog re-opens so a re-open
+      // after entering/exiting an edit can still trigger a fresh lookup.
+      attemptedKeychainLoadsRef.current.clear();
+      setLoadedFromKeychain(false);
+      setSaveToKeychain(false);
 
       setSavedProfiles(ConnectionProfileManager.getProfiles());
 
@@ -137,6 +179,63 @@ export function ConnectionDialog({
       resetConnectionState();
     }
   }, [open, editingConnection]);
+
+  // Auto-load saved credentials from the Keychain when the host/port/username/
+  // auth combination identifies a known account and the corresponding secret
+  // field is empty. Populating a field the user has already typed into would
+  // be surprising, so we only fill blanks.
+  useEffect(() => {
+    if (!open) return;
+    if (keychainSupported !== true) return;
+    if (!config.host || !config.username || !config.port) return;
+
+    const kind = credentialKindFor(config.protocol, config.authMethod);
+    if (!kind) return;
+
+    const currentSecret =
+      config.authMethod === 'password' ? config.password : config.passphrase;
+    if (currentSecret) return;
+
+    const account = accountFor(config.host, config.port, config.username);
+    const memoKey = `${kind}:${account}`;
+    if (attemptedKeychainLoadsRef.current.has(memoKey)) return;
+    attemptedKeychainLoadsRef.current.add(memoKey);
+
+    let cancelled = false;
+    keychainLoad(kind, account)
+      .then(secret => {
+        if (cancelled || !secret) return;
+        setConfig(prev => {
+          // Re-check that the user hasn't typed into the field between the
+          // invoke firing and the promise resolving.
+          const pending =
+            prev.authMethod === 'password' ? prev.password : prev.passphrase;
+          if (pending) return prev;
+          return prev.authMethod === 'password'
+            ? { ...prev, password: secret }
+            : { ...prev, passphrase: secret };
+        });
+        setLoadedFromKeychain(true);
+        setSaveToKeychain(true);
+      })
+      .catch(err => {
+        console.error('Keychain load failed:', err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    open,
+    keychainSupported,
+    config.protocol,
+    config.authMethod,
+    config.host,
+    config.port,
+    config.username,
+    config.password,
+    config.passphrase,
+  ]);
 
   const _handleSaveProfile = () => {
     try {
@@ -193,6 +292,58 @@ export function ConnectionDialog({
     cancelRequestedRef.current = false;
   };
 
+  /** Credential kind for the currently-selected protocol/auth pair, if any. */
+  const currentCredentialKind = (): CredentialKind | null =>
+    credentialKindFor(config.protocol, config.authMethod);
+
+  /** Delete any saved Keychain credential for the current account and clear
+   *  the field it would have populated. */
+  const handleForgetCredential = async () => {
+    const kind = currentCredentialKind();
+    if (!kind || !config.host || !config.username || !config.port) return;
+    const account = accountFor(config.host, config.port, config.username);
+    try {
+      await keychainDelete(kind, account);
+      toast.success('Forgot saved credential');
+      // Clear the field that the Keychain had populated.
+      setConfig(prev =>
+        prev.authMethod === 'password'
+          ? { ...prev, password: '' }
+          : { ...prev, passphrase: '' },
+      );
+      setLoadedFromKeychain(false);
+      setSaveToKeychain(false);
+      attemptedKeychainLoadsRef.current.delete(`${kind}:${account}`);
+    } catch (err) {
+      console.error('Keychain delete failed:', err);
+      toast.error('Could not remove saved credential', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  /** After a successful connect, persist the secret to the Keychain if the
+   *  user opted in. Swallows (but logs + toasts) failures — the actual SSH
+   *  connect has already succeeded. */
+  const persistToKeychainIfRequested = async () => {
+    if (!keychainSupported || !saveToKeychain) return;
+    const kind = currentCredentialKind();
+    if (!kind) return;
+    const secret =
+      config.authMethod === 'password' ? config.password : config.passphrase;
+    if (!secret) return;
+    const account = accountFor(config.host, config.port, config.username);
+    try {
+      await keychainSave(kind, account, secret);
+      toast.success('Credential saved to Keychain');
+    } catch (err) {
+      console.error('Keychain save failed:', err);
+      toast.error('Could not save credential to Keychain', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const handleConnect = async () => {
     if (isConnecting) {
       return;
@@ -239,8 +390,29 @@ export function ConnectionDialog({
     const isSftpOrFtp = config.protocol === 'SFTP' || config.protocol === 'FTP';
     const isDesktop = config.protocol === 'RDP' || config.protocol === 'VNC';
 
+    // When the user opts to save credentials to the Keychain, keep them out
+    // of localStorage entirely — the two stores would otherwise drift.
+    const usingKeychainForSecret =
+      keychainSupported === true
+      && saveToKeychain
+      && currentCredentialKind() !== null;
+    const storedPassword =
+      usingKeychainForSecret && config.authMethod === 'password'
+        ? undefined
+        : config.password;
+    const storedPassphrase =
+      usingKeychainForSecret && config.authMethod === 'publickey'
+        ? undefined
+        : config.passphrase;
+
     if (isSftpOrFtp || isDesktop) {
       try {
+        // Save credential to the Keychain before handing off to App.tsx. We
+        // save optimistically (even though the SFTP/FTP/RDP/VNC connect
+        // happens asynchronously in App.tsx) because `set_generic_password`
+        // overwrites, so a subsequent successful attempt self-corrects.
+        await persistToKeychainIfRequested();
+
         // Save connection if requested
         if (editingConnection?.id) {
           ConnectionStorageManager.updateConnection(editingConnection.id, {
@@ -250,9 +422,9 @@ export function ConnectionDialog({
             username: config.username,
             protocol: config.protocol,
             authMethod: config.authMethod,
-            password: config.password,
+            password: storedPassword,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            passphrase: storedPassphrase,
             ftpsEnabled: config.ftpsEnabled,
             domain: config.domain,
             rdpResolution: config.rdpResolution,
@@ -268,9 +440,9 @@ export function ConnectionDialog({
             protocol: config.protocol,
             folder: connectionFolder,
             authMethod: config.authMethod,
-            password: config.password,
+            password: storedPassword,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            passphrase: storedPassphrase,
             ftpsEnabled: config.ftpsEnabled,
             domain: config.domain,
             rdpResolution: config.rdpResolution,
@@ -310,6 +482,10 @@ export function ConnectionDialog({
       );
 
       if (result.success) {
+        // Persist the credential to the Keychain now that we know the auth
+        // worked. Any failure is non-fatal — the SSH connection is already up.
+        await persistToKeychainIfRequested();
+
         // Save or update connection based on whether we're editing or creating new
         if (editingConnection?.id) {
           // Update existing connection with new connection details
@@ -320,9 +496,9 @@ export function ConnectionDialog({
             username: config.username,
             protocol: config.protocol,
             authMethod: config.authMethod,
-            password: config.password,
+            password: storedPassword,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            passphrase: storedPassphrase,
             lastConnected: new Date().toISOString(),
           });
         } else if (saveAsConnection) {
@@ -336,9 +512,9 @@ export function ConnectionDialog({
             protocol: config.protocol,
             folder: connectionFolder,
             authMethod: config.authMethod,
-            password: config.password,
+            password: storedPassword,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            passphrase: storedPassphrase,
           });
         }
 
@@ -682,8 +858,20 @@ export function ConnectionDialog({
                       type="password"
                       placeholder="Enter password"
                       value={config.password}
-                      onChange={(e) => updateConfig({ password: e.target.value })}
+                      onChange={(e) => {
+                        // User is editing the field — once they touch it,
+                        // they own it. Clear the "came from keychain" marker
+                        // so the Forget button stops showing.
+                        if (loadedFromKeychain) setLoadedFromKeychain(false);
+                        updateConfig({ password: e.target.value });
+                      }}
                     />
+                    {loadedFromKeychain && (
+                      <p className="text-xs text-muted-foreground flex items-center gap-1">
+                        <Key className="h-3 w-3" />
+                        Loaded from Keychain
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -708,10 +896,55 @@ export function ConnectionDialog({
                         type="password"
                         placeholder="Enter passphrase if key is encrypted"
                         value={config.passphrase}
-                        onChange={(e) => updateConfig({ passphrase: e.target.value })}
+                        onChange={(e) => {
+                          if (loadedFromKeychain) setLoadedFromKeychain(false);
+                          updateConfig({ passphrase: e.target.value });
+                        }}
                       />
+                      {loadedFromKeychain && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Key className="h-3 w-3" />
+                          Loaded from Keychain
+                        </p>
+                      )}
                     </div>
                   </div>
+                )}
+
+                {/* Keychain controls — only shown on platforms where the
+                    backend can actually access a system keychain (macOS today)
+                    and only for auth methods that have a secret to store. */}
+                {keychainSupported === true
+                  && (config.authMethod === 'password' || config.authMethod === 'publickey')
+                  && currentCredentialKind() !== null && (
+                  <>
+                    <Separator />
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="save-to-keychain">Save to Keychain</Label>
+                        <p className="text-sm text-muted-foreground">
+                          Store the {config.authMethod === 'password' ? 'password' : 'key passphrase'} in the system keychain instead of in local storage.
+                        </p>
+                      </div>
+                      <Switch
+                        id="save-to-keychain"
+                        checked={saveToKeychain}
+                        onCheckedChange={setSaveToKeychain}
+                      />
+                    </div>
+                    {loadedFromKeychain && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="self-start"
+                        onClick={handleForgetCredential}
+                        type="button"
+                      >
+                        <XIcon className="h-3.5 w-3.5 mr-1" />
+                        Forget saved credential
+                      </Button>
+                    )}
+                  </>
                 )}
 
                 {config.authMethod === 'anonymous' && (
