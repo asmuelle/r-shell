@@ -306,6 +306,35 @@ pub(crate) async fn connect_authenticated(
                 return anyhow::anyhow!(format_mismatch(&mismatch));
             }
         }
+
+        // "Connection reset by peer" during the initial handshake almost
+        // always means either (a) the server's IP allowlist is excluding
+        // us, or (b) an intermediate firewall / IDS is dropping the
+        // connection based on source address or protocol. No amount of
+        // KEX / cipher tuning on the client fixes either — the hint
+        // points the user at the real remediation path.
+        let msg = e.to_string();
+        let looks_like_reset = msg.contains("reset by peer")
+            || msg.contains("ConnectionReset")
+            || msg.contains("kex_exchange_identification");
+        if looks_like_reset {
+            return anyhow::anyhow!(
+                "The SSH server at {}:{} accepted the TCP connection but then \
+                 reset it during the handshake ({}).\n\n\
+                 This usually means the server is rejecting your source IP \
+                 or SSH client via a firewall / access list. Try:\n\
+                 - Confirm your public IP is on the server's allowlist (ask \
+                   the service operator).\n\
+                 - Connect over a VPN that terminates inside the allowed \
+                   network.\n\
+                 - Verify the host and port are correct for external access \
+                   (some services publish a different SFTP endpoint).",
+                host,
+                port,
+                e
+            );
+        }
+
         anyhow::anyhow!("Failed to connect to {}:{}: {}", host, port, e)
     })?;
 
