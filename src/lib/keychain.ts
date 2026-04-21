@@ -98,6 +98,43 @@ export function accountFor(
   return `${username}@${host}:${port}`;
 }
 
+export interface ParsedAccount {
+  user?: string;
+  host?: string;
+  port?: string;
+}
+
+/**
+ * Inverse of {@link accountFor}. Parses `"user@host:port"` into components
+ * for display. Degrades gracefully on legacy or non-standard strings:
+ * - returns `{}` for anything without a `user@host` shape
+ * - returns `{ user, host }` when a port isn't present or isn't numeric
+ *   (e.g. IPv6 "[::1]:22" entries that should fall back to raw-string display)
+ *
+ * Never throws — the UI should always have a meaningful fallback to the raw
+ * account string when parsing yields nothing useful.
+ */
+export function parseAccount(account: string): ParsedAccount {
+  const atIdx = account.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === account.length - 1) {
+    return {};
+  }
+  const user = account.slice(0, atIdx);
+  const hostPort = account.slice(atIdx + 1);
+  const colonIdx = hostPort.lastIndexOf(':');
+  if (colonIdx <= 0 || colonIdx === hostPort.length - 1) {
+    return { user, host: hostPort };
+  }
+  const host = hostPort.slice(0, colonIdx);
+  const port = hostPort.slice(colonIdx + 1);
+  // Only accept a port that's purely digits; "[ipv6]:22" etc fall through
+  // harmlessly to host-only display.
+  if (!/^\d+$/.test(port)) {
+    return { user, host: hostPort };
+  }
+  return { user, host, port };
+}
+
 /**
  * Map a (protocol, authMethod) pair to the CredentialKind that identifies
  * its stored secret, or null if this combination has no secret to store

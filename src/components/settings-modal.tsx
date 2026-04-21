@@ -30,6 +30,7 @@ import {
 } from '../lib/terminal-config';
 import { applyTheme, ThemeMode } from '../lib/utils';
 import { KeychainCredentialsCard } from './keychain-credentials-card';
+import { LocalPasswordMigrationCard } from './local-password-migration-card';
 
 interface SettingsModalProps {
   open: boolean;
@@ -665,6 +666,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange }: Settin
               </CardContent>
             </Card>
 
+            <LocalPasswordMigrationCard />
             <KeychainCredentialsCard />
           </TabsContent>
 
