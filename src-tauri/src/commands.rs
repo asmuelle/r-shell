@@ -1,7 +1,7 @@
 use crate::connection_manager::ConnectionManager;
-use crate::ssh::{AuthMethod, SshConfig};
-use crate::sftp_client::{FileEntry, FileEntryType, SftpConfig, SftpAuthMethod};
 use crate::ftp_client::FtpConfig;
+use crate::sftp_client::{FileEntry, FileEntryType, SftpAuthMethod, SftpConfig};
+use crate::ssh::{AuthMethod, SshConfig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
@@ -51,30 +51,54 @@ pub struct CommandResponse {
     pub error: Option<String>,
 }
 
+fn normalize_required_field(value: String, field_name: &str) -> Result<String, String> {
+    let normalized = value.trim().to_string();
+    if normalized.is_empty() {
+        return Err(format!("{field_name} required"));
+    }
+    Ok(normalized)
+}
+
+fn normalize_optional_trimmed(value: Option<String>) -> Option<String> {
+    value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn normalize_optional_non_blank(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.trim().is_empty())
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     request: ConnectRequest,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<CommandResponse, String> {
-    let auth_method = match request.auth_method.as_str() {
+    let host = normalize_required_field(request.host, "Host")?;
+    let username = normalize_required_field(request.username, "Username")?;
+    let auth_method_name = request.auth_method.trim().to_ascii_lowercase();
+    let auth_method = match auth_method_name.as_str() {
         "password" => AuthMethod::Password {
             password: request.password.ok_or("Password required")?,
         },
         "publickey" => AuthMethod::PublicKey {
-            key_path: request.key_path.ok_or("Key path required")?,
-            passphrase: request.passphrase,
+            key_path: normalize_optional_trimmed(request.key_path).ok_or("Key path required")?,
+            passphrase: normalize_optional_non_blank(request.passphrase),
         },
         _ => return Err("Invalid auth method".to_string()),
     };
 
     let config = SshConfig {
-        host: request.host,
+        host,
         port: request.port,
-        username: request.username,
+        username,
         auth_method,
     };
 
-    match state.create_connection(request.connection_id.clone(), config).await {
+    match state
+        .create_connection(request.connection_id.clone(), config)
+        .await
+    {
         Ok(_) => Ok(CommandResponse {
             success: true,
             output: Some(format!("Connected: {}", request.connection_id)),
@@ -189,19 +213,25 @@ fn transform_interactive_command(command: &str) -> String {
 // Helper function to check if a command is interactive
 fn is_interactive_command(command: &str) -> bool {
     let cmd_name = get_command_name(command);
-    matches!(cmd_name.as_str(),
-        "top" | "htop" | "vim" | "vi" | "nano" | "emacs" |
-        "less" | "more" | "man" | "tmux" | "screen"
+    matches!(
+        cmd_name.as_str(),
+        "top"
+            | "htop"
+            | "vim"
+            | "vi"
+            | "nano"
+            | "emacs"
+            | "less"
+            | "more"
+            | "man"
+            | "tmux"
+            | "screen"
     )
 }
 
 // Helper function to extract command name
 fn get_command_name(command: &str) -> String {
-    command
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
+    command.split_whitespace().next().unwrap_or("").to_string()
 }
 
 #[tauri::command]
@@ -348,7 +378,7 @@ pub async fn sftp_download_file(
                     data: Some(data),
                     error: None,
                 })
-            },
+            }
             Err(e) => Ok(FileTransferResponse {
                 success: false,
                 bytes_transferred: None,
@@ -358,7 +388,10 @@ pub async fn sftp_download_file(
         }
     } else {
         // Download to local file
-        match client.download_file(&request.remote_path, &request.local_path).await {
+        match client
+            .download_file(&request.remote_path, &request.local_path)
+            .await
+        {
             Ok(bytes) => Ok(FileTransferResponse {
                 success: true,
                 bytes_transferred: Some(bytes),
@@ -390,9 +423,13 @@ pub async fn sftp_upload_file(
 
     // If data is provided, write directly; otherwise read from local_path
     let result = if let Some(data) = &request.data {
-        client.upload_file_from_bytes(data, &request.remote_path).await
+        client
+            .upload_file_from_bytes(data, &request.remote_path)
+            .await
     } else {
-        client.upload_file(&request.local_path, &request.remote_path).await
+        client
+            .upload_file(&request.local_path, &request.remote_path)
+            .await
     };
 
     match result {
@@ -493,7 +530,10 @@ pub async fn create_file(
     let client = connection.read().await;
 
     // Upload the content as bytes
-    match client.upload_file_from_bytes(content.as_bytes(), &path).await {
+    match client
+        .upload_file_from_bytes(content.as_bytes(), &path)
+        .await
+    {
         Ok(_) => Ok(true),
         Err(e) => Err(e.to_string()),
     }
@@ -601,7 +641,7 @@ pub async fn get_processes(
                 processes: Some(processes),
                 error: None,
             })
-        },
+        }
         Err(e) => Ok(ProcessListResponse {
             success: false,
             processes: None,
@@ -724,7 +764,7 @@ pub struct LogSource {
     pub name: String,
     pub source_type: String, // "file" | "journal" | "docker"
     pub path: String,
-    pub category: String,    // "system" | "auth" | "kernel" | "service" | "container" | "application" | ...
+    pub category: String, // "system" | "auth" | "kernel" | "service" | "container" | "application" | ...
     pub size_human: Option<String>,
 }
 
@@ -837,10 +877,7 @@ pub async fn discover_log_sources(
             if unit.is_empty() || unit.starts_with("UNIT") {
                 continue;
             }
-            let name = unit
-                .strip_suffix(".service")
-                .unwrap_or(&unit)
-                .to_string();
+            let name = unit.strip_suffix(".service").unwrap_or(&unit).to_string();
             sources.push(LogSource {
                 id: format!("journal:{}", unit),
                 name,
@@ -899,7 +936,7 @@ pub async fn discover_log_sources(
 #[tauri::command]
 pub async fn read_log(
     connection_id: String,
-    source_type: String,   // "file" | "journal" | "docker" | "custom"
+    source_type: String, // "file" | "journal" | "docker" | "custom"
     path: String,
     lines: Option<u32>,
     state: State<'_, Arc<ConnectionManager>>,
@@ -917,10 +954,7 @@ pub async fn read_log(
             "journalctl -u '{}' -n {} --no-pager 2>/dev/null",
             path, line_count
         ),
-        "docker" => format!(
-            "docker logs --tail {} '{}' 2>&1",
-            line_count, path
-        ),
+        "docker" => format!("docker logs --tail {} '{}' 2>&1", line_count, path),
         _ => format!("tail -n {} '{}' 2>/dev/null", line_count, path),
     };
 
@@ -1219,7 +1253,10 @@ done
                 let before_parts: Vec<&str> = before_line.split(',').collect();
                 let after_parts: Vec<&str> = after_line.split(',').collect();
 
-                if before_parts.len() == 3 && after_parts.len() == 3 && before_parts[0] == after_parts[0] {
+                if before_parts.len() == 3
+                    && after_parts.len() == 3
+                    && before_parts[0] == after_parts[0]
+                {
                     if let (Ok(rx1), Ok(tx1), Ok(rx2), Ok(tx2)) = (
                         before_parts[1].parse::<f64>(),
                         before_parts[2].parse::<f64>(),
@@ -1252,7 +1289,6 @@ done
         }),
     }
 }
-
 
 // Network latency monitoring (SSH connection latency)
 #[derive(Debug, serde::Serialize)]
@@ -1300,13 +1336,11 @@ pub async fn get_network_latency(
                 })
             }
         }
-        Err(e) => {
-            Ok(LatencyResponse {
-                success: false,
-                latency_ms: None,
-                error: Some(format!("SSH connection error: {}", e)),
-            })
-        }
+        Err(e) => Ok(LatencyResponse {
+            success: false,
+            latency_ms: None,
+            error: Some(format!("SSH connection error: {}", e)),
+        }),
     }
 }
 
@@ -1428,10 +1462,16 @@ pub async fn ssh_tab_complete(
         format!("compgen -c {} 2>/dev/null || echo", word_to_complete)
     } else {
         // File/directory completion: use compgen -f for files
-        format!("compgen -f {} 2>/dev/null || ls -1ap {} 2>/dev/null | grep '^{}' || echo",
-                word_to_complete,
-                if word_to_complete.is_empty() { "." } else { word_to_complete },
-                word_to_complete)
+        format!(
+            "compgen -f {} 2>/dev/null || ls -1ap {} 2>/dev/null | grep '^{}' || echo",
+            word_to_complete,
+            if word_to_complete.is_empty() {
+                "."
+            } else {
+                word_to_complete
+            },
+            word_to_complete
+        )
     };
 
     match client.execute_command(&completion_cmd).await {
@@ -1517,14 +1557,14 @@ pub struct GpuStats {
     pub index: u32,
     pub name: String,
     pub vendor: GpuVendor,
-    pub utilization: f64,         // GPU core usage %
-    pub memory_used: u64,         // MiB
-    pub memory_total: u64,        // MiB
-    pub memory_percent: f64,      // Calculated
-    pub temperature: Option<f64>, // Celsius
-    pub power_draw: Option<f64>,  // Watts
-    pub power_limit: Option<f64>, // Watts
-    pub fan_speed: Option<f64>,   // %
+    pub utilization: f64,          // GPU core usage %
+    pub memory_used: u64,          // MiB
+    pub memory_total: u64,         // MiB
+    pub memory_percent: f64,       // Calculated
+    pub temperature: Option<f64>,  // Celsius
+    pub power_draw: Option<f64>,   // Watts
+    pub power_limit: Option<f64>,  // Watts
+    pub fan_speed: Option<f64>,    // %
     pub encoder_util: Option<f64>, // NVIDIA NVENC %
     pub decoder_util: Option<f64>, // NVIDIA NVDEC %
 }
@@ -1607,7 +1647,9 @@ pub async fn detect_gpu(
 
     // Check for AMD GPU with rocm-smi
     let amd_rocm_check = client
-        .execute_command("which rocm-smi 2>/dev/null && rocm-smi --showid --showproductname 2>/dev/null")
+        .execute_command(
+            "which rocm-smi 2>/dev/null && rocm-smi --showid --showproductname 2>/dev/null",
+        )
         .await;
 
     if let Ok(output) = amd_rocm_check {
@@ -1672,7 +1714,9 @@ pub async fn detect_gpu(
         if !output.is_empty() && output.contains("gpu_busy_percent") {
             // Count available cards
             let card_count = client
-                .execute_command("ls -d /sys/class/drm/card[0-9]*/device/gpu_busy_percent 2>/dev/null | wc -l")
+                .execute_command(
+                    "ls -d /sys/class/drm/card[0-9]*/device/gpu_busy_percent 2>/dev/null | wc -l",
+                )
                 .await
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok())
@@ -1744,18 +1788,12 @@ pub async fn get_gpu_stats(
                         0.0
                     };
 
-                    let temperature = parts.get(5)
-                        .and_then(|s| s.parse::<f64>().ok());
-                    let power_draw = parts.get(6)
-                        .and_then(|s| s.parse::<f64>().ok());
-                    let power_limit = parts.get(7)
-                        .and_then(|s| s.parse::<f64>().ok());
-                    let fan_speed = parts.get(8)
-                        .and_then(|s| s.parse::<f64>().ok());
-                    let encoder_util = parts.get(9)
-                        .and_then(|s| s.parse::<f64>().ok());
-                    let decoder_util = parts.get(10)
-                        .and_then(|s| s.parse::<f64>().ok());
+                    let temperature = parts.get(5).and_then(|s| s.parse::<f64>().ok());
+                    let power_draw = parts.get(6).and_then(|s| s.parse::<f64>().ok());
+                    let power_limit = parts.get(7).and_then(|s| s.parse::<f64>().ok());
+                    let fan_speed = parts.get(8).and_then(|s| s.parse::<f64>().ok());
+                    let encoder_util = parts.get(9).and_then(|s| s.parse::<f64>().ok());
+                    let decoder_util = parts.get(10).and_then(|s| s.parse::<f64>().ok());
 
                     gpus.push(GpuStats {
                         index,
@@ -1786,7 +1824,8 @@ pub async fn get_gpu_stats(
     }
 
     // Try AMD rocm-smi with JSON output
-    let amd_rocm_cmd = "rocm-smi --showuse --showmeminfo vram --showtemp --showpower --showfan --json 2>/dev/null";
+    let amd_rocm_cmd =
+        "rocm-smi --showuse --showmeminfo vram --showtemp --showpower --showfan --json 2>/dev/null";
 
     if let Ok(output) = client.execute_command(amd_rocm_cmd).await {
         let output = output.trim();
@@ -1799,22 +1838,23 @@ pub async fn get_gpu_stats(
                 if let Some(obj) = json.as_object() {
                     for (key, value) in obj {
                         if key.starts_with("card") {
-                            let index = key.trim_start_matches("card")
-                                .parse::<u32>()
-                                .unwrap_or(0);
+                            let index = key.trim_start_matches("card").parse::<u32>().unwrap_or(0);
 
-                            let utilization = value.get("GPU use (%)")
+                            let utilization = value
+                                .get("GPU use (%)")
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
                                 .unwrap_or(0.0);
 
-                            let memory_used = value.get("VRAM Total Used Memory (B)")
+                            let memory_used = value
+                                .get("VRAM Total Used Memory (B)")
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.parse::<u64>().ok())
                                 .map(|b| b / (1024 * 1024)) // Convert to MiB
                                 .unwrap_or(0);
 
-                            let memory_total = value.get("VRAM Total Memory (B)")
+                            let memory_total = value
+                                .get("VRAM Total Memory (B)")
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.parse::<u64>().ok())
                                 .map(|b| b / (1024 * 1024))
@@ -1826,15 +1866,18 @@ pub async fn get_gpu_stats(
                                 0.0
                             };
 
-                            let temperature = value.get("Temperature (Sensor edge) (C)")
+                            let temperature = value
+                                .get("Temperature (Sensor edge) (C)")
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.parse::<f64>().ok());
 
-                            let power_draw = value.get("Average Graphics Package Power (W)")
+                            let power_draw = value
+                                .get("Average Graphics Package Power (W)")
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.parse::<f64>().ok());
 
-                            let fan_speed = value.get("Fan speed (%)")
+                            let fan_speed = value
+                                .get("Fan speed (%)")
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok());
 
@@ -2002,25 +2045,32 @@ pub async fn sftp_connect(
     request: SftpConnectRequest,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<CommandResponse, String> {
-    let auth = match request.auth_method.as_str() {
+    let host = normalize_required_field(request.host, "Host")?;
+    let username = normalize_required_field(request.username, "Username")?;
+    let auth_method_name = request.auth_method.trim().to_ascii_lowercase();
+    let auth = match auth_method_name.as_str() {
         "password" => SftpAuthMethod::Password {
             password: request.password.unwrap_or_default(),
         },
         "publickey" => SftpAuthMethod::PublicKey {
-            key_path: request.key_path.ok_or("Key path required for SFTP")?,
-            passphrase: request.passphrase,
+            key_path: normalize_optional_trimmed(request.key_path)
+                .ok_or("Key path required for SFTP")?,
+            passphrase: normalize_optional_non_blank(request.passphrase),
         },
         _ => return Err("Invalid SFTP auth method".to_string()),
     };
 
     let config = SftpConfig {
-        host: request.host,
+        host,
         port: request.port,
-        username: request.username,
+        username,
         auth_method: auth,
     };
 
-    match state.create_sftp_connection(request.connection_id.clone(), config).await {
+    match state
+        .create_sftp_connection(request.connection_id.clone(), config)
+        .await
+    {
         Ok(_) => Ok(CommandResponse {
             success: true,
             output: Some(format!("SFTP connected: {}", request.connection_id)),
@@ -2069,8 +2119,12 @@ pub async fn ftp_connect(
 ) -> Result<CommandResponse, String> {
     tracing::info!(
         "ftp_connect: id={}, host={}:{}, user={}, ftps={}, anon={}",
-        request.connection_id, request.host, request.port,
-        request.username, request.ftps_enabled, request.anonymous
+        request.connection_id,
+        request.host,
+        request.port,
+        request.username,
+        request.ftps_enabled,
+        request.anonymous
     );
 
     let config = FtpConfig {
@@ -2090,7 +2144,10 @@ pub async fn ftp_connect(
         anonymous: request.anonymous,
     };
 
-    match state.create_ftp_connection(request.connection_id.clone(), config).await {
+    match state
+        .create_ftp_connection(request.connection_id.clone(), config)
+        .await
+    {
         Ok(_) => Ok(CommandResponse {
             success: true,
             output: Some(format!("FTP connected: {}", request.connection_id)),
@@ -2583,11 +2640,9 @@ pub async fn delete_local_item(path: String, is_directory: bool) -> Result<(), S
         return Err(format!("Path does not exist: {}", path));
     }
     if is_directory {
-        fs::remove_dir_all(p)
-            .map_err(|e| format!("Failed to delete directory '{}': {}", path, e))
+        fs::remove_dir_all(p).map_err(|e| format!("Failed to delete directory '{}': {}", path, e))
     } else {
-        fs::remove_file(p)
-            .map_err(|e| format!("Failed to delete file '{}': {}", path, e))
+        fs::remove_file(p).map_err(|e| format!("Failed to delete file '{}': {}", path, e))
     }
 }
 
@@ -2605,14 +2660,12 @@ pub async fn rename_local_item(old_path: String, new_path: String) -> Result<(),
 #[tauri::command]
 pub async fn create_local_directory(path: String) -> Result<(), String> {
     use std::fs;
-    fs::create_dir_all(&path)
-        .map_err(|e| format!("Failed to create directory '{}': {}", path, e))
+    fs::create_dir_all(&path).map_err(|e| format!("Failed to create directory '{}': {}", path, e))
 }
 
 #[tauri::command]
 pub async fn open_in_os(path: String) -> Result<(), String> {
-    open::that(&path)
-        .map_err(|e| format!("Failed to open '{}': {}", path, e))
+    open::that(&path).map_err(|e| format!("Failed to open '{}': {}", path, e))
 }
 
 // ========== Directory Synchronization ==========
@@ -2700,7 +2753,10 @@ pub async fn list_local_files_recursive(
 
     let base_path = std::path::Path::new(&path);
     if !base_path.exists() || !base_path.is_dir() {
-        return Err(format!("Path does not exist or is not a directory: {}", path));
+        return Err(format!(
+            "Path does not exist or is not a directory: {}",
+            path
+        ));
     }
 
     let mut results = Vec::new();
@@ -2749,7 +2805,8 @@ pub async fn list_remote_files_recursive(
                 current: &'a str,
                 exclude: &'a [String],
                 results: &'a mut Vec<SyncFileEntry>,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+            {
                 Box::pin(async move {
                     let entries = client.list_dir(current).await.map_err(|e| e.to_string())?;
                     for entry in entries {
@@ -2983,6 +3040,38 @@ pub async fn desktop_resize(
 }
 
 // ========== Local Filesystem Tests ==========
+
+#[cfg(test)]
+mod connect_request_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_required_field_trims_whitespace() {
+        let value = normalize_required_field("  root  ".to_string(), "Username").unwrap();
+        assert_eq!(value, "root");
+    }
+
+    #[test]
+    fn normalize_required_field_rejects_blank_values() {
+        let error = normalize_required_field("   ".to_string(), "Host").unwrap_err();
+        assert_eq!(error, "Host required");
+    }
+
+    #[test]
+    fn normalize_optional_trimmed_strips_surrounding_whitespace() {
+        let value = normalize_optional_trimmed(Some("  ~/.ssh/id_rsa  ".to_string())).unwrap();
+        assert_eq!(value, "~/.ssh/id_rsa");
+    }
+
+    #[test]
+    fn normalize_optional_non_blank_turns_whitespace_only_into_none() {
+        assert_eq!(normalize_optional_non_blank(Some("   ".to_string())), None);
+        assert_eq!(
+            normalize_optional_non_blank(Some(" keep-me ".to_string())),
+            Some(" keep-me ".to_string())
+        );
+    }
+}
 
 #[cfg(test)]
 mod local_fs_tests {

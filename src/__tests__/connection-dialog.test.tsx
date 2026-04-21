@@ -19,14 +19,14 @@ describe('Connection Dialog protocol-specific behavior', () => {
   });
 
   describe('auth method options per protocol', () => {
-    it('SSH has password, publickey, keyboard-interactive', () => {
+    it('SSH has publickey, password, keyboard-interactive', () => {
       const methods = getAuthMethods('SSH');
-      expect(methods).toEqual(['password', 'publickey', 'keyboard-interactive']);
+      expect(methods).toEqual(['publickey', 'password', 'keyboard-interactive']);
     });
 
-    it('SFTP has password and publickey', () => {
+    it('SFTP has publickey and password', () => {
       const methods = getAuthMethods('SFTP');
-      expect(methods).toEqual(['password', 'publickey']);
+      expect(methods).toEqual(['publickey', 'password']);
     });
 
     it('FTP has password and anonymous', () => {
@@ -111,13 +111,13 @@ describe('Connection Dialog protocol-specific behavior', () => {
       expect(isCurrentValid).toBe(true);
     });
 
-    it('switching from FTP (anonymous) to SFTP should select password', () => {
+    it('switching from FTP (anonymous) to SFTP should select publickey', () => {
       const currentAuth = 'anonymous';
       const newProtocol: Protocol = 'SFTP';
       const validMethods = getAuthMethods(newProtocol);
       const isCurrentValid = validMethods.includes(currentAuth as any);
       expect(isCurrentValid).toBe(false);
-      expect(validMethods[0]).toBe('password');
+      expect(validMethods[0]).toBe('publickey');
     });
   });
 });

@@ -21,8 +21,8 @@ const DEFAULT_PORTS: Record<Protocol, number> = {
 };
 
 const AUTH_METHODS: Record<Protocol, AuthMethod[]> = {
-  SSH: ['password', 'publickey', 'keyboard-interactive'],
-  SFTP: ['password', 'publickey'],
+  SSH: ['publickey', 'password', 'keyboard-interactive'],
+  SFTP: ['publickey', 'password'],
   FTP: ['password', 'anonymous'],
   Telnet: ['password'],
   Raw: [],

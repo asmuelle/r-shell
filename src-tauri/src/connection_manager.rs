@@ -1,14 +1,14 @@
-use crate::ssh::{PtySession, SshClient, SshConfig};
-use crate::sftp_client::StandaloneSftpClient;
+use crate::desktop_protocol::{DesktopConnectRequest, DesktopProtocol, FrameUpdate};
 use crate::ftp_client::FtpClient;
-use crate::desktop_protocol::{DesktopProtocol, DesktopConnectRequest, FrameUpdate};
 use crate::rdp_client::RdpClient;
+use crate::sftp_client::StandaloneSftpClient;
+use crate::ssh::{PtySession, SshClient, SshConfig};
 use crate::vnc_client::VncClient;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub struct ConnectionManager {
@@ -150,11 +150,7 @@ impl ConnectionManager {
 
     /// Send data to PTY (user input)
     /// Uses try_send for better performance (non-blocking)
-    pub async fn write_to_pty(
-        &self,
-        connection_id: &str,
-        data: Vec<u8>,
-    ) -> Result<()> {
+    pub async fn write_to_pty(&self, connection_id: &str, data: Vec<u8>) -> Result<()> {
         let pty_sessions = self.pty_sessions.read().await;
         let pty = pty_sessions
             .get(connection_id)
@@ -179,10 +175,7 @@ impl ConnectionManager {
 
     /// Read data from PTY (output for display)
     /// OPTIMIZED: Use try_recv first for immediate data, then short timeout
-    pub async fn read_from_pty(
-        &self,
-        connection_id: &str,
-    ) -> Result<Vec<u8>> {
+    pub async fn read_from_pty(&self, connection_id: &str) -> Result<Vec<u8>> {
         let pty_sessions = self.pty_sessions.read().await;
         let pty = pty_sessions
             .get(connection_id)
@@ -202,10 +195,7 @@ impl ConnectionManager {
         }
 
         // Fall back to short timeout wait (1ms for ultra-low latency)
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(1),
-            rx.recv()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(1), rx.recv()).await {
             Ok(Some(data)) => Ok(data),
             Ok(None) => Err(anyhow::anyhow!("PTY connection closed")),
             Err(_) => Ok(Vec::new()), // Timeout - no data available
@@ -215,14 +205,20 @@ impl ConnectionManager {
     /// Close PTY connection, but only if the generation matches.
     /// This prevents a stale Close (from a remounting component) from killing
     /// a newly created PTY session.
-    pub async fn close_pty_connection(&self, connection_id: &str, expected_gen: Option<u64>) -> Result<()> {
+    pub async fn close_pty_connection(
+        &self,
+        connection_id: &str,
+        expected_gen: Option<u64>,
+    ) -> Result<()> {
         if let Some(gen) = expected_gen {
             let generations = self.pty_generations.read().await;
             let current_gen = generations.get(connection_id).copied().unwrap_or(0);
             if current_gen != gen {
                 tracing::info!(
                     "Ignoring stale Close for {} (gen {} != current {})",
-                    connection_id, gen, current_gen
+                    connection_id,
+                    gen,
+                    current_gen
                 );
                 return Ok(());
             }
@@ -242,12 +238,7 @@ impl ConnectionManager {
     }
 
     /// Resize PTY terminal (send window-change to remote SSH channel)
-    pub async fn resize_pty(
-        &self,
-        connection_id: &str,
-        cols: u32,
-        rows: u32,
-    ) -> Result<()> {
+    pub async fn resize_pty(&self, connection_id: &str, cols: u32, rows: u32) -> Result<()> {
         let pty_sessions = self.pty_sessions.read().await;
         let pty = pty_sessions
             .get(connection_id)
@@ -420,7 +411,10 @@ mod tests {
             let mut types = mgr.connection_types.write().await;
             types.insert("sftp-1".to_string(), "SFTP".to_string());
         }
-        assert_eq!(mgr.get_connection_type("sftp-1").await, Some("SFTP".to_string()));
+        assert_eq!(
+            mgr.get_connection_type("sftp-1").await,
+            Some("SFTP".to_string())
+        );
     }
 
     #[tokio::test]
@@ -430,7 +424,10 @@ mod tests {
             let mut types = mgr.connection_types.write().await;
             types.insert("ftp-1".to_string(), "FTP".to_string());
         }
-        assert_eq!(mgr.get_connection_type("ftp-1").await, Some("FTP".to_string()));
+        assert_eq!(
+            mgr.get_connection_type("ftp-1").await,
+            Some("FTP".to_string())
+        );
     }
 
     #[tokio::test]
@@ -475,9 +472,18 @@ mod tests {
             types.insert("sftp-1".to_string(), "SFTP".to_string());
             types.insert("ftp-1".to_string(), "FTP".to_string());
         }
-        assert_eq!(mgr.get_connection_type("ssh-1").await, Some("SSH".to_string()));
-        assert_eq!(mgr.get_connection_type("sftp-1").await, Some("SFTP".to_string()));
-        assert_eq!(mgr.get_connection_type("ftp-1").await, Some("FTP".to_string()));
+        assert_eq!(
+            mgr.get_connection_type("ssh-1").await,
+            Some("SSH".to_string())
+        );
+        assert_eq!(
+            mgr.get_connection_type("sftp-1").await,
+            Some("SFTP".to_string())
+        );
+        assert_eq!(
+            mgr.get_connection_type("ftp-1").await,
+            Some("FTP".to_string())
+        );
     }
 
     #[tokio::test]
