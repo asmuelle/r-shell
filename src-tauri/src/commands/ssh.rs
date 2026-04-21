@@ -8,18 +8,20 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
+// TabCompletionResponse below needs Serialize; ConnectRequest no longer does.
+
 use super::{
     normalize_optional_non_blank, normalize_optional_trimmed, normalize_required_field,
-    CommandResponse,
+    AuthMethodTag, CommandResponse,
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct ConnectRequest {
     pub connection_id: String,
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub auth_method: String,
+    pub auth_method: AuthMethodTag,
     pub password: Option<String>,
     pub key_path: Option<String>,
     pub passphrase: Option<String>,
@@ -46,6 +48,7 @@ impl std::fmt::Debug for ConnectRequest {
     }
 }
 
+
 #[tauri::command]
 pub async fn ssh_connect(
     request: ConnectRequest,
@@ -53,16 +56,14 @@ pub async fn ssh_connect(
 ) -> Result<CommandResponse, String> {
     let host = normalize_required_field(request.host, "Host")?;
     let username = normalize_required_field(request.username, "Username")?;
-    let auth_method_name = request.auth_method.trim().to_ascii_lowercase();
-    let auth_method = match auth_method_name.as_str() {
-        "password" => AuthMethod::Password {
+    let auth_method = match request.auth_method {
+        AuthMethodTag::Password => AuthMethod::Password {
             password: request.password.ok_or("Password required")?,
         },
-        "publickey" => AuthMethod::PublicKey {
+        AuthMethodTag::PublicKey => AuthMethod::PublicKey {
             key_path: normalize_optional_trimmed(request.key_path).ok_or("Key path required")?,
             passphrase: normalize_optional_non_blank(request.passphrase),
         },
-        _ => return Err("Invalid auth method".to_string()),
     };
 
     let config = SshConfig {
@@ -212,13 +213,6 @@ fn get_command_name(command: &str) -> String {
 // ---------------------------------------------------------------------------
 // Tab completion
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TabCompletionRequest {
-    pub connection_id: String,
-    pub input: String,
-    pub cursor_position: usize,
-}
 
 #[derive(Debug, Serialize)]
 pub struct TabCompletionResponse {

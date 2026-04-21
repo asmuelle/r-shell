@@ -9,6 +9,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Enum form of the `auth_method` field on `ConnectRequest` / `SftpConnectRequest`.
+/// Serialised lowercase (`"password"` / `"publickey"`) to preserve the wire
+/// format the frontend already sends.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMethodTag {
+    Password,
+    PublicKey,
+}
+
 pub mod desktop;
 pub mod ftp;
 pub mod gpu;

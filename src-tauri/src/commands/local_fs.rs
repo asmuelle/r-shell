@@ -2,7 +2,7 @@
 //! directory-sync workflow.
 
 use crate::connection_manager::ConnectionManager;
-use crate::sftp_client::{FileEntry, FileEntryType};
+use crate::sftp_client::{format_unix_timestamp, FileEntry, FileEntryType};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
@@ -84,57 +84,6 @@ pub async fn list_local_files(path: String) -> Result<Vec<FileEntry>, String> {
     });
 
     Ok(entries)
-}
-
-/// Format a unix timestamp (seconds since epoch) into an ISO-like datetime string.
-pub(crate) fn format_unix_timestamp(secs: i64) -> String {
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    let mut y = 1970i64;
-    let mut remaining_days = days;
-
-    loop {
-        let days_in_year = if is_leap_year(y) { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        y += 1;
-    }
-
-    let month_days = if is_leap_year(y) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut m = 0usize;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining_days < md as i64 {
-            m = i;
-            break;
-        }
-        remaining_days -= md as i64;
-    }
-
-    let d = remaining_days + 1;
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        y,
-        m + 1,
-        d,
-        hours,
-        minutes,
-        seconds
-    )
-}
-
-fn is_leap_year(y: i64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
 }
 
 /// Format Unix file mode bits into a human-readable rwx string.
@@ -536,9 +485,4 @@ mod tests {
         assert_eq!(format_unix_permissions(0o120777), "lrwxrwxrwx");
     }
 
-    #[test]
-    fn test_format_unix_timestamp() {
-        let s = format_unix_timestamp(1704067200);
-        assert_eq!(s, "2024-01-01 00:00:00");
-    }
 }

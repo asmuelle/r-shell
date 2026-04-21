@@ -87,13 +87,6 @@ impl std::fmt::Debug for AuthMethod {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SshSession {
-    pub id: String,
-    pub config: SshConfig,
-    pub connected: bool,
-}
-
 pub struct SshClient {
     session: Option<Arc<client::Handle<Client>>>,
     host_keys: Arc<HostKeyStore>,
@@ -143,7 +136,6 @@ impl CommandOutput {
 pub struct PtySession {
     pub input_tx: mpsc::Sender<Vec<u8>>,
     pub output_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>>,
-    pub channel_id: ChannelId,
     /// Sender for resize requests (cols, rows) — forwarded to the SSH channel
     pub resize_tx: mpsc::Sender<(u32, u32)>,
     /// Cancellation token — cancelled when this session is torn down.
@@ -556,10 +548,6 @@ impl SshClient {
         Ok(())
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.session.is_some()
-    }
-
     /// Create a persistent PTY shell session (like ttyd)
     /// This enables interactive commands like vim, less, more, top, etc.
     pub async fn create_pty_session(&self, cols: u32, rows: u32) -> Result<PtySession> {
@@ -588,8 +576,6 @@ impl SshClient {
             // Increased capacity for better buffering during fast input
             let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(1000); // Increased from 100
             let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(2000); // Increased from 1000
-
-            let channel_id = channel.id();
 
             // Clone channel for input task
             let input_channel = channel.make_writer();
@@ -694,7 +680,6 @@ impl SshClient {
             Ok(PtySession {
                 input_tx,
                 output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
-                channel_id,
                 resize_tx,
                 cancel,
             })

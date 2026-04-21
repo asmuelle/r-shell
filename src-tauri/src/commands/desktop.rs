@@ -12,7 +12,7 @@ pub async fn desktop_connect(
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<crate::desktop_protocol::DesktopConnectResponse, String> {
     tracing::info!(
-        "Desktop connect: {} ({}) to {}:{}",
+        "Desktop connect: {} ({:?}) to {}:{}",
         connection_id,
         request.protocol,
         request.host,

@@ -8,7 +8,7 @@ use tauri::State;
 
 use super::{
     normalize_optional_non_blank, normalize_optional_trimmed, normalize_required_field,
-    CommandResponse,
+    AuthMethodTag, CommandResponse,
 };
 
 #[derive(Deserialize)]
@@ -17,7 +17,7 @@ pub struct SftpConnectRequest {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub auth_method: String,
+    pub auth_method: AuthMethodTag,
     pub password: Option<String>,
     pub key_path: Option<String>,
     pub passphrase: Option<String>,
@@ -51,17 +51,15 @@ pub async fn sftp_connect(
 ) -> Result<CommandResponse, String> {
     let host = normalize_required_field(request.host, "Host")?;
     let username = normalize_required_field(request.username, "Username")?;
-    let auth_method_name = request.auth_method.trim().to_ascii_lowercase();
-    let auth = match auth_method_name.as_str() {
-        "password" => SftpAuthMethod::Password {
+    let auth = match request.auth_method {
+        AuthMethodTag::Password => SftpAuthMethod::Password {
             password: request.password.unwrap_or_default(),
         },
-        "publickey" => SftpAuthMethod::PublicKey {
+        AuthMethodTag::PublicKey => SftpAuthMethod::PublicKey {
             key_path: normalize_optional_trimmed(request.key_path)
                 .ok_or("Key path required for SFTP")?,
             passphrase: normalize_optional_non_blank(request.passphrase),
         },
-        _ => return Err("Invalid SFTP auth method".to_string()),
     };
 
     let config = SftpConfig {

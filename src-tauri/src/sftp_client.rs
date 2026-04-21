@@ -91,13 +91,6 @@ pub struct StandaloneSftpClient {
 }
 
 impl StandaloneSftpClient {
-    pub fn new() -> Self {
-        Self {
-            session: None,
-            sftp: None,
-        }
-    }
-
     /// Establish an SSH connection, authenticate, and open the SFTP subsystem.
     pub async fn connect(config: &SftpConfig, host_keys: Arc<HostKeyStore>) -> Result<Self> {
         let auth = match &config.auth_method {
@@ -131,10 +124,6 @@ impl StandaloneSftpClient {
             session: Some(session),
             sftp: Some(sftp),
         })
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.session.is_some() && self.sftp.is_some()
     }
 
     pub async fn disconnect(&mut self) -> Result<()> {
@@ -185,7 +174,7 @@ impl StandaloneSftpClient {
 
             let attrs = entry.metadata();
             let size = attrs.size.unwrap_or(0);
-            let modified = attrs.mtime.map(|t| chrono_from_unix_timestamp(t as u64));
+            let modified = attrs.mtime.map(|t| format_unix_timestamp(t as i64));
 
             let permissions = attrs.permissions.map(|p| format_permissions(p));
 
@@ -331,42 +320,13 @@ impl StandaloneSftpClient {
     }
 }
 
-/// Convert a Unix timestamp (seconds since epoch) to ISO 8601 string.
-fn chrono_from_unix_timestamp(secs: u64) -> String {
-    use std::time::UNIX_EPOCH;
-    let time = UNIX_EPOCH + Duration::from_secs(secs);
-    // Format as ISO 8601
-    let datetime: std::time::SystemTime = time;
-    let since_epoch = datetime.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = since_epoch.as_secs();
-    // Simple manual formatting: YYYY-MM-DD HH:MM:SS
-    let days = secs / 86400;
-    let remaining = secs % 86400;
-    let hours = remaining / 3600;
-    let minutes = (remaining % 3600) / 60;
-    let seconds = remaining % 60;
-
-    // Calculate year/month/day from days since epoch (1970-01-01)
-    let (year, month, day) = days_to_ymd(days as i64);
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hours, minutes, seconds
-    )
-}
-
-fn days_to_ymd(mut days: i64) -> (i64, u32, u32) {
-    // Algorithm to convert days since 1970-01-01 to y/m/d
-    days += 719468; // shift to 0000-03-01
-    let era = if days >= 0 { days } else { days - 146096 } / 146097;
-    let doe = (days - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
+/// Convert a Unix timestamp (seconds since epoch) to a readable UTC datetime
+/// string ("YYYY-MM-DD HH:MM:SS"). Uses chrono for correct leap-year and
+/// post-2106 handling.
+pub(crate) fn format_unix_timestamp(secs: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "invalid-timestamp".to_string())
 }
 
 /// Format Unix file permissions (mode bits) as a string like `rwxr-xr-x`.
@@ -428,45 +388,30 @@ mod tests {
     }
 
     #[test]
-    fn test_chrono_from_unix_timestamp_epoch() {
-        let result = chrono_from_unix_timestamp(0);
-        assert_eq!(result, "1970-01-01 00:00:00");
+    fn format_unix_timestamp_epoch() {
+        assert_eq!(format_unix_timestamp(0), "1970-01-01 00:00:00");
     }
 
     #[test]
-    fn test_chrono_from_unix_timestamp_known_date() {
-        // 2024-01-01 00:00:00 UTC = 1704067200
-        let result = chrono_from_unix_timestamp(1704067200);
-        assert_eq!(result, "2024-01-01 00:00:00");
+    fn format_unix_timestamp_known_date() {
+        // 2024-01-01 00:00:00 UTC
+        assert_eq!(format_unix_timestamp(1704067200), "2024-01-01 00:00:00");
     }
 
     #[test]
-    fn test_chrono_from_unix_timestamp_with_time() {
-        // 2000-06-15 11:30:45 UTC = 961068645
-        let result = chrono_from_unix_timestamp(961068645);
-        assert_eq!(result, "2000-06-15 11:30:45");
+    fn format_unix_timestamp_with_time() {
+        // 2000-06-15 11:30:45 UTC
+        assert_eq!(format_unix_timestamp(961068645), "2000-06-15 11:30:45");
     }
 
     #[test]
-    fn test_days_to_ymd_epoch() {
-        let (y, m, d) = days_to_ymd(0);
-        assert_eq!((y, m, d), (1970, 1, 1));
-    }
-
-    #[test]
-    fn test_days_to_ymd_known_date() {
-        // 2024-01-01 = day 19723 from epoch
-        let (y, m, d) = days_to_ymd(19723);
-        assert_eq!((y, m, d), (2024, 1, 1));
+    fn format_unix_timestamp_post_2106() {
+        // 2200-01-01 00:00:00 UTC — past the u32 epoch cutoff that the old
+        // hand-rolled code would have silently truncated.
+        assert_eq!(format_unix_timestamp(7258118400), "2200-01-01 00:00:00");
     }
 
     // ---- StandaloneSftpClient unit tests ----
-
-    #[test]
-    fn test_new_client_is_disconnected() {
-        let client = StandaloneSftpClient::new();
-        assert!(!client.is_connected());
-    }
 
     #[test]
     fn test_file_entry_type_serialization() {
@@ -541,12 +486,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_disconnect_on_new_client_is_ok() {
-        let mut client = StandaloneSftpClient::new();
-        // Disconnecting a never-connected client should succeed
-        let result = client.disconnect().await;
-        assert!(result.is_ok());
-        assert!(!client.is_connected());
-    }
 }

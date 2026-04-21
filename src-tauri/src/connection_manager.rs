@@ -92,10 +92,6 @@ impl ConnectionManager {
         }
     }
 
-    pub fn host_keys(&self) -> Arc<HostKeyStore> {
-        self.host_keys.clone()
-    }
-
     // =========================================================================
     // Inspection
     // =========================================================================
@@ -434,17 +430,22 @@ impl ConnectionManager {
         connection_id: String,
         request: &DesktopConnectRequest,
     ) -> Result<(u16, u16)> {
-        let protocol = request.protocol.to_uppercase();
-        let (kind, client): (ProtocolKind, Box<dyn DesktopProtocol>) = match protocol.as_str() {
-            "RDP" => {
+        use crate::desktop_protocol::DesktopKind;
+        let (kind, client): (ProtocolKind, Box<dyn DesktopProtocol>) = match request.protocol {
+            DesktopKind::Rdp => {
                 let config = request.to_rdp_config();
-                (ProtocolKind::Rdp, Box::new(RdpClient::connect(&config).await?))
+                (
+                    ProtocolKind::Rdp,
+                    Box::new(RdpClient::connect(&config).await?),
+                )
             }
-            "VNC" => {
+            DesktopKind::Vnc => {
                 let config = request.to_vnc_config();
-                (ProtocolKind::Vnc, Box::new(VncClient::connect(&config).await?))
+                (
+                    ProtocolKind::Vnc,
+                    Box::new(VncClient::connect(&config).await?),
+                )
             }
-            _ => return Err(anyhow::anyhow!("Unknown desktop protocol: {}", protocol)),
         };
 
         let (w, h) = client.desktop_size();
@@ -471,6 +472,11 @@ impl ConnectionManager {
     }
 
     /// Start the frame update loop for a desktop connection.
+    ///
+    /// Not yet wired up to the WebSocket server — kept here so the RDP/VNC
+    /// stubs have a concrete dispatch point once the protocol clients gain
+    /// real implementations. Remove the allow once a caller appears.
+    #[allow(dead_code)]
     pub async fn start_desktop_stream(
         &self,
         connection_id: &str,

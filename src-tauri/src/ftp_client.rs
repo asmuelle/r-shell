@@ -47,10 +47,6 @@ pub struct FtpClient {
 }
 
 impl FtpClient {
-    pub fn new() -> Self {
-        Self { stream: None }
-    }
-
     /// Connect to an FTP server, authenticate, and switch to binary transfer mode.
     pub async fn connect(config: &FtpConfig) -> Result<Self> {
         let addr = format!("{}:{}", config.host, config.port);
@@ -160,22 +156,30 @@ impl FtpClient {
         })
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.stream.is_some()
-    }
-
     pub async fn disconnect(&mut self) -> Result<()> {
         if let Some(kind) = self.stream.take() {
             match kind {
                 FtpStreamKind::Plain(mut s) => {
-                    let _ = s.quit().await;
+                    if let Err(e) = s.quit().await {
+                        tracing::warn!("FTP quit failed cleanly: {}", e);
+                    }
                 }
                 FtpStreamKind::Secure(mut s) => {
-                    let _ = s.quit().await;
+                    if let Err(e) = s.quit().await {
+                        tracing::warn!("FTPS quit failed cleanly: {}", e);
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    /// Test-only hook used by integration tests to assert lifecycle state.
+    /// Production code dispatches via `ConnectionManager`, not via a direct
+    /// handle, so this is kept behind `#[cfg(test)]` to avoid dead-code noise.
+    #[cfg(test)]
+    pub fn is_connected(&self) -> bool {
+        self.stream.is_some()
     }
 
     // ===== File Operations =====
@@ -648,20 +652,6 @@ mod tests {
         let config: FtpConfig = serde_json::from_str(json).unwrap();
         assert!(config.ftps_enabled);
         assert_eq!(config.port, 990);
-    }
-
-    #[test]
-    fn test_new_client_is_disconnected() {
-        let client = FtpClient::new();
-        assert!(!client.is_connected());
-    }
-
-    #[tokio::test]
-    async fn test_disconnect_on_new_client_is_ok() {
-        let mut client = FtpClient::new();
-        let result = client.disconnect().await;
-        assert!(result.is_ok());
-        assert!(!client.is_connected());
     }
 
     #[test]

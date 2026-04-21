@@ -5,6 +5,13 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// A decoded framebuffer update — a dirty rectangle with RGBA pixel data.
+///
+/// Emitted by the `DesktopProtocol::start_frame_loop` trait method. The RDP
+/// and VNC clients are currently stubs; once they produce real frames,
+/// `ConnectionManager::start_desktop_stream` will plumb these to the
+/// WebSocket server. Until then the struct and its field are "dead" only
+/// in the sense that no production code exercises them yet.
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct FrameUpdate {
     pub x: u16,
@@ -57,10 +64,21 @@ pub trait DesktopProtocol: Send + Sync {
 // Request / response data models shared between Tauri commands and WebSocket
 // ---------------------------------------------------------------------------
 
+/// Which remote-desktop protocol the client is asking for.
+///
+/// Serialised UPPERCASE (`"RDP"` / `"VNC"`) to match the wire format the
+/// frontend already sends.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum DesktopKind {
+    Rdp,
+    Vnc,
+}
+
 /// Request to establish an RDP or VNC connection.
 #[derive(Deserialize)]
 pub struct DesktopConnectRequest {
-    pub protocol: String, // "RDP" or "VNC"
+    pub protocol: DesktopKind,
     pub host: String,
     pub port: u16,
     pub username: Option<String>, // RDP only
@@ -75,7 +93,7 @@ pub struct DesktopConnectRequest {
 impl std::fmt::Debug for DesktopConnectRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DesktopConnectRequest")
-            .field("protocol", &self.protocol)
+            .field("protocol", &format_args!("{:?}", self.protocol))
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)
@@ -106,6 +124,9 @@ pub struct RdpConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
+    /// Credential slot — consumed by the NLA handshake once `RdpClient::connect`
+    /// gets a real implementation (see rdp_client.rs).
+    #[allow(dead_code)]
     pub password: String,
     pub domain: Option<String>,
     pub width: u16,

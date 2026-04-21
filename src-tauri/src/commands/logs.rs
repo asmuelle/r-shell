@@ -8,11 +8,17 @@ use tauri::State;
 
 use super::CommandResponse;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TailLogRequest {
-    pub connection_id: String,
-    pub log_path: String,
-    pub lines: Option<u32>,
+/// Tag for which backing source a log entry comes from.
+///
+/// Serialised lowercase (`"file"` / `"journal"` / `"docker"`) — matches both
+/// the shape of `LogSource.source_type` the frontend already sees and the
+/// inbound `source_type` strings the tail/search handlers accepted before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogSourceKind {
+    File,
+    Journal,
+    Docker,
 }
 
 #[tauri::command]
@@ -80,7 +86,7 @@ pub async fn list_log_files(
 pub struct LogSource {
     pub id: String,
     pub name: String,
-    pub source_type: String,
+    pub source_type: LogSourceKind,
     pub path: String,
     pub category: String,
     pub size_human: Option<String>,
@@ -127,7 +133,7 @@ pub async fn discover_log_sources(
 
     let mut sources: Vec<LogSource> = Vec::new();
 
-    let file_cmd = concat!(
+    const FILE_CMD: &str = concat!(
         "find /var/log -maxdepth 3 -type f \\( ",
         "-name '*.log' -o -name '*.log.*' -o ",
         "-name 'syslog' -o -name 'syslog.*' -o ",
@@ -141,8 +147,18 @@ pub async fn discover_log_sources(
         "-name 'yum.log' -o -name 'alternatives.log' ",
         "\\) -readable 2>/dev/null | head -80"
     );
+    const JOURNAL_CMD: &str = "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | head -30";
+    const DOCKER_CMD: &str = r#"docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20"#;
 
-    if let Ok(output) = client.execute_command(file_cmd).await {
+    // Run the three independent discovery commands concurrently — previously
+    // they ran sequentially, paying one SSH round-trip per stage.
+    let (files, journals, dockers) = tokio::join!(
+        client.execute_command(FILE_CMD),
+        client.execute_command(JOURNAL_CMD),
+        client.execute_command(DOCKER_CMD),
+    );
+
+    if let Ok(output) = files {
         for line in output.lines() {
             let path = line.trim().to_string();
             if path.is_empty() {
@@ -153,7 +169,7 @@ pub async fn discover_log_sources(
             sources.push(LogSource {
                 id: format!("file:{}", path),
                 name,
-                source_type: "file".into(),
+                source_type: LogSourceKind::File,
                 path,
                 category,
                 size_human: None,
@@ -161,10 +177,12 @@ pub async fn discover_log_sources(
         }
     }
 
+    // `du -h` depends on the file-find output, so it still has to run serially
+    // after the parallel phase. One extra round-trip instead of three.
     if !sources.is_empty() {
         let file_paths: Vec<String> = sources
             .iter()
-            .filter(|s| s.source_type == "file")
+            .filter(|s| s.source_type == LogSourceKind::File)
             .map(|s| sh_quote(&s.path))
             .collect();
 
@@ -185,8 +203,7 @@ pub async fn discover_log_sources(
         }
     }
 
-    let journal_cmd = "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | head -30";
-    if let Ok(output) = client.execute_command(journal_cmd).await {
+    if let Ok(output) = journals {
         for line in output.lines() {
             let unit = line.trim().to_string();
             if unit.is_empty() || unit.starts_with("UNIT") {
@@ -196,7 +213,7 @@ pub async fn discover_log_sources(
             sources.push(LogSource {
                 id: format!("journal:{}", unit),
                 name,
-                source_type: "journal".into(),
+                source_type: LogSourceKind::Journal,
                 path: unit,
                 category: "service".to_string(),
                 size_human: None,
@@ -204,8 +221,7 @@ pub async fn discover_log_sources(
         }
     }
 
-    let docker_cmd = r#"docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20"#;
-    if let Ok(output) = client.execute_command(docker_cmd).await {
+    if let Ok(output) = dockers {
         if !output.contains("command not found") && !output.contains("Cannot connect") {
             for line in output.lines() {
                 let parts: Vec<&str> = line.trim().splitn(2, '\t').collect();
@@ -217,7 +233,7 @@ pub async fn discover_log_sources(
                 sources.push(LogSource {
                     id: format!("docker:{}", container),
                     name: container.clone(),
-                    source_type: "docker".into(),
+                    source_type: LogSourceKind::Docker,
                     path: container,
                     category: "container".to_string(),
                     size_human: status,
@@ -227,14 +243,13 @@ pub async fn discover_log_sources(
     }
 
     sources.sort_by(|a, b| {
-        let type_order = |t: &str| match t {
-            "file" => 0,
-            "journal" => 1,
-            "docker" => 2,
-            _ => 3,
+        let type_order = |t: LogSourceKind| match t {
+            LogSourceKind::File => 0,
+            LogSourceKind::Journal => 1,
+            LogSourceKind::Docker => 2,
         };
-        type_order(&a.source_type)
-            .cmp(&type_order(&b.source_type))
+        type_order(a.source_type)
+            .cmp(&type_order(b.source_type))
             .then(a.category.cmp(&b.category))
             .then(a.name.cmp(&b.name))
     });
@@ -249,7 +264,7 @@ pub async fn discover_log_sources(
 #[tauri::command]
 pub async fn read_log(
     connection_id: String,
-    source_type: String,
+    source_type: LogSourceKind,
     path: String,
     lines: Option<u32>,
     state: State<'_, Arc<ConnectionManager>>,
@@ -262,18 +277,20 @@ pub async fn read_log(
 
     let line_count = lines.unwrap_or(200);
 
-    let cmd = match source_type.as_str() {
-        "journal" => format!(
+    let cmd = match source_type {
+        LogSourceKind::Journal => format!(
             "journalctl -u {} -n {} --no-pager 2>/dev/null",
             sh_quote(&path),
             line_count
         ),
-        "docker" => format!(
+        LogSourceKind::Docker => format!(
             "docker logs --tail {} {} 2>&1",
             line_count,
             sh_quote(&path)
         ),
-        _ => format!("tail -n {} {} 2>/dev/null", line_count, sh_quote(&path)),
+        LogSourceKind::File => {
+            format!("tail -n {} {} 2>/dev/null", line_count, sh_quote(&path))
+        }
     };
 
     match client.execute_command(&cmd).await {
@@ -293,7 +310,7 @@ pub async fn read_log(
 #[tauri::command]
 pub async fn search_log(
     connection_id: String,
-    source_type: String,
+    source_type: LogSourceKind,
     path: String,
     pattern: String,
     is_regex: Option<bool>,
@@ -315,16 +332,16 @@ pub async fn search_log(
         "-nF"
     };
 
-    let cmd = match source_type.as_str() {
-        "journal" => format!(
+    let cmd = match source_type {
+        LogSourceKind::Journal => format!(
             "journalctl -u {} --no-pager 2>/dev/null | grep {} -i {} | tail -n {}",
             q_path, grep_flag, q_pattern, limit
         ),
-        "docker" => format!(
+        LogSourceKind::Docker => format!(
             "docker logs {} 2>&1 | grep {} -i {} | tail -n {}",
             q_path, grep_flag, q_pattern, limit
         ),
-        _ => format!(
+        LogSourceKind::File => format!(
             "grep {} -i {} {} 2>/dev/null | tail -n {}",
             grep_flag, q_pattern, q_path, limit
         ),
