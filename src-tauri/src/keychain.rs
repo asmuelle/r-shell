@@ -61,6 +61,7 @@ pub fn is_supported() -> bool {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
     };
@@ -75,6 +76,42 @@ mod platform {
                 e
             )
         })
+    }
+
+    pub fn list_accounts(kind: CredentialKind) -> Result<Vec<String>> {
+        let results = match ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(kind.service())
+            .load_attributes(true)
+            .limit(Limit::All)
+            .search()
+        {
+            Ok(r) => r,
+            // errSecItemNotFound just means "no entries for this service" —
+            // return an empty list, don't propagate the error.
+            Err(e) if e.code() == errSecItemNotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "keychain list failed for {}: {}",
+                    kind.service(),
+                    e
+                ))
+            }
+        };
+
+        let mut accounts = Vec::with_capacity(results.len());
+        for r in results {
+            if let Some(attrs) = r.simplify_dict() {
+                // "acct" is the string-form key for kSecAttrAccount in the
+                // simplified dictionary returned by security-framework.
+                if let Some(account) = attrs.get("acct") {
+                    accounts.push(account.clone());
+                }
+            }
+        }
+        accounts.sort();
+        accounts.dedup();
+        Ok(accounts)
     }
 
     pub fn load_password(kind: CredentialKind, account: &str) -> Result<Option<String>> {
@@ -138,6 +175,12 @@ mod platform {
             "Keychain integration is only supported on macOS"
         ))
     }
+
+    pub fn list_accounts(_kind: CredentialKind) -> Result<Vec<String>> {
+        // On non-macOS there are no entries to list — report an empty set
+        // rather than an error so the Settings UI renders gracefully.
+        Ok(Vec::new())
+    }
 }
 
 pub fn save_password(kind: CredentialKind, account: &str, secret: &str) -> Result<()> {
@@ -167,6 +210,19 @@ pub fn delete_password(kind: CredentialKind, account: &str) -> Result<()> {
         account
     );
     platform::delete_password(kind, account)
+}
+
+/// List all accounts stored under a given kind's service. Returns an empty
+/// vector (not an error) when no entries exist or the platform has no
+/// keychain. Useful for the Settings UI to show the user what's saved.
+pub fn list_accounts(kind: CredentialKind) -> Result<Vec<String>> {
+    let result = platform::list_accounts(kind);
+    tracing::debug!(
+        "keychain list: service={}, count={}",
+        kind.service(),
+        result.as_ref().map(|v| v.len()).unwrap_or(0)
+    );
+    result
 }
 
 // =============================================================================
@@ -241,5 +297,47 @@ mod tests {
 
         // Delete is idempotent.
         delete_password(kind, &account).expect("idempotent delete");
+    }
+
+    /// Verify that `list_accounts` finds entries we just saved and stops
+    /// listing them after deletion. Ignored by default like the other
+    /// real-Keychain tests; run with `cargo test -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn list_accounts_round_trip_on_real_keychain() {
+        let kind = CredentialKind::FtpPassword;
+        let pid = std::process::id();
+        let accounts = [
+            format!("r-shell-list-a-{}@a.test:21", pid),
+            format!("r-shell-list-b-{}@b.test:21", pid),
+        ];
+
+        for a in &accounts {
+            save_password(kind, a, "x").expect("save");
+        }
+
+        let listed = list_accounts(kind).expect("list");
+        for a in &accounts {
+            assert!(
+                listed.iter().any(|l| l == a),
+                "expected {} in list, got {:?}",
+                a,
+                listed
+            );
+        }
+
+        for a in &accounts {
+            delete_password(kind, a).expect("cleanup");
+        }
+
+        let after = list_accounts(kind).expect("list after cleanup");
+        for a in &accounts {
+            assert!(
+                !after.iter().any(|l| l == a),
+                "entry {} should be gone after cleanup",
+                a
+            );
+        }
     }
 }

@@ -119,6 +119,10 @@ export function ConnectionDialog({
   const [keychainSupported, setKeychainSupported] = useState<boolean | null>(null);
   const [saveToKeychain, setSaveToKeychain] = useState(false);
   const [loadedFromKeychain, setLoadedFromKeychain] = useState(false);
+  // True when the form has a secret from localStorage that is NOT yet in the
+  // Keychain. We nudge the user toward migration by pre-ticking the switch
+  // and showing a short hint.
+  const [migrationEligible, setMigrationEligible] = useState(false);
   // Which (protocol, authMethod, account) combinations we have already
   // attempted to auto-load. Prevents us from re-firing the keychain prompt
   // on every re-render once the user has typed a value into the form.
@@ -153,6 +157,7 @@ export function ConnectionDialog({
       attemptedKeychainLoadsRef.current.clear();
       setLoadedFromKeychain(false);
       setSaveToKeychain(false);
+      setMigrationEligible(false);
 
       setSavedProfiles(ConnectionProfileManager.getProfiles());
 
@@ -180,10 +185,19 @@ export function ConnectionDialog({
     }
   }, [open, editingConnection]);
 
-  // Auto-load saved credentials from the Keychain when the host/port/username/
-  // auth combination identifies a known account and the corresponding secret
-  // field is empty. Populating a field the user has already typed into would
-  // be surprising, so we only fill blanks.
+  // Probe the Keychain once per unique (kind, account) combo while the dialog
+  // is open. Two cases are handled:
+  //
+  // 1. Keychain has a secret + form field is empty → populate it and set the
+  //    "Loaded from Keychain" hint. The saveToKeychain toggle is turned on so
+  //    that any further password change is re-persisted on connect.
+  //
+  // 2. Keychain has no entry + form already has a secret (typically from
+  //    editingConnection's localStorage data) → this connection is eligible
+  //    for migration. Pre-tick the switch and surface a short hint.
+  //
+  // A ref memoises which combos we've already probed so typing into the form
+  // does not repeatedly re-fire the IPC call or clobber user input.
   useEffect(() => {
     if (!open) return;
     if (keychainSupported !== true) return;
@@ -192,31 +206,38 @@ export function ConnectionDialog({
     const kind = credentialKindFor(config.protocol, config.authMethod);
     if (!kind) return;
 
-    const currentSecret =
-      config.authMethod === 'password' ? config.password : config.passphrase;
-    if (currentSecret) return;
-
     const account = accountFor(config.host, config.port, config.username);
     const memoKey = `${kind}:${account}`;
     if (attemptedKeychainLoadsRef.current.has(memoKey)) return;
     attemptedKeychainLoadsRef.current.add(memoKey);
 
+    const currentSecret =
+      config.authMethod === 'password' ? config.password : config.passphrase;
+
     let cancelled = false;
     keychainLoad(kind, account)
       .then(secret => {
-        if (cancelled || !secret) return;
-        setConfig(prev => {
-          // Re-check that the user hasn't typed into the field between the
-          // invoke firing and the promise resolving.
-          const pending =
-            prev.authMethod === 'password' ? prev.password : prev.passphrase;
-          if (pending) return prev;
-          return prev.authMethod === 'password'
-            ? { ...prev, password: secret }
-            : { ...prev, passphrase: secret };
-        });
-        setLoadedFromKeychain(true);
-        setSaveToKeychain(true);
+        if (cancelled) return;
+        if (secret) {
+          // Case 1: populate an empty field from the Keychain. Re-check inside
+          // the setter so a user who typed while the promise was in flight is
+          // not overwritten.
+          setConfig(prev => {
+            const pending =
+              prev.authMethod === 'password' ? prev.password : prev.passphrase;
+            if (pending) return prev;
+            return prev.authMethod === 'password'
+              ? { ...prev, password: secret }
+              : { ...prev, passphrase: secret };
+          });
+          setLoadedFromKeychain(true);
+          setSaveToKeychain(true);
+          setMigrationEligible(false);
+        } else if (currentSecret) {
+          // Case 2: secret lives only in localStorage — offer to migrate it.
+          setSaveToKeychain(true);
+          setMigrationEligible(true);
+        }
       })
       .catch(err => {
         console.error('Keychain load failed:', err);
@@ -313,6 +334,7 @@ export function ConnectionDialog({
       );
       setLoadedFromKeychain(false);
       setSaveToKeychain(false);
+      setMigrationEligible(false);
       attemptedKeychainLoadsRef.current.delete(`${kind}:${account}`);
     } catch (err) {
       console.error('Keychain delete failed:', err);
@@ -335,7 +357,12 @@ export function ConnectionDialog({
     const account = accountFor(config.host, config.port, config.username);
     try {
       await keychainSave(kind, account, secret);
-      toast.success('Credential saved to Keychain');
+      toast.success(
+        migrationEligible
+          ? 'Password migrated to Keychain'
+          : 'Credential saved to Keychain',
+      );
+      setMigrationEligible(false);
     } catch (err) {
       console.error('Keychain save failed:', err);
       toast.error('Could not save credential to Keychain', {
@@ -929,9 +956,20 @@ export function ConnectionDialog({
                       <Switch
                         id="save-to-keychain"
                         checked={saveToKeychain}
-                        onCheckedChange={setSaveToKeychain}
+                        onCheckedChange={checked => {
+                          setSaveToKeychain(checked);
+                          // Turning off clears the migration nudge — the user
+                          // deliberately opted not to migrate this time.
+                          if (!checked) setMigrationEligible(false);
+                        }}
                       />
                     </div>
+                    {migrationEligible && saveToKeychain && (
+                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                        <span className="font-medium">Migration:</span>{' '}
+                        this {config.authMethod === 'password' ? 'password' : 'passphrase'} is currently stored in local storage. Connecting will move it to the macOS Keychain and clear the local copy.
+                      </div>
+                    )}
                     {loadedFromKeychain && (
                       <Button
                         variant="ghost"

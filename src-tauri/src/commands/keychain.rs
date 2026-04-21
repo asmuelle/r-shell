@@ -41,3 +41,11 @@ pub async fn keychain_load(
 pub async fn keychain_delete(kind: CredentialKind, account: String) -> Result<(), String> {
     keychain::delete_password(kind, &account).map_err(|e| e.to_string())
 }
+
+/// List all accounts stored under the given credential kind. Returns an empty
+/// array — never an error — when no entries exist or the platform has no
+/// keychain, so the UI can render a "nothing saved" state unconditionally.
+#[tauri::command]
+pub async fn keychain_list(kind: CredentialKind) -> Result<Vec<String>, String> {
+    keychain::list_accounts(kind).map_err(|e| e.to_string())
+}

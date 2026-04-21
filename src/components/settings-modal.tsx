@@ -21,14 +21,15 @@ import {
   Upload,
   X
 } from 'lucide-react';
-import { 
-  TerminalAppearanceSettings, 
-  defaultAppearanceSettings, 
+import {
+  TerminalAppearanceSettings,
+  defaultAppearanceSettings,
   loadAppearanceSettings,
   saveAppearanceSettings,
-  terminalThemes 
+  terminalThemes
 } from '../lib/terminal-config';
 import { applyTheme, ThemeMode } from '../lib/utils';
+import { KeychainCredentialsCard } from './keychain-credentials-card';
 
 interface SettingsModalProps {
   open: boolean;
@@ -663,6 +664,8 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange }: Settin
                 </div>
               </CardContent>
             </Card>
+
+            <KeychainCredentialsCard />
           </TabsContent>
 
           <TabsContent value="interface" className="flex-1 overflow-y-auto px-6 py-4 space-y-4 mt-0">

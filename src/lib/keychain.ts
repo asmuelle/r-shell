@@ -55,6 +55,36 @@ export async function keychainDelete(
   await invoke('keychain_delete', { kind, account });
 }
 
+export async function keychainList(kind: CredentialKind): Promise<string[]> {
+  const result = await invoke<string[]>('keychain_list', { kind });
+  return result ?? [];
+}
+
+/** User-friendly label for a CredentialKind, for UI lists. */
+export function credentialKindLabel(kind: CredentialKind): string {
+  switch (kind) {
+    case 'ssh_password':
+      return 'SSH password';
+    case 'ssh_key_passphrase':
+      return 'SSH key passphrase';
+    case 'sftp_password':
+      return 'SFTP password';
+    case 'sftp_key_passphrase':
+      return 'SFTP key passphrase';
+    case 'ftp_password':
+      return 'FTP password';
+  }
+}
+
+/** All known credential kinds, in a UI-friendly order. */
+export const ALL_CREDENTIAL_KINDS: readonly CredentialKind[] = [
+  'ssh_password',
+  'ssh_key_passphrase',
+  'sftp_password',
+  'sftp_key_passphrase',
+  'ftp_password',
+] as const;
+
 /**
  * Stable Keychain account identifier for a (host, port, username) tuple.
  * Using this consistently means the same credential is reused across
@@ -88,4 +118,51 @@ export function credentialKindFor(
     if (authMethod === 'password') return 'ftp_password';
   }
   return null;
+}
+
+export interface ResolvedSecrets {
+  password: string | null;
+  passphrase: string | null;
+}
+
+/**
+ * Resolve the effective password + passphrase for a connection, preferring the
+ * Keychain over the localStorage fallback. Callers should pass the stored
+ * fallback values; this function only overrides a field when the Keychain has
+ * an actual value for the relevant credential kind.
+ *
+ * Keychain lookup failures are logged and swallowed — the legacy localStorage
+ * value is used so a broken Keychain can never block a reconnect.
+ */
+export async function resolveSecrets(
+  protocol: string,
+  authMethod: string,
+  host: string,
+  port: number,
+  username: string,
+  fallback: { password?: string | null; passphrase?: string | null } = {},
+): Promise<ResolvedSecrets> {
+  const password = fallback.password ?? null;
+  const passphrase = fallback.passphrase ?? null;
+
+  const kind = credentialKindFor(protocol, authMethod);
+  if (!kind) return { password, passphrase };
+
+  const account = accountFor(host, port, username);
+  try {
+    const fromKeychain = await keychainLoad(kind, account);
+    if (!fromKeychain) return { password, passphrase };
+
+    // The credential kind identifies which slot the secret belongs in.
+    const isPassphrase =
+      kind === 'ssh_key_passphrase' || kind === 'sftp_key_passphrase';
+    return isPassphrase
+      ? { password, passphrase: fromKeychain }
+      : { password: fromKeychain, passphrase };
+  } catch (err) {
+    // Deliberately log-and-fallback so a Keychain access failure cannot
+    // block a reconnect that would otherwise succeed with stored creds.
+    console.error('Keychain lookup failed, falling back:', err);
+    return { password, passphrase };
+  }
 }

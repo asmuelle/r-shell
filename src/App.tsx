@@ -12,6 +12,7 @@ import { IntegratedFileBrowser } from './components/integrated-file-browser';
 import { WelcomeScreen } from './components/welcome-screen';
 import { UpdateChecker } from './components/update-checker';
 import { ActiveConnectionsManager, ConnectionStorageManager } from './lib/connection-storage';
+import { resolveSecrets } from './lib/keychain';
 import { isDesktopProtocol } from './lib/protocol-config';
 import { registerRestoration, clearAllRestorations } from './lib/restoration-manager';
 import { useLayout, LayoutProvider } from './lib/layout-context';
@@ -203,10 +204,29 @@ function AppContent() {
         }
 
         const isDesktopProto = connectionData.protocol === 'RDP' || connectionData.protocol === 'VNC';
+
+        // Resolve secrets: Keychain wins over the legacy localStorage copy so
+        // a connection whose password was migrated to Keychain still works.
+        const defaultPort = connectionData.protocol === 'FTP' ? 21
+          : connectionData.protocol === 'RDP' ? 3389
+          : connectionData.protocol === 'VNC' ? 5900
+          : 22;
+        const resolvedSecrets = await resolveSecrets(
+          connectionData.protocol,
+          connectionData.authMethod || 'password',
+          connectionData.host,
+          connectionData.port || defaultPort,
+          connectionData.username || '',
+          {
+            password: connectionData.password,
+            passphrase: connectionData.passphrase,
+          },
+        );
+
         const hasCredentials = isDesktopProto
           ? true // Desktop protocols can connect with or without credentials
           : connectionData.authMethod === 'password'
-            ? !!connectionData.password
+            ? !!resolvedSecrets.password
             : (connectionData.authMethod === 'anonymous' ? true : !!connectionData.privateKeyPath);
 
         if (!hasCredentials) {
@@ -240,7 +260,7 @@ function AppContent() {
                   port: connectionData.port || (proto === 'RDP' ? 3389 : 5900),
                   protocol: proto.toLowerCase(),
                   username: connectionData.username || '',
-                  password: connectionData.password || '',
+                  password: resolvedSecrets.password || '',
                   domain: connectionData.domain || null,
                   resolution: connectionData.rdpResolution || '1920x1080',
                   color_depth: connectionData.vncColorDepth ? parseInt(connectionData.vncColorDepth) : 24,
@@ -284,9 +304,9 @@ function AppContent() {
                     port: connectionData.port || 22,
                     username: connectionData.username,
                     auth_method: connectionData.authMethod || 'password',
-                    password: connectionData.password || '',
+                    password: resolvedSecrets.password || '',
                     key_path: connectionData.privateKeyPath || null,
-                    passphrase: connectionData.passphrase || null,
+                    passphrase: resolvedSecrets.passphrase,
                   }
                 }),
                 CONNECT_TIMEOUT_MS,
@@ -300,7 +320,7 @@ function AppContent() {
                     host: connectionData.host,
                     port: connectionData.port || 21,
                     username: connectionData.username || '',
-                    password: connectionData.password || '',
+                    password: resolvedSecrets.password || '',
                     ftps_enabled: connectionData.ftpsEnabled ?? false,
                     anonymous: connectionData.authMethod === 'anonymous',
                   }
@@ -345,9 +365,9 @@ function AppContent() {
                     port: connectionData.port || 22,
                     username: connectionData.username,
                     auth_method: connectionData.authMethod || 'password',
-                    password: connectionData.password || '',
+                    password: resolvedSecrets.password || '',
                     key_path: connectionData.privateKeyPath || null,
-                    passphrase: connectionData.passphrase || null,
+                    passphrase: resolvedSecrets.passphrase,
                   }
                 }
               ),
@@ -454,12 +474,25 @@ function AppContent() {
       const isFtp = connectionData.protocol === 'FTP';
       const isFileBrowser = isSftp || isFtp;
 
+      const defaultPort = isFtp ? 21 : 22;
+      const resolvedSecrets = await resolveSecrets(
+        connectionData.protocol,
+        connectionData.authMethod || 'password',
+        connectionData.host,
+        connectionData.port || defaultPort,
+        connectionData.username || '',
+        {
+          password: connectionData.password,
+          passphrase: connectionData.passphrase,
+        },
+      );
+
       const hasCredentials = isFileBrowser
         ? (connectionData.authMethod === 'anonymous' || connectionData.authMethod === 'password'
-          ? (connectionData.authMethod === 'anonymous' || !!connectionData.password)
+          ? (connectionData.authMethod === 'anonymous' || !!resolvedSecrets.password)
           : !!connectionData.privateKeyPath)
         : (connectionData.authMethod === 'password'
-          ? !!connectionData.password
+          ? !!resolvedSecrets.password
           : !!connectionData.privateKeyPath);
 
       if (!hasCredentials) {
@@ -505,9 +538,9 @@ function AppContent() {
                 port: connectionData.port || 22,
                 username: connectionData.username,
                 auth_method: connectionData.authMethod || 'password',
-                password: connectionData.password || '',
+                password: resolvedSecrets.password || '',
                 key_path: connectionData.privateKeyPath || null,
-                passphrase: connectionData.passphrase || null,
+                passphrase: resolvedSecrets.passphrase,
               }
             });
           } else {
@@ -517,7 +550,7 @@ function AppContent() {
                 host: connectionData.host,
                 port: connectionData.port || 21,
                 username: connectionData.username || '',
-                password: connectionData.password || '',
+                password: resolvedSecrets.password || '',
                 ftps_enabled: connectionData.ftpsEnabled ?? false,
                 anonymous: connectionData.authMethod === 'anonymous',
               }
@@ -543,9 +576,9 @@ function AppContent() {
                 port: connectionData.port || 22,
                 username: connectionData.username,
                 auth_method: connectionData.authMethod || 'password',
-                password: connectionData.password || '',
+                password: resolvedSecrets.password || '',
                 key_path: connectionData.privateKeyPath || null,
-                passphrase: connectionData.passphrase || null,
+                passphrase: resolvedSecrets.passphrase,
               }
             }
           );

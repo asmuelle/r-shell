@@ -105,6 +105,7 @@ pub fn run() {
             commands::keychain_save,
             commands::keychain_load,
             commands::keychain_delete,
+            commands::keychain_list,
             // Standalone SFTP/FTP commands
             commands::sftp_connect,
             commands::sftp_standalone_disconnect,
