@@ -3,6 +3,7 @@ mod connection_manager;
 mod desktop_protocol;
 mod ftp_client;
 mod keychain;
+mod menu;
 mod rdp_client;
 mod sftp_client;
 mod ssh;
@@ -51,7 +52,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup({
             let connection_manager_clone = connection_manager.clone();
-            move |_app| {
+            move |app| {
+                // Install the native menu bar. Runs on every platform; on
+                // macOS this becomes the system menu bar, elsewhere it
+                // attaches to the main window.
+                if let Err(e) = menu::install(app.handle()) {
+                    tracing::error!("Failed to install application menu: {}", e);
+                }
+
                 // Start WebSocket server for terminal I/O
                 // Try ports 9001-9010 to avoid conflicts with other instances
                 let ws_server = Arc::new(WebSocketServer::new(

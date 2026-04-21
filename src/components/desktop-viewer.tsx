@@ -62,15 +62,24 @@ export function DesktopViewer({
 
     const connect = async () => {
       let wsPort = 9001;
+      let wsToken = '';
       try {
         wsPort = await invoke<number>('get_websocket_port');
       } catch {
         // fallback to default
       }
+      try {
+        wsToken = await invoke<string>('get_websocket_token');
+      } catch (e) {
+        // The WS server will reject the upgrade without it; surface why.
+        console.error('[DesktopViewer] Failed to get WebSocket token:', e);
+      }
 
       if (cancelled) return;
 
-      ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+      ws = new WebSocket(
+        `ws://127.0.0.1:${wsPort}/?token=${encodeURIComponent(wsToken)}`,
+      );
       wsRef.current = ws;
 
       ws.onopen = () => {

@@ -136,6 +136,7 @@ export function TerminalGroupView({ groupId }: TerminalGroupViewProps) {
                   host={tab.host}
                   protocol={tab.protocol}
                   isConnected={tab.connectionStatus === 'connected'}
+                  connectionStatus={tab.connectionStatus}
                   onReconnect={() => handleReconnect(tab.id)}
                 />
               ) : tab.tabType === 'editor' && tab.editorFilePath && tab.editorConnectionId ? (

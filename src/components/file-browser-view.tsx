@@ -33,6 +33,10 @@ export interface FileBrowserViewProps {
   host?: string;
   protocol?: string;
   isConnected: boolean;
+  /** Optional explicit connection status. When provided, lets the overlay
+   *  distinguish "Connecting…" from "Connection lost" instead of rendering
+   *  the same message for both. Falls back to deriving from `isConnected`. */
+  connectionStatus?: 'connected' | 'connecting' | 'disconnected' | 'pending';
   onReconnect?: () => void;
 }
 
@@ -44,6 +48,7 @@ export function FileBrowserView({
   host,
   protocol: _protocol,
   isConnected,
+  connectionStatus,
   onReconnect,
 }: FileBrowserViewProps) {
   const [activePanel, setActivePanel] = useState<"local" | "remote">("local");
@@ -405,15 +410,18 @@ export function FileBrowserView({
     return () => clearInterval(interval);
   }, []);
 
-  // ------ Disconnected overlay ------
+  // ------ Connecting / disconnected overlay ------
   if (!isConnected) {
+    const isConnecting = connectionStatus === 'connecting';
     return (
       <div className="h-full w-full flex flex-col items-center justify-center bg-muted/30 gap-3">
         <WifiOff className="h-10 w-10 text-muted-foreground" />
         <p className="text-sm text-muted-foreground">
-          Connection lost to {connectionName}
+          {isConnecting
+            ? `Connecting to ${connectionName}…`
+            : `Connection lost to ${connectionName}`}
         </p>
-        {onReconnect && (
+        {!isConnecting && onReconnect && (
           <Button variant="outline" size="sm" onClick={onReconnect}>
             <RotateCcw className="h-4 w-4 mr-1" /> Reconnect
           </Button>

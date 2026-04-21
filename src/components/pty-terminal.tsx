@@ -271,17 +271,27 @@ export function PtyTerminal({
         onConnectionStatusChange?.(connectionId, 'connecting');
       }
       
-      // Get the dynamically assigned WebSocket port from the backend
+      // Get the dynamically assigned WebSocket port + per-process auth token
+      // from the backend. The WS server rejects upgrades without the token,
+      // so both values are required before we open the socket.
       let wsPort = 9001; // fallback default
+      let wsToken = '';
       try {
         wsPort = await invoke<number>('get_websocket_port');
         console.log(`[PTY Terminal] [${connectionId}] WebSocket port: ${wsPort}`);
       } catch (e) {
         console.warn(`[PTY Terminal] [${connectionId}] Failed to get WebSocket port, using default:`, e);
       }
-      
+      try {
+        wsToken = await invoke<string>('get_websocket_token');
+      } catch (e) {
+        console.error(`[PTY Terminal] [${connectionId}] Failed to get WebSocket token — handshake will be rejected:`, e);
+      }
+
       console.log(`[PTY Terminal] [${connectionId}] Connecting to WebSocket...`);
-      const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${wsPort}/?token=${encodeURIComponent(wsToken)}`,
+      );
       wsRef.current = ws;
 
       ws.onopen = () => {

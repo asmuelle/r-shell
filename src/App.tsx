@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { MenuBar } from './components/menu-bar';
 import { Toolbar } from './components/toolbar';
 import { ConnectionManager } from './components/connection-manager';
@@ -1106,35 +1108,52 @@ function AppContent() {
         dispatch({ type: 'ADD_TAB', groupId: state.activeGroupId, tab: newTab });
 
         try {
+          console.log(`[connect] ${config.protocol} connect starting for tab=${tabId}`);
           if (isSftp) {
-            await invoke('sftp_connect', {
-              request: {
-                connection_id: tabId,
-                host: config.host,
-                port: config.port || 22,
-                username: config.username,
-                auth_method: config.authMethod || 'password',
-                password: config.password || '',
-                key_path: config.privateKeyPath || null,
-                passphrase: config.passphrase || null,
-              }
-            });
+            const result = await invoke<{ success: boolean; error?: string }>(
+              'sftp_connect',
+              {
+                request: {
+                  connection_id: tabId,
+                  host: config.host,
+                  port: config.port || 22,
+                  username: config.username,
+                  auth_method: config.authMethod || 'password',
+                  password: config.password || '',
+                  key_path: config.privateKeyPath || null,
+                  passphrase: config.passphrase || null,
+                },
+              },
+            );
+            console.log(`[connect] sftp_connect returned`, result);
+            if (!result?.success) {
+              throw new Error(result?.error || 'SFTP backend returned failure without a message');
+            }
           } else {
-            await invoke('ftp_connect', {
-              request: {
-                connection_id: tabId,
-                host: config.host,
-                port: config.port || 21,
-                username: config.username || '',
-                password: config.password || '',
-                ftps_enabled: config.ftpsEnabled ?? false,
-                anonymous: config.authMethod === 'anonymous',
-              }
-            });
+            const result = await invoke<{ success: boolean; error?: string }>(
+              'ftp_connect',
+              {
+                request: {
+                  connection_id: tabId,
+                  host: config.host,
+                  port: config.port || 21,
+                  username: config.username || '',
+                  password: config.password || '',
+                  ftps_enabled: config.ftpsEnabled ?? false,
+                  anonymous: config.authMethod === 'anonymous',
+                },
+              },
+            );
+            console.log(`[connect] ftp_connect returned`, result);
+            if (!result?.success) {
+              throw new Error(result?.error || 'FTP backend returned failure without a message');
+            }
           }
           ConnectionStorageManager.updateLastConnected(config.id || tabId);
           dispatch({ type: 'UPDATE_TAB_STATUS', tabId, status: 'connected' });
+          console.log(`[connect] tab=${tabId} marked connected`);
         } catch (error) {
+          console.error(`[connect] tab=${tabId} failed:`, error);
           dispatch({ type: 'UPDATE_TAB_STATUS', tabId, status: 'disconnected' });
           toast.error('Connection Failed', {
             description: error instanceof Error ? error.message : String(error),
@@ -1159,6 +1178,105 @@ function AppContent() {
   const handleOpenSettings = useCallback(() => {
     setSettingsModalOpen(true);
   }, []);
+
+  // Dispatch table for native menu actions emitted by the backend. Keys match
+  // the string ids in `src-tauri/src/menu.rs::action::*`. Keeping the lookup
+  // in a single `useMemo` makes the wiring easy to audit.
+  const menuActionHandlers = useMemo<Record<string, () => void>>(() => {
+    const group = activeGroup;
+    const groupId = group?.id;
+    const activeTabId = group?.activeTabId;
+    return {
+      'file:new_connection': handleNewTab,
+      'file:close_tab': () => {
+        if (groupId && activeTabId) {
+          dispatch({ type: 'REMOVE_TAB', groupId, tabId: activeTabId });
+        }
+      },
+      'file:settings': handleOpenSettings,
+
+      'view:toggle_left_sidebar': toggleLeftSidebar,
+      'view:toggle_right_sidebar': toggleRightSidebar,
+      'view:toggle_bottom_panel': toggleBottomPanel,
+      'view:toggle_zen_mode': toggleZenMode,
+
+      'window:next_tab': () => {
+        if (group && activeTabId && group.tabs.length > 1) {
+          const idx = group.tabs.findIndex(t => t.id === activeTabId);
+          const next = group.tabs[(idx + 1) % group.tabs.length];
+          dispatch({ type: 'ACTIVATE_TAB', groupId: group.id, tabId: next.id });
+        }
+      },
+      'window:prev_tab': () => {
+        if (group && activeTabId && group.tabs.length > 1) {
+          const idx = group.tabs.findIndex(t => t.id === activeTabId);
+          const prev =
+            group.tabs[(idx - 1 + group.tabs.length) % group.tabs.length];
+          dispatch({ type: 'ACTIVATE_TAB', groupId: group.id, tabId: prev.id });
+        }
+      },
+      'window:split_right': () => {
+        if (state.activeGroupId) {
+          dispatch({
+            type: 'SPLIT_GROUP',
+            groupId: state.activeGroupId,
+            direction: 'right',
+          });
+        }
+      },
+      'window:split_down': () => {
+        if (state.activeGroupId) {
+          dispatch({
+            type: 'SPLIT_GROUP',
+            groupId: state.activeGroupId,
+            direction: 'down',
+          });
+        }
+      },
+
+      'help:docs': () => {
+        void openUrl(
+          'https://github.com/asmuelle/r-shell/blob/main/README.md',
+        );
+      },
+      'help:report_issue': () => {
+        void openUrl('https://github.com/asmuelle/r-shell/issues/new');
+      },
+    };
+  }, [
+    activeGroup,
+    state.activeGroupId,
+    handleNewTab,
+    handleOpenSettings,
+    toggleLeftSidebar,
+    toggleRightSidebar,
+    toggleBottomPanel,
+    toggleZenMode,
+    dispatch,
+  ]);
+
+  // Subscribe to `menu-action` events emitted by the Rust menu handler and
+  // route them to the dispatch table.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string>('menu-action', event => {
+      const handler = menuActionHandlers[event.payload];
+      if (handler) {
+        handler();
+      } else {
+        console.warn('Unhandled menu-action:', event.payload);
+      }
+    })
+      .then(fn => {
+        unlisten = fn;
+      })
+      .catch(err => {
+        console.error('Failed to subscribe to menu-action events:', err);
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, [menuActionHandlers]);
 
   const handleEditConnection = useCallback((connection: ConnectionNode) => {
     if (connection.type === 'connection') {

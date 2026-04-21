@@ -34,6 +34,26 @@ pub static PREFERRED_HOST_KEY_ALGOS: &[russh_keys::key::Name] = &[
     russh_keys::key::SSH_RSA,
 ];
 
+/// Key-exchange algorithms offered to the server, most-preferred first.
+///
+/// russh's built-in DEFAULT only includes the post-2020 KEX methods (curve25519,
+/// dh-group14-sha256, dh-group16-sha512). Many enterprise / managed SFTP
+/// endpoints still require the SHA-1 variants and drop the TCP connection with
+/// "Connection reset by peer" during KEX if we don't offer them. Keeping the
+/// modern entries first means security-conscious servers still negotiate up.
+pub static PREFERRED_KEX_ALGOS: &[russh::kex::Name] = &[
+    russh::kex::CURVE25519,
+    russh::kex::CURVE25519_PRE_RFC_8731,
+    russh::kex::DH_G16_SHA512,
+    russh::kex::DH_G14_SHA256,
+    russh::kex::DH_G14_SHA1,
+    russh::kex::DH_G1_SHA1,
+    // Extension-negotiation markers — must remain in the offer list for
+    // strict-KEX and ext-info compatibility with modern servers.
+    russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
+    russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+];
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
@@ -261,6 +281,7 @@ pub(crate) async fn connect_authenticated(
     let ssh_config = client::Config {
         preferred: russh::Preferred {
             key: PREFERRED_HOST_KEY_ALGOS,
+            kex: PREFERRED_KEX_ALGOS,
             ..russh::Preferred::DEFAULT
         },
         ..client::Config::default()
