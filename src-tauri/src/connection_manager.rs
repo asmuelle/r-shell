@@ -105,7 +105,9 @@ impl ConnectionManager {
     /// Backward-compatible string form of `connection_kind`. Returns "SSH",
     /// "SFTP", "FTP", "RDP", or "VNC". Prefer `connection_kind` in new code.
     pub async fn get_connection_type(&self, id: &str) -> Option<String> {
-        self.connection_kind(id).await.map(|k| k.as_str().to_string())
+        self.connection_kind(id)
+            .await
+            .map(|k| k.as_str().to_string())
     }
 
     pub async fn list_connections(&self) -> Vec<String> {
@@ -122,10 +124,7 @@ impl ConnectionManager {
         }
     }
 
-    pub async fn get_sftp_client(
-        &self,
-        id: &str,
-    ) -> Option<Arc<RwLock<StandaloneSftpClient>>> {
+    pub async fn get_sftp_client(&self, id: &str) -> Option<Arc<RwLock<StandaloneSftpClient>>> {
         let connections = self.connections.read().await;
         match connections.get(id) {
             Some(ManagedConnection::Sftp(c)) => Some(c.clone()),
@@ -291,11 +290,7 @@ impl ConnectionManager {
 
     /// Read a burst of PTY output — blocks until data arrives, then drains any
     /// additional already-queued chunks up to `max_bytes`.
-    pub async fn read_pty_burst(
-        &self,
-        connection_id: &str,
-        max_bytes: usize,
-    ) -> Result<Vec<u8>> {
+    pub async fn read_pty_burst(&self, connection_id: &str, max_bytes: usize) -> Result<Vec<u8>> {
         let pty = {
             let pty_sessions = self.pty_sessions.read().await;
             pty_sessions

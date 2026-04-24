@@ -1,0 +1,77 @@
+include_extensions = [".rs", ".js", ".ts", ".tsx", ".jsx"]
+exclude_globs = [
+  ".git/**",
+  ".cargo/**",
+  ".cache/**",
+  "target/**",
+  "server/target/**",
+  "static/wasm/**",
+  ".claude/**",
+  # `fuzz/` is its own non-workspace crate (nightly-only, libfuzzer-sys).
+  # Its targets exist precisely to invoke core APIs from outside the
+  # workspace, so the architecture rules don't apply.
+  "fuzz/**",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Forbid: pure domain code (everything in `core/src/`) must not import HTTP,
+# DB, or WASM-glue dependencies. Exceptions are listed inline so the rule
+# can stay broad — the previous narrow path list left whole subsystems
+# (booster, regime, archetype, uncertainty, weather, holiday) unchecked.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[forbid_usage]]
+name = "core-stays-framework-free"
+paths = ["core/src"]
+patterns = ["axum::", "sqlx::", "use axum", "derive(sqlx::"]
+# `core/src/wasm_api.rs` is the only legitimate FFI boundary; it does not
+# touch HTTP/DB types but the rule has zero false-positive cost here, so
+# we keep an explicit allow-list in case future glue code needs it.
+except_paths = []
+message = "Pure core/domain code must not depend on web, database, or WASM boundary layers."
+
+[[forbid_usage]]
+name = "core-logic-must-not-depend-on-wasm-api"
+paths = ["core/src"]
+patterns = ["crate::wasm_api"]
+# wasm_runner is the in-crate consumer of wasm_api types and is itself
+# only compiled under `--features wasm`; allow it explicitly.
+except_paths = [
+  "core/src/wasm_api.rs",
+  "core/src/wasm_runner",
+]
+message = "The WASM glue layer must stay isolated in core/src/wasm_api.rs."
+
+[[only_allowed_usage]]
+name = "wasm-bindgen-only-in-wasm-api"
+patterns = ["wasm_bindgen"]
+allowed_paths = ["core/src/wasm_api.rs"]
+message = "Only the dedicated WASM translation layer may use wasm_bindgen."
+
+[[only_allowed_usage]]
+name = "sqlx-only-in-db-and-infra-entrypoints"
+patterns = ["sqlx::", "derive(sqlx::"]
+allowed_paths = [
+  "server/src/db",
+  "server/src/main.rs",
+  "server/src/error.rs",
+  "server/src/routes/portfolio_config.rs",
+  "server/src/bin/top_opportunities.rs",
+  "server/src/bin/debug_opening_hours.rs",
+  "server/tests",
+]
+message = "Database framework usage should stay in db/ or explicit infrastructure entrypoints."
+
+[[only_allowed_usage]]
+name = "axum-only-in-web-adapters"
+patterns = ["axum::", "use axum"]
+allowed_paths = [
+  "server/src/main.rs",
+  "server/src/error.rs",
+  "server/src/auth",
+  "server/src/routes",
+  "server/src/db/trait_def.rs",
+  "server/src/db/queries.rs",
+  "server/src/db/queries_ext.rs",
+]
+message = "HTTP framework types should stay in web adapters and async trait definitions."

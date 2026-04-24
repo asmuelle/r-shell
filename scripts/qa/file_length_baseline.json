@@ -1,0 +1,19 @@
+{
+  "max_lines": 600,
+  "include_extensions": [".rs", ".js", ".ts", ".tsx", ".jsx", ".css", ".html"],
+  "exclude_globs": [
+    ".git/**",
+    ".cargo/**",
+    ".cache/**",
+    "target/**",
+    "server/target/**",
+    "static/wasm/**",
+    ".claude/**",
+    "fuzz/**"
+  ],
+  "allowances": {
+    "static/index.html": 1145,
+    "static/style.css": 2287,
+    "static/app/workbench.js": 624
+  }
+}

@@ -36,14 +36,11 @@ pub fn validate_pid(s: &str) -> Result<&str, String> {
 /// the common signal names. Returns the canonical form to interpolate directly.
 pub fn validate_signal(s: &str) -> Result<String, String> {
     const NAMES: &[&str] = &[
-        "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL",
-        "USR1", "SEGV", "USR2", "PIPE", "ALRM", "TERM", "STKFLT", "CHLD",
-        "CONT", "STOP", "TSTP", "TTIN", "TTOU", "URG", "XCPU", "XFSZ",
-        "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS",
+        "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1", "SEGV", "USR2",
+        "PIPE", "ALRM", "TERM", "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "URG",
+        "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS",
     ];
-    let trimmed = s
-        .trim()
-        .to_ascii_uppercase();
+    let trimmed = s.trim().to_ascii_uppercase();
     let trimmed = trimmed.trim_start_matches("SIG").to_string();
     if let Ok(n) = trimmed.parse::<u32>() {
         if (1..=64).contains(&n) {

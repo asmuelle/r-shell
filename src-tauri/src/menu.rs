@@ -100,18 +100,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let toggle_left = MenuItemBuilder::with_id(action::TOGGLE_LEFT_SIDEBAR, "Toggle Left Sidebar")
         .accelerator("CmdOrCtrl+B")
         .build(app)?;
-    let toggle_right = MenuItemBuilder::with_id(
-        action::TOGGLE_RIGHT_SIDEBAR,
-        "Toggle Right Sidebar",
-    )
-    .accelerator("CmdOrCtrl+Shift+B")
-    .build(app)?;
-    let toggle_bottom = MenuItemBuilder::with_id(
-        action::TOGGLE_BOTTOM_PANEL,
-        "Toggle Bottom Panel",
-    )
-    .accelerator("CmdOrCtrl+J")
-    .build(app)?;
+    let toggle_right =
+        MenuItemBuilder::with_id(action::TOGGLE_RIGHT_SIDEBAR, "Toggle Right Sidebar")
+            .accelerator("CmdOrCtrl+Shift+B")
+            .build(app)?;
+    let toggle_bottom =
+        MenuItemBuilder::with_id(action::TOGGLE_BOTTOM_PANEL, "Toggle Bottom Panel")
+            .accelerator("CmdOrCtrl+J")
+            .build(app)?;
     let toggle_zen = MenuItemBuilder::with_id(action::TOGGLE_ZEN_MODE, "Toggle Zen Mode")
         .accelerator("CmdOrCtrl+K Z")
         .build(app)?;
@@ -156,7 +152,8 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Help
     // ------------------------------------------------------------------
     let docs = MenuItemBuilder::with_id(action::HELP_DOCS, "Documentation").build(app)?;
-    let report = MenuItemBuilder::with_id(action::HELP_REPORT_ISSUE, "Report an Issue…").build(app)?;
+    let report =
+        MenuItemBuilder::with_id(action::HELP_REPORT_ISSUE, "Report an Issue…").build(app)?;
     let help_submenu = SubmenuBuilder::new(app, "Help")
         .item(&docs)
         .item(&report)

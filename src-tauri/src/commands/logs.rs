@@ -148,7 +148,8 @@ pub async fn discover_log_sources(
         "\\) -readable 2>/dev/null | head -80"
     );
     const JOURNAL_CMD: &str = "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | head -30";
-    const DOCKER_CMD: &str = r#"docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20"#;
+    const DOCKER_CMD: &str =
+        r#"docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20"#;
 
     // Run the three independent discovery commands concurrently — previously
     // they ran sequentially, paying one SSH round-trip per stage.
@@ -283,11 +284,9 @@ pub async fn read_log(
             sh_quote(&path),
             line_count
         ),
-        LogSourceKind::Docker => format!(
-            "docker logs --tail {} {} 2>&1",
-            line_count,
-            sh_quote(&path)
-        ),
+        LogSourceKind::Docker => {
+            format!("docker logs --tail {} {} 2>&1", line_count, sh_quote(&path))
+        }
         LogSourceKind::File => {
             format!("tail -n {} {} 2>/dev/null", line_count, sh_quote(&path))
         }

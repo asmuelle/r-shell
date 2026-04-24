@@ -37,17 +37,24 @@ impl std::fmt::Debug for ConnectRequest {
             .field("auth_method", &self.auth_method)
             .field(
                 "password",
-                &self.password.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                &self
+                    .password
+                    .as_ref()
+                    .map(|_| "<redacted>")
+                    .unwrap_or("<none>"),
             )
             .field("key_path", &self.key_path)
             .field(
                 "passphrase",
-                &self.passphrase.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                &self
+                    .passphrase
+                    .as_ref()
+                    .map(|_| "<redacted>")
+                    .unwrap_or("<none>"),
             )
             .finish()
     }
 }
-
 
 #[tauri::command]
 pub async fn ssh_connect(
@@ -201,7 +208,16 @@ fn is_interactive_command(command: &str) -> bool {
     let cmd_name = get_command_name(command);
     matches!(
         cmd_name.as_str(),
-        "top" | "htop" | "vim" | "vi" | "nano" | "emacs" | "less" | "more" | "man" | "tmux"
+        "top"
+            | "htop"
+            | "vim"
+            | "vi"
+            | "nano"
+            | "emacs"
+            | "less"
+            | "more"
+            | "man"
+            | "tmux"
             | "screen"
     )
 }

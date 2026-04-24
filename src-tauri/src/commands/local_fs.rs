@@ -463,7 +463,9 @@ mod tests {
         let dir = create_test_dir();
         let old_path = dir.path().join("file1.txt").to_string_lossy().to_string();
         let new_path = dir.path().join("renamed.txt").to_string_lossy().to_string();
-        rename_local_item(old_path.clone(), new_path.clone()).await.unwrap();
+        rename_local_item(old_path.clone(), new_path.clone())
+            .await
+            .unwrap();
         assert!(!std::path::Path::new(&old_path).exists());
         assert!(std::path::Path::new(&new_path).exists());
     }
@@ -484,5 +486,4 @@ mod tests {
         assert_eq!(format_unix_permissions(0o100755), "-rwxr-xr-x");
         assert_eq!(format_unix_permissions(0o120777), "lrwxrwxrwx");
     }
-
 }

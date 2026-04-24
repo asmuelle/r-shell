@@ -66,12 +66,7 @@ impl HostKeyStore {
 
     /// Check whether the server-offered key matches the stored fingerprint for
     /// `(host, port)`. Does not mutate the store.
-    pub async fn verify(
-        &self,
-        host: &str,
-        port: u16,
-        key: &russh_keys::key::PublicKey,
-    ) -> Verdict {
+    pub async fn verify(&self, host: &str, port: u16, key: &russh_keys::key::PublicKey) -> Verdict {
         let offered = key.public_key_base64();
         let offered_fp = key.fingerprint();
         let key_id = Self::make_key(host, port);
@@ -129,9 +124,8 @@ impl HostKeyStore {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(map),
             Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("failed to read known_hosts at {}", path.display())
-                });
+                return Err(e)
+                    .with_context(|| format!("failed to read known_hosts at {}", path.display()));
             }
         };
 
@@ -150,14 +144,13 @@ impl HostKeyStore {
 
     async fn write_to_disk(&self, entries: &HashMap<String, String>) -> Result<()> {
         if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("failed to create {}", parent.display())
-            })?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("failed to create {}", parent.display()))?;
         }
 
-        let mut content = String::from(
-            "# r-shell known hosts — auto-managed, one entry per host\n",
-        );
+        let mut content =
+            String::from("# r-shell known hosts — auto-managed, one entry per host\n");
         let mut keys: Vec<&String> = entries.keys().collect();
         keys.sort();
         for k in keys {

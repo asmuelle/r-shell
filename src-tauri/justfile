@@ -1,0 +1,31 @@
+default:
+    @just --list
+
+check:
+    cargo check --workspace --all-targets
+
+lint:
+    cargo clippy --workspace --all-targets --all-features --locked -- -D clippy::correctness -D clippy::suspicious -D clippy::perf
+    cargo clippy --workspace --lib --bins --all-features --locked -- -D clippy::unwrap_used -D clippy::expect_used
+
+test:
+    cargo nextest run --workspace --all-features --locked
+    cargo test --doc --workspace --all-features --locked
+
+watch:
+    bacon
+
+fmt:
+    cargo fmt --all
+
+deps:
+    cargo tree -d
+
+wasm:
+    make wasm
+
+server:
+    make server
+
+dev:
+    make dev

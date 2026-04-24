@@ -99,7 +99,11 @@ impl std::fmt::Debug for DesktopConnectRequest {
             .field("username", &self.username)
             .field(
                 "password",
-                &self.password.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                &self
+                    .password
+                    .as_ref()
+                    .map(|_| "<redacted>")
+                    .unwrap_or("<none>"),
             )
             .field("domain", &self.domain)
             .field("resolution", &self.resolution)
@@ -162,7 +166,11 @@ impl std::fmt::Debug for VncConfig {
             .field("port", &self.port)
             .field(
                 "password",
-                &self.password.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                &self
+                    .password
+                    .as_ref()
+                    .map(|_| "<redacted>")
+                    .unwrap_or("<none>"),
             )
             .field("color_depth", &self.color_depth)
             .finish()

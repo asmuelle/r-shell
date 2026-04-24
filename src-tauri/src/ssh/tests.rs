@@ -12,10 +12,8 @@ mod tests {
 
     /// A scratch host-key store backed by a temp file.
     fn test_host_keys() -> Arc<HostKeyStore> {
-        let tmp = std::env::temp_dir().join(format!(
-            "r-shell-test-known_hosts-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("r-shell-test-known_hosts-{}", std::process::id()));
         Arc::new(HostKeyStore::new(tmp))
     }
 

@@ -100,7 +100,10 @@ impl std::fmt::Debug for AuthMethod {
                 .field("key_path", key_path)
                 .field(
                     "passphrase",
-                    &passphrase.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                    &passphrase
+                        .as_ref()
+                        .map(|_| "<redacted>")
+                        .unwrap_or("<none>"),
                 )
                 .finish(),
         }
@@ -114,6 +117,8 @@ pub struct SshClient {
     /// reused thereafter. Avoids a channel-open round-trip per file op.
     /// Cleared by `disconnect`.
     sftp: tokio::sync::OnceCell<Arc<SftpSession>>,
+    /// Callback triggered on any network activity (send/recv) to prevent timeouts.
+    activity_callback: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Structured result of running a remote command. Callers that need to branch
@@ -177,7 +182,11 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(host: impl Into<String>, port: u16, store: Arc<HostKeyStore>) -> (Self, MismatchSlot) {
+    pub fn new(
+        host: impl Into<String>,
+        port: u16,
+        store: Arc<HostKeyStore>,
+    ) -> (Self, MismatchSlot) {
         let slot: MismatchSlot = Arc::new(std::sync::Mutex::new(None));
         let client = Self {
             host: host.into(),
@@ -478,6 +487,19 @@ impl SshClient {
             session: None,
             host_keys,
             sftp: tokio::sync::OnceCell::new(),
+            activity_callback: None,
+        }
+    }
+
+    /// Sets the callback to be triggered on network activity.
+    pub fn set_activity_callback(&mut self, cb: Arc<dyn Fn() + Send + Sync>) {
+        self.activity_callback = Some(cb);
+    }
+
+    /// Triggers the activity callback if it is set.
+    fn trigger_activity(&self) {
+        if let Some(cb) = &self.activity_callback {
+            cb();
         }
     }
 
@@ -602,10 +624,7 @@ impl SshClient {
         if let Some(session) = self.session.take() {
             match Arc::try_unwrap(session) {
                 Ok(session) => {
-                    if let Err(e) = session
-                        .disconnect(Disconnect::ByApplication, "", "")
-                        .await
-                    {
+                    if let Err(e) = session.disconnect(Disconnect::ByApplication, "", "").await {
                         tracing::warn!("SSH disconnect failed cleanly: {}", e);
                     }
                 }
@@ -841,7 +860,10 @@ mod expand_home_tests {
             expand_home_path("/absolute/path").as_deref(),
             Some("/absolute/path")
         );
-        assert_eq!(expand_home_path("relative/dir").as_deref(), Some("relative/dir"));
+        assert_eq!(
+            expand_home_path("relative/dir").as_deref(),
+            Some("relative/dir")
+        );
         assert_eq!(expand_home_path("").as_deref(), Some(""));
     }
 
@@ -853,8 +875,16 @@ mod expand_home_tests {
         // When CI doesn't set HOME, dirs::home_dir may return None — tolerate both
         // outcomes and only assert the happy path.
         if let Some(result) = expanded {
-            assert!(!result.starts_with("~/"), "tilde must be expanded: {}", result);
-            assert!(result.ends_with("/.ssh/id_rsa"), "suffix preserved: {}", result);
+            assert!(
+                !result.starts_with("~/"),
+                "tilde must be expanded: {}",
+                result
+            );
+            assert!(
+                result.ends_with("/.ssh/id_rsa"),
+                "suffix preserved: {}",
+                result
+            );
         }
     }
 }

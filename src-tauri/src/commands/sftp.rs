@@ -33,12 +33,20 @@ impl std::fmt::Debug for SftpConnectRequest {
             .field("auth_method", &self.auth_method)
             .field(
                 "password",
-                &self.password.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                &self
+                    .password
+                    .as_ref()
+                    .map(|_| "<redacted>")
+                    .unwrap_or("<none>"),
             )
             .field("key_path", &self.key_path)
             .field(
                 "passphrase",
-                &self.passphrase.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                &self
+                    .passphrase
+                    .as_ref()
+                    .map(|_| "<redacted>")
+                    .unwrap_or("<none>"),
             )
             .finish()
     }

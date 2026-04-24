@@ -50,10 +50,7 @@ pub struct CommandResponse {
 // each domain submodule can reuse them without duplicating trim/empty checks.
 // ============================================================================
 
-pub(crate) fn normalize_required_field(
-    value: String,
-    field_name: &str,
-) -> Result<String, String> {
+pub(crate) fn normalize_required_field(value: String, field_name: &str) -> Result<String, String> {
     let normalized = value.trim().to_string();
     if normalized.is_empty() {
         return Err(format!("{field_name} required"));

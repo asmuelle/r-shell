@@ -55,7 +55,10 @@ impl std::fmt::Debug for SftpAuthMethod {
                 .field("key_path", key_path)
                 .field(
                     "passphrase",
-                    &passphrase.as_ref().map(|_| "<redacted>").unwrap_or("<none>"),
+                    &passphrase
+                        .as_ref()
+                        .map(|_| "<redacted>")
+                        .unwrap_or("<none>"),
                 )
                 .finish(),
         }
@@ -94,7 +97,9 @@ impl StandaloneSftpClient {
     /// Establish an SSH connection, authenticate, and open the SFTP subsystem.
     pub async fn connect(config: &SftpConfig, host_keys: Arc<HostKeyStore>) -> Result<Self> {
         let auth = match &config.auth_method {
-            SftpAuthMethod::Password { password } => crate::ssh::ResolvedAuth::Password { password },
+            SftpAuthMethod::Password { password } => {
+                crate::ssh::ResolvedAuth::Password { password }
+            }
             SftpAuthMethod::PublicKey {
                 key_path,
                 passphrase,
@@ -133,10 +138,7 @@ impl StandaloneSftpClient {
         if let Some(session) = self.session.take() {
             match Arc::try_unwrap(session) {
                 Ok(session) => {
-                    if let Err(e) = session
-                        .disconnect(Disconnect::ByApplication, "", "")
-                        .await
-                    {
+                    if let Err(e) = session.disconnect(Disconnect::ByApplication, "", "").await {
                         tracing::warn!("SFTP SSH disconnect failed cleanly: {}", e);
                     }
                 }
@@ -219,9 +221,9 @@ impl StandaloneSftpClient {
             .open(remote_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?;
-        let mut local_file = tokio::fs::File::create(local_path).await.map_err(|e| {
-            anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e)
-        })?;
+        let mut local_file = tokio::fs::File::create(local_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e))?;
 
         let mut buf = vec![0u8; crate::ssh::SFTP_CHUNK_SIZE];
         let mut total_bytes = 0u64;
@@ -485,5 +487,4 @@ mod tests {
             _ => panic!("Expected PublicKey auth method"),
         }
     }
-
 }

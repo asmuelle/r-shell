@@ -7,9 +7,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::tungstenite::handshake::server::{
-    ErrorResponse, Request, Response,
-};
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
@@ -38,9 +36,13 @@ pub enum InboundWs {
         rows: u32,
     },
     /// Pause output (flow control - like ttyd)
-    Pause { connection_id: String },
+    Pause {
+        connection_id: String,
+    },
     /// Resume output (flow control - like ttyd)
-    Resume { connection_id: String },
+    Resume {
+        connection_id: String,
+    },
     /// Close PTY connection
     Close {
         connection_id: String,
@@ -68,9 +70,16 @@ pub enum InboundWs {
         y: u16,
         button_mask: u8,
     },
-    ClipboardUpdate { connection_id: String, text: String },
-    RequestFullFrame { connection_id: String },
-    CloseDesktop { connection_id: String },
+    ClipboardUpdate {
+        connection_id: String,
+        text: String,
+    },
+    RequestFullFrame {
+        connection_id: String,
+    },
+    CloseDesktop {
+        connection_id: String,
+    },
 }
 
 /// Messages emitted by the backend. Never deserialised — the server is the
@@ -453,7 +462,11 @@ impl WebSocketServer {
                                 }
                             }
                             Err(e) => {
-                                tracing::info!("PTY reader ending for {}: {}", connection_id_clone, e);
+                                tracing::info!(
+                                    "PTY reader ending for {}: {}",
+                                    connection_id_clone,
+                                    e
+                                );
                                 let error_msg = OutboundWs::Error {
                                     message: format!("Connection lost: {}", e),
                                 };
@@ -635,7 +648,6 @@ impl WebSocketServer {
                 };
                 tx.send(serde_json::to_string(&response)?)?;
             }
-
         }
 
         Ok(())

@@ -87,22 +87,20 @@ mod platform {
         // aren't clobbered. If it doesn't exist, create it with friendly
         // attributes so it's easy to identify / audit.
         match get_generic_password(kind.service(), account) {
-            Ok(_) => set_generic_password(kind.service(), account, secret.as_bytes()).map_err(|e| {
-                anyhow::anyhow!(
-                    "keychain update failed for {}/{}: {}",
-                    kind.service(),
-                    account,
-                    e
-                )
-            }),
+            Ok(_) => {
+                set_generic_password(kind.service(), account, secret.as_bytes()).map_err(|e| {
+                    anyhow::anyhow!(
+                        "keychain update failed for {}/{}: {}",
+                        kind.service(),
+                        account,
+                        e
+                    )
+                })
+            }
             Err(e) if e.code() == errSecItemNotFound => {
                 let mut options = PasswordOptions::new_generic_password(kind.service(), account);
                 // Label: shown as "Name" in Keychain Access.app.
-                options.set_label(&format!(
-                    "r-shell: {} ({})",
-                    kind.friendly_label(),
-                    account
-                ));
+                options.set_label(&format!("r-shell: {} ({})", kind.friendly_label(), account));
                 // Comment: provenance for the user and any auditor who opens
                 // the entry in Keychain Access.
                 options.set_comment(
@@ -340,7 +338,9 @@ mod tests {
 
         // Overwrite is supported (set_generic_password updates in place).
         save_password(kind, &account, "different-value").expect("overwrite");
-        let loaded2 = load_password(kind, &account).expect("reload").expect("some");
+        let loaded2 = load_password(kind, &account)
+            .expect("reload")
+            .expect("some");
         assert_eq!(loaded2, "different-value");
 
         delete_password(kind, &account).expect("delete");
