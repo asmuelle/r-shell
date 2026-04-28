@@ -1,0 +1,139 @@
+# XcodeGen project manifest for R-Shell macOS app.
+#
+# Generate the .xcodeproj:
+#   cd r-shell-macos && xcodegen generate
+#
+# Prerequisites: brew install xcodegen
+#
+# The Rust static library is built by the "Build Rust Library" build phase.
+
+name: "R-Shell"
+options:
+  bundleIdPrefix: com.r-shell
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  postGenCommand: |
+    # After project generation, copy the Rust library to a known location
+    # that Xcode's linker can find without extra search paths.
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: 1.0.0
+
+targets:
+  RShellApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: RShellApp
+        type: group
+        createIntermediateGroups: true
+      # uniffi-generated Swift FFI bindings — depend on r_shell_macosFFI
+      # via the modulemap in bindings/, link the symbols from the universal
+      # static lib via OTHER_LDFLAGS=-lr_shell_macos. Lives in the app
+      # target because frameworks can't link the Rust static lib directly.
+      - path: bindings/r_shell_macos.swift
+        optional: true
+    dependencies:
+      - target: RShellMacOS
+      - package: SwiftTerm
+        product: SwiftTerm
+    # Declared inline so `xcodegen generate` regenerates the file
+    # deterministically. A bare `path:` (no `properties:`) would write an
+    # empty plist and silently break code signing — every regenerate would
+    # wipe out the disable-library-validation flag, then dyld rejects the
+    # ad-hoc-signed framework with "different Team IDs" at launch.
+    entitlements:
+      path: RShellApp/RShell.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.automation.apple-events: false
+        com.apple.security.cs.allow-unsigned-executable-memory: true
+        com.apple.security.cs.disable-library-validation: true
+        com.apple.security.cs.allow-dyld-environment-variables: true
+        com.apple.security.device.audio-input: false
+        com.apple.security.device.camera: false
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.network.client: true
+        com.apple.security.network.server: true
+        # `keychain-access-groups` requires a provisioning profile (Apple
+        # ties access groups to a Team ID), so it can't coexist with
+        # ad-hoc signing. Keychain APIs still work via the implicit
+        # per-bundle access group. Re-add this when switching to
+        # Developer ID for distribution.
+        # keychain-access-groups:
+        #   - $(AppIdentifierPrefix)com.r-shell.macos
+    settings:
+      base:
+        INFOPLIST_FILE: RShellApp/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos
+        PRODUCT_NAME: "R-Shell"
+        CODE_SIGN_ENTITLEMENTS: RShellApp/RShell.entitlements
+        ENABLE_HARDENED_RUNTIME: true
+        # Hardened runtime exceptions needed for the Rust bridge
+        COM_APPLE_SECURITY_CS_DISABLE_LIBRARY_VALIDATION: true
+        COM_APPLE_SECURITY_DEVICE_MICROPHONE: false
+        COM_APPLE_SECURITY_DEVICE_CAMERA: false
+        COM_APPLE_SECURITY_NETWORK_CLIENT: true
+        COM_APPLE_SECURITY_NETWORK_SERVER: true
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/../target/universal/release
+        # Make the FFI modulemap visible to the app target too — needed when
+        # SwiftPM/Xcode evaluates `#if canImport(r_shell_macosFFI)` during
+        # the app's own Swift compilation.
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/bindings
+        OTHER_LDFLAGS:
+          - $(inherited)
+          # Rust core static lib (universal: built by build_cargo.sh).
+          - -lr_shell_macos
+          - -lobjc
+          - -lresolv
+          - -framework
+          - Security
+          - -framework
+          - ServiceManagement
+          - -lxml2
+          - -lz
+    preBuildScripts:
+      - name: "Build Rust Library"
+        script: |
+          "${SRCROOT}/RShellApp/build_cargo.sh"
+        basedOnDependencyAnalysis: false
+        inputFiles: []
+        outputFiles: []
+
+  RShellMacOS:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/RShellMacOS
+        type: group
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos.lib
+        PRODUCT_NAME: RShellMacOS
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+
+  RShellMacOSTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/RShellMacOSTests
+        type: group
+    dependencies:
+      - target: RShellMacOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos.tests
+        PRODUCT_NAME: RShellMacOSTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: ""

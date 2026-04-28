@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "r-shell-core",
+    "r-shell-macos",
+    "r-shell-tauri/src-tauri",
+]
+
+[workspace.package]
+version = "1.3.2"
+edition = "2024"
+authors = ["you"]

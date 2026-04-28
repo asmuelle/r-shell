@@ -1,0 +1,31 @@
+[package]
+name = "r-shell-core"
+version = "0.1.0"
+edition = "2024"
+description = "Rust domain layer for R-Shell — SSH, PTY, connection management"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+russh = { version = "0.43", features = ["openssl", "vendored-openssl"] }
+russh-keys = { version = "0.43", features = ["vendored-openssl"] }
+russh-sftp = "2"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tokio-util = "0.7"
+futures = "0.3"
+suppaftp = { version = "6", features = ["async-native-tls"] }
+async-std = "1"
+dirs = "5"
+rand = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+security-framework-sys = "2"
+
+[dev-dependencies]
+tempfile = "3"

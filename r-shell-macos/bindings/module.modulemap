@@ -1,0 +1,4 @@
+module r_shell_macosFFI {
+    header "r_shell_macosFFI.h"
+    export *
+}

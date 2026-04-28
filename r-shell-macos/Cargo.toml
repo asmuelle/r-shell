@@ -1,0 +1,33 @@
+[package]
+name = "r-shell-macos"
+version = "0.1.0"
+edition = "2024"
+description = "Native macOS R-Shell — Rust core used via FFI from Swift"
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+name = "r_shell_macos"
+
+# Bind generation entry point. Run via:
+#   cargo run -p r-shell-macos --release --bin uniffi-bindgen -- \
+#       generate --library target/release/libr_shell_macos.dylib \
+#       --language swift --out-dir r-shell-macos/bindings
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+r-shell-core = { path = "../r-shell-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+uniffi = { version = "0.28", features = ["cli"] }
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }
+
+[dev-dependencies]
+tempfile = "3"
