@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 import OSLog
 
@@ -18,9 +19,27 @@ struct SystemMonitorView: View {
     @State private var stats: FfiSystemStats?
     @State private var error: String?
     @State private var unsupportedHost = false
+    /// Sliding window of recent samples for the CPU / memory trend
+    /// charts. Capped at `maxHistory` — older samples are dropped at
+    /// each append. Reset on `connectionId` change so a switch between
+    /// hosts doesn't render misleading lines that span both.
+    @State private var history: [StatSample] = []
 
     private let logger = Logger(subsystem: "com.r-shell", category: "monitor")
     private static let pollInterval: UInt64 = 3_000_000_000  // 3 s
+    /// 60 × 3s = 3 minutes of trailing history per chart.
+    private static let maxHistory = 60
+
+    /// One CPU/memory snapshot for the trend charts.
+    fileprivate struct StatSample: Identifiable {
+        let id = UUID()
+        let timestamp: Date
+        let cpuPercent: Double
+        /// Memory utilisation 0..100 — derived from used / total at
+        /// sample time so the chart's Y axis aligns with the linear
+        /// progress bar above it.
+        let memoryPercent: Double
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -95,22 +114,26 @@ struct SystemMonitorView: View {
     // MARK: - Stats body
 
     private func statsBody(_ stats: FfiSystemStats) -> some View {
-        ScrollView {
+        let memoryPercent = stats.memoryTotal > 0
+            ? Double(stats.memoryUsed) / Double(stats.memoryTotal) * 100
+            : 0
+
+        return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                metricRow(
+                metricBlock(
                     title: "CPU",
                     icon: "cpu",
                     progress: stats.cpuPercent / 100,
-                    rightLabel: String(format: "%.1f%%", stats.cpuPercent)
+                    rightLabel: String(format: "%.1f%%", stats.cpuPercent),
+                    series: \.cpuPercent
                 )
 
-                metricRow(
+                metricBlock(
                     title: "Memory",
                     icon: "memorychip",
-                    progress: stats.memoryTotal > 0
-                        ? Double(stats.memoryUsed) / Double(stats.memoryTotal)
-                        : 0,
-                    rightLabel: "\(formatBytes(stats.memoryUsed)) / \(formatBytes(stats.memoryTotal))"
+                    progress: memoryPercent / 100,
+                    rightLabel: "\(formatBytes(stats.memoryUsed)) / \(formatBytes(stats.memoryTotal))",
+                    series: \.memoryPercent
                 )
 
                 if stats.swapTotal > 0 {
@@ -173,6 +196,52 @@ struct SystemMonitorView: View {
         }
     }
 
+    /// Same as `metricRow` plus a sparkline of recent samples below.
+    /// `series` is a key path on `StatSample` so the same block works
+    /// for CPU and memory without duplicating the chart wiring.
+    private func metricBlock(
+        title: String,
+        icon: String,
+        progress: Double,
+        rightLabel: String,
+        series: KeyPath<StatSample, Double>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            metricRow(
+                title: title,
+                icon: icon,
+                progress: progress,
+                rightLabel: rightLabel
+            )
+
+            // Need at least two points to draw a line; until then, leave
+            // a small gap so the layout doesn't jump on the first sample.
+            if history.count >= 2 {
+                Chart(history) { sample in
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value(title, sample[keyPath: series])
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(progressTint(progress))
+
+                    AreaMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value(title, sample[keyPath: series])
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(progressTint(progress).opacity(0.15))
+                }
+                .chartYScale(domain: 0...100)
+                .chartXAxis(.hidden)
+                .chartYAxis(.hidden)
+                .frame(height: 40)
+            } else {
+                Color.clear.frame(height: 40)
+            }
+        }
+    }
+
     private func summaryRow(icon: String, label: String, value: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
@@ -198,12 +267,31 @@ struct SystemMonitorView: View {
     // MARK: - Polling
 
     private func pollLoop() async {
+        // Drop the previous connection's history. The `.task(id:)`
+        // semantics give us a fresh task per connectionId, so this
+        // line runs exactly when the user switches hosts.
+        history.removeAll()
+
         guard let connectionId else { return }
-        // Loop forever — `.task(id:)` cancels the Task automatically
-        // when connectionId changes or the view goes away.
         while !Task.isCancelled {
             await fetchOnce(connectionId: connectionId)
             try? await Task.sleep(nanoseconds: Self.pollInterval)
+        }
+    }
+
+    /// Append a sample, capping the buffer to `maxHistory`. Memory %
+    /// is derived once here so the chart's series lookup stays cheap.
+    private func recordSample(_ s: FfiSystemStats) {
+        let memoryPct = s.memoryTotal > 0
+            ? Double(s.memoryUsed) / Double(s.memoryTotal) * 100
+            : 0
+        history.append(StatSample(
+            timestamp: Date(),
+            cpuPercent: s.cpuPercent,
+            memoryPercent: memoryPct
+        ))
+        if history.count > Self.maxHistory {
+            history.removeFirst(history.count - Self.maxHistory)
         }
     }
 
@@ -221,6 +309,7 @@ struct SystemMonitorView: View {
             stats = s
             error = nil
             unsupportedHost = false
+            recordSample(s)
         case .failure(let err as MonitorError):
             switch err {
             case .ParseError:
