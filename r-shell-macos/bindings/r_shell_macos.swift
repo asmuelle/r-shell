@@ -550,6 +550,14 @@ public struct FfiConnectConfig {
      * Optional passphrase to decrypt the private key.
      */
     public var passphrase: String?
+    /**
+     * Optional unique suffix that lets the same `(user, host, port)` triple
+     * be opened more than once (e.g., one terminal tab per session). When
+     * `Some("abc")`, the connection is keyed as `"user@host:port#abc"` in
+     * `pty_sessions`. When `None`, the bare key is used (suitable for the
+     * simple "single connection per host" case).
+     */
+    public var sessionId: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -563,13 +571,21 @@ public struct FfiConnectConfig {
          */keyPath: String?, 
         /**
          * Optional passphrase to decrypt the private key.
-         */passphrase: String?) {
+         */passphrase: String?, 
+        /**
+         * Optional unique suffix that lets the same `(user, host, port)` triple
+         * be opened more than once (e.g., one terminal tab per session). When
+         * `Some("abc")`, the connection is keyed as `"user@host:port#abc"` in
+         * `pty_sessions`. When `None`, the bare key is used (suitable for the
+         * simple "single connection per host" case).
+         */sessionId: String?) {
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.keyPath = keyPath
         self.passphrase = passphrase
+        self.sessionId = sessionId
     }
 }
 
@@ -595,6 +611,9 @@ extension FfiConnectConfig: Equatable, Hashable {
         if lhs.passphrase != rhs.passphrase {
             return false
         }
+        if lhs.sessionId != rhs.sessionId {
+            return false
+        }
         return true
     }
 
@@ -605,6 +624,7 @@ extension FfiConnectConfig: Equatable, Hashable {
         hasher.combine(password)
         hasher.combine(keyPath)
         hasher.combine(passphrase)
+        hasher.combine(sessionId)
     }
 }
 
@@ -621,7 +641,8 @@ public struct FfiConverterTypeFfiConnectConfig: FfiConverterRustBuffer {
                 username: FfiConverterString.read(from: &buf), 
                 password: FfiConverterOptionString.read(from: &buf), 
                 keyPath: FfiConverterOptionString.read(from: &buf), 
-                passphrase: FfiConverterOptionString.read(from: &buf)
+                passphrase: FfiConverterOptionString.read(from: &buf), 
+                sessionId: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -632,6 +653,7 @@ public struct FfiConverterTypeFfiConnectConfig: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.password, into: &buf)
         FfiConverterOptionString.write(value.keyPath, into: &buf)
         FfiConverterOptionString.write(value.passphrase, into: &buf)
+        FfiConverterOptionString.write(value.sessionId, into: &buf)
     }
 }
 
@@ -1182,6 +1204,12 @@ public func rshellPtyResize(connectionId: String, cols: UInt32, rows: UInt32) ->
  * Start an interactive PTY session on an already-connected SSH connection.
  * Returns the generation counter in `value` (as a JSON string) so the
  * frontend can pass it back in `rshell_pty_close` to prevent stale closes.
+ *
+ * Spawns a background task that drains the PTY's `output_rx` channel and
+ * publishes each chunk as a `CoreEvent::PtyOutput` on the event bus, so the
+ * Swift event callback receives terminal output. The macOS app is the only
+ * consumer of `output_rx` (Tauri uses `read_pty_burst` in its own process),
+ * so there is no contention.
  */
 public func rshellPtyStart(connectionId: String, cols: UInt32, rows: UInt32) -> FfiResult {
     return try!  FfiConverterTypeFfiResult.lift(try! rustCall() {
@@ -1265,7 +1293,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_pty_resize() != 44514) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_r_shell_macos_checksum_func_rshell_pty_start() != 33982) {
+    if (uniffi_r_shell_macos_checksum_func_rshell_pty_start() != 13587) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_pty_write() != 3580) {

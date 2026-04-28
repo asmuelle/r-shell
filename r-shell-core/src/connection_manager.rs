@@ -382,6 +382,15 @@ impl ConnectionManager {
             .map_err(|_| anyhow::anyhow!("PTY channel closed"))
     }
 
+    /// Capture the active `PtySession` for a connection. Used by the macOS
+    /// bridge to spawn an output-forwarder task that holds a stable handle
+    /// to the session's `output_rx` for the lifetime of that PTY, even if
+    /// `start_pty_connection` is later called again for the same connection
+    /// (which would replace the entry in `pty_sessions`).
+    pub async fn get_pty_session(&self, connection_id: &str) -> Option<Arc<PtySession>> {
+        self.pty_sessions.read().await.get(connection_id).cloned()
+    }
+
     /// Read a burst of PTY output — blocks until data arrives, then drains any
     /// additional already-queued chunks up to `max_bytes`.
     pub async fn read_pty_burst(&self, connection_id: &str, max_bytes: usize) -> Result<Vec<u8>> {

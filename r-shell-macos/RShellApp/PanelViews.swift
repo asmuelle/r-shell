@@ -21,66 +21,47 @@ struct SidebarPanel: View {
 
 // MARK: - Main workspace (terminals)
 
+/// `MainPanel` consumes the shared `TerminalTabsStore` so the sidebar's
+/// "connect" action populates tabs here. The store owns the FFI lifecycle
+/// (SSH connect → PTY start → register session); `MainPanel` only renders.
 struct MainPanel: View {
-    @State private var tabs: [TerminalTab] = []
-    @State private var activeTabId: UUID?
-    @State private var searchVisible: [UUID: Bool] = [:]
-    @State private var searchQuery: [UUID: String] = [:]
-    @State private var searchMatchIndex: [UUID: Int] = [:]
-    @State private var searchMatchCount: [UUID: Int] = [:]
+    @EnvironmentObject var tabsStore: TerminalTabsStore
 
     var body: some View {
         VStack(spacing: 0) {
             TabBarView(
-                tabs: tabs.map { WorkspaceTab(id: $0.id, title: $0.title, connectionId: $0.connectionId, order: $0.order) },
-                activeTabId: $activeTabId,
-                onClose: { tab in
-                    if let t = tabs.first(where: { $0.id == tab.id }) {
-                        TerminalSessionManager.shared.unregisterSession(connectionId: t.connectionId)
-                    }
-                    tabs.removeAll { $0.id == tab.id }
-                    searchVisible.removeValue(forKey: tab.id)
-                    searchQuery.removeValue(forKey: tab.id)
-                    if activeTabId == tab.id {
-                        activeTabId = tabs.last?.id
-                    }
+                tabs: tabsStore.tabs.map {
+                    WorkspaceTab(
+                        id: $0.id,
+                        title: $0.title,
+                        connectionId: $0.connectionId,
+                        order: $0.order
+                    )
                 },
+                activeTabId: Binding(
+                    get: { tabsStore.activeTabId },
+                    set: { id in if let id { tabsStore.setActive(id) } }
+                ),
+                onClose: { tab in tabsStore.closeTab(tab.id) },
                 onNewTab: {}
             )
 
             Divider()
 
-            if let activeTabId,
-               let active = tabs.first(where: { $0.id == activeTabId }) {
-                ZStack(alignment: .topTrailing) {
-                    TerminalView(
-                        connectionId: active.connectionId,
-                        ptyGeneration: active.ptyGeneration,
-                        terminalTitle: .constant(active.title),
-                        searchVisible: .constant(searchVisible[activeTabId] ?? false),
-                        onSearchQueryChanged: { q in
-                            searchQuery[activeTabId] = q
-                        },
-                        onSearchNext: {},
-                        onSearchPrevious: {}
-                    )
-
-                    if searchVisible[activeTabId] == true {
-                        VStack {
-                            TerminalSearchBar(
-                                query: .constant(searchQuery[activeTabId] ?? ""),
-                                isVisible: .constant(true),
-                                matchCount: searchMatchCount[activeTabId] ?? 0,
-                                currentMatch: searchMatchIndex[activeTabId] ?? 0,
-                                onNext: {},
-                                onPrevious: {},
-                                onClose: { searchVisible[activeTabId] = false }
-                            )
-                            Spacer()
-                        }
-                    }
-                }
-                .onAppear { installKeyboardHandlers(for: activeTabId) }
+            if let active = tabsStore.activeTab {
+                TerminalView(
+                    connectionId: active.connectionId,
+                    ptyGeneration: active.ptyGeneration,
+                    terminalTitle: .constant(active.title),
+                    searchVisible: .constant(false),
+                    onSearchQueryChanged: nil,
+                    onSearchNext: nil,
+                    onSearchPrevious: nil
+                )
+                // The view's identity is the connection id — switching tabs
+                // tears down and rebuilds the underlying SwiftTerm view, so
+                // each tab gets its own scrollback / selection state.
+                .id(active.connectionId)
             } else {
                 placeholder
             }
@@ -97,34 +78,6 @@ struct MainPanel: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func installKeyboardHandlers(for tabId: UUID) {
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.modifierFlags.contains(.command) {
-                switch event.charactersIgnoringModifiers {
-                case "f":
-                    searchVisible[tabId] = true
-                    return nil
-                case "g" where event.modifierFlags.contains(.shift):
-                    searchMatchIndex[tabId] = min(
-                        (searchMatchIndex[tabId] ?? 0) + 1,
-                        max((searchMatchCount[tabId] ?? 1) - 1, 0)
-                    )
-                    return nil
-                case "g":
-                    searchMatchIndex[tabId] = max((searchMatchIndex[tabId] ?? 0) - 1, 0)
-                    return nil
-                default:
-                    break
-                }
-            }
-            if event.keyCode == 53 && searchVisible[tabId] == true { // Escape
-                searchVisible[tabId] = false
-                return nil
-            }
-            return event
-        }
     }
 }
 

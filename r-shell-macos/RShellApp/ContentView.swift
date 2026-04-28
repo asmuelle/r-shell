@@ -24,6 +24,7 @@ import RShellMacOS
 struct ContentView: View {
     @EnvironmentObject var layoutManager: LayoutManager
     @StateObject private var connectionStore = ConnectionStoreManager.shared
+    @StateObject private var tabsStore = TerminalTabsStore()
     @State private var selectedConnection: ConnectionProfile?
     @State private var selectedSection: SidebarView.NavSection = .terminals
 
@@ -43,7 +44,10 @@ struct ContentView: View {
             SidebarView(
                 storeManager: connectionStore,
                 selectedConnection: $selectedConnection,
-                selectedSection: $selectedSection
+                selectedSection: $selectedSection,
+                onConnect: { profile in
+                    Task { await tabsStore.openConnection(profile) }
+                }
             )
             .materialBackground(.sidebar)
             .navigationSplitViewColumnWidth(
@@ -55,7 +59,16 @@ struct ContentView: View {
             DetailColumn(layoutManager: layoutManager)
         }
         .navigationSplitViewStyle(.balanced)
+        .environmentObject(tabsStore)
         .frame(minWidth: 900, minHeight: 600)
+        .alert("Connection error", isPresented: Binding(
+            get: { tabsStore.lastError != nil },
+            set: { if !$0 { tabsStore.lastError = nil } }
+        )) {
+            Button("OK") { tabsStore.lastError = nil }
+        } message: {
+            Text(tabsStore.lastError ?? "")
+        }
     }
 }
 

@@ -20,6 +20,12 @@ pub struct FfiConnectConfig {
     pub key_path: Option<String>,
     /// Optional passphrase to decrypt the private key.
     pub passphrase: Option<String>,
+    /// Optional unique suffix that lets the same `(user, host, port)` triple
+    /// be opened more than once (e.g., one terminal tab per session). When
+    /// `Some("abc")`, the connection is keyed as `"user@host:port#abc"` in
+    /// `pty_sessions`. When `None`, the bare key is used (suitable for the
+    /// simple "single connection per host" case).
+    pub session_id: Option<String>,
 }
 
 /// Universal result struct for FFI operations.
@@ -168,7 +174,13 @@ pub fn rshell_set_event_callback(callback: Box<dyn FfiEventCallback>) {
 #[uniffi::export]
 pub fn rshell_connect(config: FfiConnectConfig) -> FfiResult {
     let bridge = MacOsBridge::global();
-    let connection_id = format!("{}@{}:{}", config.username, config.host, config.port);
+    let mut connection_id = format!("{}@{}:{}", config.username, config.host, config.port);
+    if let Some(sid) = config.session_id.as_ref() {
+        if !sid.is_empty() {
+            connection_id.push('#');
+            connection_id.push_str(sid);
+        }
+    }
 
     let ssh_config = r_shell_core::ssh::SshConfig {
         host: config.host,
@@ -233,25 +245,99 @@ pub fn rshell_disconnect(connection_id: String) -> FfiResult {
 /// Start an interactive PTY session on an already-connected SSH connection.
 /// Returns the generation counter in `value` (as a JSON string) so the
 /// frontend can pass it back in `rshell_pty_close` to prevent stale closes.
+///
+/// Spawns a background task that drains the PTY's `output_rx` channel and
+/// publishes each chunk as a `CoreEvent::PtyOutput` on the event bus, so the
+/// Swift event callback receives terminal output. The macOS app is the only
+/// consumer of `output_rx` (Tauri uses `read_pty_burst` in its own process),
+/// so there is no contention.
 #[uniffi::export]
 pub fn rshell_pty_start(connection_id: String, cols: u32, rows: u32) -> FfiResult {
     let bridge = MacOsBridge::global();
     let cm = bridge.connection_manager.clone();
-    match bridge
+    let conn_id_for_start = connection_id.clone();
+
+    let result = bridge
         .runtime
-        .block_on(async move { cm.start_pty_connection(&connection_id, cols, rows).await })
-    {
-        Ok(generation) => FfiResult {
-            success: true,
-            error: None,
-            value: Some(serde_json::json!({"generation": generation}).to_string()),
-        },
+        .block_on(async move { cm.start_pty_connection(&conn_id_for_start, cols, rows).await });
+
+    match result {
+        Ok(generation) => {
+            spawn_pty_output_forwarder(connection_id.clone(), bridge);
+            FfiResult {
+                success: true,
+                error: None,
+                value: Some(serde_json::json!({"generation": generation}).to_string()),
+            }
+        }
         Err(e) => FfiResult {
             success: false,
             error: Some(e.to_string()),
             value: None,
         },
     }
+}
+
+/// Drain the active PTY's `output_rx` and publish each chunk on the event
+/// bus. Captures the `Arc<PtySession>` once so a subsequent restart of the
+/// PTY for the same `connection_id` doesn't redirect this loop to the new
+/// session's receiver — when the captured session is cancelled or its
+/// channel closes, the loop exits.
+fn spawn_pty_output_forwarder(connection_id: String, bridge: &MacOsBridge) {
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.spawn(async move {
+        let pty = match cm.get_pty_session(&connection_id).await {
+            Some(p) => p,
+            None => {
+                tracing::warn!("PTY forwarder: no session for {}", connection_id);
+                return;
+            }
+        };
+        let cancel = pty.cancel.clone();
+        let output_rx = pty.output_rx.clone();
+        // Drop our strong handle to PtySession; the captured `output_rx` Arc
+        // keeps the receiver alive for as long as we need it.
+        drop(pty);
+
+        let tx = match r_shell_core::event_bus::event_sender() {
+            Some(t) => t,
+            None => {
+                tracing::error!("PTY forwarder: event bus unavailable");
+                return;
+            }
+        };
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    tracing::debug!("PTY forwarder for {} cancelled", connection_id);
+                    break;
+                }
+                msg = async {
+                    let mut rx = output_rx.lock().await;
+                    rx.recv().await
+                } => {
+                    match msg {
+                        Some(data) if !data.is_empty() => {
+                            // Send may fail if all subscribers dropped — that's
+                            // fine, just keep draining so the channel doesn't
+                            // back-pressure the SSH reader.
+                            let _ = tx.send(r_shell_core::event_bus::CoreEvent::PtyOutput {
+                                connection_id: connection_id.clone(),
+                                data,
+                            });
+                        }
+                        Some(_) => continue, // empty chunk, ignore
+                        None => {
+                            tracing::debug!("PTY forwarder for {} channel closed", connection_id);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Write data (user input) to a running PTY session.
@@ -445,6 +531,7 @@ mod tests {
             password: None,
             key_path: None,
             passphrase: None,
+            session_id: None,
         });
         assert!(!result.success);
         assert!(result.error.unwrap().contains("password or key_path"));

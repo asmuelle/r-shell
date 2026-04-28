@@ -1,22 +1,33 @@
 import Foundation
 import OSLog
+import RShellMacOS
 
-/// Singleton that manages the Rust bridge lifecycle.
+/// Singleton that manages the Rust bridge lifecycle and exposes a
+/// thin Swift API over the uniffi-generated FFI surface.
 ///
 /// Responsibilities:
-/// - Calls `rshell_init()` on app launch to create the Tokio runtime and connection manager
-/// - Registers the event callback for PTY output / connection status events
-/// - Routes incoming events to `TerminalSessionManager.shared.dispatch()`
-/// - Provides a `dispatchQueue` for bridge operations (off the main thread)
-/// - Logs all lifecycle events via `os_log`
-class BridgeManager {
+/// - `initialize()`: calls `rshellInit()` and registers the event callback.
+/// - `connect(...)`: maps a `ConnectionProfile` to `FfiConnectConfig` and
+///   calls `rshellConnect`.
+/// - `openTerminal(...)`: starts a PTY and parses the generation counter.
+/// - `sendInput`, `resize`, `closeTerminal`: thin pass-throughs.
+///
+/// All FFI calls run on `dispatchQueue` (a serial background queue) to
+/// keep the main thread responsive — the Rust side blocks on its Tokio
+/// runtime, so calling from main can stall the UI.
+final class BridgeManager {
     static let shared = BridgeManager()
     private let logger = Logger(subsystem: "com.r-shell", category: "bridge")
 
-    /// Serial queue for bridge operations — offloads FFI calls from the main thread.
+    /// Serial queue for FFI calls — keeps blocking Rust calls off the main thread.
     let dispatchQueue: DispatchQueue
 
     private(set) var isInitialized = false
+
+    /// Strong reference — Rust holds a callback handle but we keep a
+    /// Swift reference too, so the object isn't deallocated while Rust
+    /// is still calling into it.
+    private var eventCallback: RShellEventCallback?
 
     private init() {
         self.dispatchQueue = DispatchQueue(
@@ -27,79 +38,187 @@ class BridgeManager {
         )
     }
 
-    /// Initialize the Rust bridge. Called once from AppDelegate.
-    /// Must be called on the main thread; subsequent FFI operations happen on `dispatchQueue`.
+    // MARK: - Lifecycle
+
+    /// Initialize the Rust bridge. Call once from `AppDelegate`. Idempotent
+    /// on the Rust side, but we guard against double-init in Swift.
     func initialize() {
         dispatchQueue.async { [weak self] in
             guard let self else { return }
 
-            self.logger.info("Initializing Rust bridge...")
-
-            // Step 1: rshell_init() — creates Tokio runtime + ConnectionManager
-            let ok = self.rshellInitNative()
-            guard ok else {
-                self.logger.fault("Rust bridge init failed")
+            if self.isInitialized {
+                self.logger.warning("BridgeManager.initialize() called twice; ignoring")
                 return
             }
 
-            // Step 2: Register event callback for PTY output routing
-            // The callback runs on a background queue and dispatches to
-            // TerminalSessionManager on the main actor.
-            //
-            // Once uniffi bindings are generated, this becomes:
-            //   let callback = RShellEventCallback { event in
-            //       Task { @MainActor in
-            //           TerminalSessionManager.shared.dispatch(
-            //               connectionId: event.connectionId,
-            //               type: event.ty,
-            //               payload: event.payload
-            //           )
-            //       }
-            //   }
-            //   rshell_set_event_callback(callback: callback)
+            self.logger.info("Initializing Rust bridge")
+
+            guard rshellInit() else {
+                self.logger.fault("rshellInit() returned false")
+                return
+            }
+
+            // Register a single event callback for the lifetime of the app.
+            // PTY output, connection status changes, and transfer progress
+            // all flow through this callback.
+            let callback = RShellEventCallback()
+            rshellSetEventCallback(callback: callback)
+            self.eventCallback = callback
 
             self.isInitialized = true
-            self.logger.log("Rust bridge initialized — terminal sessions ready")
+            self.logger.log("Rust bridge initialized")
         }
     }
 
     func shutdown() {
-        logger.info("Shutting down Rust bridge...")
+        logger.info("Shutting down Rust bridge")
         isInitialized = false
+        // The Rust runtime is dropped on process exit; nothing else to do.
     }
 
-    /// Open a terminal session by starting a PTY on an active SSH connection.
-    /// Called when the user connects via the sidebar.
+    // MARK: - Connection
+
+    /// Map a stored `ConnectionProfile` to an FFI config and connect.
+    ///
+    /// `sessionId` lets the caller open multiple PTY sessions to the same
+    /// `(user, host, port)` triple — each tab passes its own UUID-derived
+    /// suffix and r-shell-core keys the connections separately. Without
+    /// it, opening the same profile twice would replace the first PTY
+    /// (the connection-manager `HashMap` key would collide).
+    ///
+    /// Returns the canonical connection id Rust assigned (`"user@host:port"`
+    /// or `"user@host:port#sessionId"`), which subsequent `openTerminal`,
+    /// `sendInput`, `closeTerminal` calls must reuse verbatim.
+    func connect(
+        profile: ConnectionProfile,
+        password: String?,
+        keyPath: String? = nil,
+        passphrase: String? = nil,
+        sessionId: String? = nil
+    ) async -> Result<String, BridgeError> {
+        let config = FfiConnectConfig(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            password: password,
+            keyPath: keyPath ?? profile.privateKeyPath,
+            passphrase: passphrase,
+            sessionId: sessionId
+        )
+
+        return await withCheckedContinuation { cont in
+            dispatchQueue.async { [weak self] in
+                guard let self else { return }
+
+                let result = rshellConnect(config: config)
+                if result.success {
+                    let connectionId = Self.parseConnectionId(from: result)
+                        ?? "\(profile.username)@\(profile.host):\(profile.port)"
+                    self.logger.log("Connected: \(connectionId, privacy: .public)")
+                    cont.resume(returning: .success(connectionId))
+                } else {
+                    let msg = result.error ?? "unknown error"
+                    self.logger.error("Connect failed: \(msg, privacy: .public)")
+                    cont.resume(returning: .failure(.connect(msg)))
+                }
+            }
+        }
+    }
+
+    /// Parse `{"connectionId": "..."}` out of `FfiResult.value` so we don't
+    /// duplicate the Rust-side key construction in Swift.
+    private static func parseConnectionId(from result: FfiResult) -> String? {
+        guard
+            let valueStr = result.value,
+            let data = valueStr.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let id = json["connectionId"] as? String
+        else { return nil }
+        return id
+    }
+
+    func disconnect(connectionId: String) {
+        dispatchQueue.async {
+            _ = rshellDisconnect(connectionId: connectionId)
+        }
+    }
+
+    // MARK: - PTY
+
+    /// Start a PTY session. Returns the `generation` counter so the caller
+    /// can use it for `closeTerminal` and stale-close protection.
     func openTerminal(connectionId: String, cols: Int = 80, rows: Int = 24) async -> UInt64? {
-        // Once uniffi bindings exist:
-        //   let result = rshell_pty_start(connectionId: connectionId, cols: UInt32(cols), rows: UInt32(rows))
-        //   guard result.success, let genStr = result.value,
-        //         let data = genStr.data(using: .utf8),
-        //         let json = try? JSONSerialization.jsonObject(with: data) as? [String: UInt64] else { return nil }
-        //   return json["generation"]
-        return 1  // placeholder
+        await withCheckedContinuation { cont in
+            dispatchQueue.async { [weak self] in
+                guard let self else { return }
+
+                let result = rshellPtyStart(
+                    connectionId: connectionId,
+                    cols: UInt32(cols),
+                    rows: UInt32(rows)
+                )
+                guard result.success else {
+                    self.logger.error("PTY start failed: \(result.error ?? "?", privacy: .public)")
+                    cont.resume(returning: nil)
+                    return
+                }
+
+                // Rust returns `{"generation": N}` as a JSON string in `value`.
+                guard
+                    let valueStr = result.value,
+                    let data = valueStr.data(using: .utf8),
+                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let gen = json["generation"] as? UInt64
+                else {
+                    self.logger.warning("Could not parse PTY generation; defaulting to 1")
+                    cont.resume(returning: 1)
+                    return
+                }
+
+                self.logger.log("PTY \(connectionId, privacy: .public) generation=\(gen)")
+                cont.resume(returning: gen)
+            }
+        }
     }
 
-    /// Send keyboard input to an active PTY session.
+    /// Send keyboard input to a running PTY.
     func sendInput(connectionId: String, data: Data) {
         dispatchQueue.async {
-            // Once uniffi bindings exist:
-            //   rshell_pty_write(connectionId: connectionId, data: Array(data))
+            _ = rshellPtyWrite(connectionId: connectionId, data: data)
         }
     }
 
-    /// Close a PTY session.
+    /// Resize a running PTY. Currently called only from explicit resize
+    /// triggers; per-frame resize is deferred to Sprint 8 with debouncing.
+    func resize(connectionId: String, cols: Int, rows: Int) {
+        dispatchQueue.async {
+            _ = rshellPtyResize(
+                connectionId: connectionId,
+                cols: UInt32(cols),
+                rows: UInt32(rows)
+            )
+        }
+    }
+
     func closeTerminal(connectionId: String, generation: UInt64) {
         dispatchQueue.async {
-            // Once uniffi bindings exist:
-            //   rshell_pty_close(connectionId: connectionId, expectedGeneration: generation)
+            _ = rshellPtyClose(connectionId: connectionId, expectedGeneration: generation)
         }
     }
+}
 
-    // MARK: - Native shim
+// MARK: - Errors
 
-    private func rshellInitNative() -> Bool {
-        // Linked from the Rust static library via @_silgen_name("rshell_init")
-        true
+enum BridgeError: Error, LocalizedError {
+    case connect(String)
+    case ptyStart(String)
+    case notInitialized
+
+    var errorDescription: String? {
+        switch self {
+        case .connect(let msg):    return "Failed to connect: \(msg)"
+        case .ptyStart(let msg):   return "Failed to start terminal: \(msg)"
+        case .notInitialized:      return "Rust bridge not initialized"
+        }
     }
 }
