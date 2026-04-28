@@ -119,15 +119,9 @@ final class TerminalTabsStore: ObservableObject {
         case .failure(let error):
             let msg = error.localizedDescription
 
-            // Auth failure with a stale stored password: evict and re-prompt.
-            // We match the substring "authentication failed" — every error
-            // path in r-shell-core's SSH client (`Password authentication
-            // failed`, `Public key authentication failed`, `Authentication
-            // failed for ...`) contains it case-insensitively.
-            if profile.authMethod == .password,
-               usedStoredPassword,
-               Self.looksLikeAuthFailure(msg)
-            {
+            switch error {
+            // Stored password rejected → evict, re-prompt, retry once.
+            case .authFailed where profile.authMethod == .password && usedStoredPassword:
                 logger.info("Evicting stale Keychain entry for \(account, privacy: .public) and re-prompting")
                 KeychainManager.shared.deletePassword(kind: .sshPassword, account: account)
                 if let fresh = KeychainManager.shared.promptPassword(
@@ -137,31 +131,29 @@ final class TerminalTabsStore: ObservableObject {
                     await openConnection(profile, password: fresh, passphrase: nil)
                     return
                 }
-                lastError = msg
-                logger.error("Connect failed: \(msg, privacy: .public)")
-                return
-            }
 
-            // Public-key failure with no passphrase available: prompt and
-            // retry once. Same crude substring check until typed FFI errors
-            // arrive (Sprint 8).
-            if profile.authMethod == .publicKey,
-               resolvedPassphrase == nil,
-               passphrase == nil,
-               let prompt = KeychainManager.shared.promptPassphrase(
-                   keyPath: profile.privateKeyPath ?? account
-               )
-            {
-                logger.info("Retrying connect with prompted passphrase")
-                await openConnection(profile, password: nil, passphrase: prompt)
-                if lastError == nil, profile.authMethod == .publicKey {
-                    KeychainManager.shared.savePassword(
-                        kind: .sshKeyPassphrase,
-                        account: account,
-                        secret: prompt
-                    )
+            // Encrypted key, no passphrase available → prompt, retry, persist on success.
+            case .passphraseRequired
+                where profile.authMethod == .publicKey
+                && resolvedPassphrase == nil
+                && passphrase == nil:
+                if let prompt = KeychainManager.shared.promptPassphrase(
+                    keyPath: profile.privateKeyPath ?? account
+                ) {
+                    logger.info("Retrying connect with prompted passphrase")
+                    await openConnection(profile, password: nil, passphrase: prompt)
+                    if lastError == nil {
+                        KeychainManager.shared.savePassword(
+                            kind: .sshKeyPassphrase,
+                            account: account,
+                            secret: prompt
+                        )
+                    }
+                    return
                 }
-                return
+
+            default:
+                break
             }
 
             lastError = msg
@@ -219,14 +211,5 @@ final class TerminalTabsStore: ObservableObject {
     var activeTab: TerminalTab? {
         guard let activeTabId else { return nil }
         return tabs.first { $0.id == activeTabId }
-    }
-
-    /// Heuristic match for SSH auth failures from r-shell-core. Every
-    /// failing-auth path there bottoms out in an `anyhow!("...
-    /// authentication failed ...")`, so a single case-insensitive
-    /// substring check covers them. Replace with typed FFI errors when
-    /// the FFI grows them in Sprint 8.
-    private static func looksLikeAuthFailure(_ message: String) -> Bool {
-        message.range(of: "authentication failed", options: .caseInsensitive) != nil
     }
 }

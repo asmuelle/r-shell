@@ -70,15 +70,15 @@ struct SettingsView: View {
 
             Section {
                 Picker("Theme", selection: $terminalTheme) {
-                    Text("Follow system").tag("system")
-                    Text("Light").tag("light")
-                    Text("Dark").tag("dark")
+                    ForEach(TerminalTheme.all) { theme in
+                        Text(theme.label).tag(theme.id)
+                    }
                 }
-                .pickerStyle(.radioGroup)
+                .pickerStyle(.menu)
             } header: {
                 Text("Terminal colours")
             } footer: {
-                Text("Background / foreground / caret. Named ANSI palettes (Solarized, Dracula, Nord) come in a later release.")
+                Text("Named themes override the 16-colour ANSI palette. \"Follow system\", \"Light\", and \"Dark\" leave the palette at SwiftTerm's defaults.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

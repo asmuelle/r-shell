@@ -845,6 +845,145 @@ public func FfiConverterTypeFfiResult_lower(_ value: FfiResult) -> RustBuffer {
     return FfiConverterTypeFfiResult.lower(value)
 }
 
+
+/**
+ * Typed connect-time failures so the Swift side can pattern-match instead
+ * of substring-checking the error string. Variants are classified from
+ * the underlying `anyhow::Error` produced by `r-shell-core` based on
+ * well-known message phrases — uniffi 0.28 doesn't propagate Rust types
+ * through `anyhow`, so this is the natural place for the classification.
+ */
+public enum ConnectError {
+
+    
+    
+    /**
+     * Either no auth method was provided, or the request was missing a
+     * required field. The user can't recover by retrying — they need to
+     * fix the profile.
+     */
+    case ConfigInvalid(detail: String
+    )
+    /**
+     * SSH key is encrypted and either no passphrase was supplied or the
+     * supplied one was wrong. The Swift side typically prompts and
+     * retries.
+     */
+    case PassphraseRequired(detail: String
+    )
+    /**
+     * Server rejected the credential — wrong password, key not in
+     * `authorized_keys`, etc. Distinct from `PassphraseRequired` because
+     * the recovery flow differs (re-prompt password vs unlock key).
+     */
+    case AuthFailed(detail: String
+    )
+    /**
+     * The stored host fingerprint doesn't match the offered one. Caller
+     * must surface the mismatch so the user can decide whether to
+     * re-trust the host (and removes the old TOFU entry).
+     */
+    case HostKeyMismatch(detail: String
+    )
+    /**
+     * TCP-level failure: timeout, refused, reset, allow-list block.
+     */
+    case Network(detail: String
+    )
+    /**
+     * Anything else — unknown error string from r-shell-core. Swift falls
+     * through to a generic alert.
+     */
+    case Other(detail: String
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConnectError: FfiConverterRustBuffer {
+    typealias SwiftType = ConnectError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConnectError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .ConfigInvalid(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .PassphraseRequired(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .AuthFailed(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .HostKeyMismatch(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .Network(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .Other(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ConnectError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .ConfigInvalid(detail):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .PassphraseRequired(detail):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .AuthFailed(detail):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .HostKeyMismatch(detail):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Network(detail):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Other(detail):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+extension ConnectError: Equatable, Hashable {}
+
+extension ConnectError: Foundation.LocalizedError {
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+}
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
@@ -1091,14 +1230,12 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     }
 }
 /**
- * Establish an SSH connection.
- *
- * Returns `FfiResult { success: true }` on success, or
- * `FfiResult { success: false, error: "..." }` on failure (connection
- * refused, auth failure, host key mismatch, etc.).
+ * Establish an SSH connection. Returns the canonical connection id
+ * (`"user@host:port"` or `"user@host:port#sessionId"`) on success;
+ * throws a typed `ConnectError` on failure.
  */
-public func rshellConnect(config: FfiConnectConfig) -> FfiResult {
-    return try!  FfiConverterTypeFfiResult.lift(try! rustCall() {
+public func rshellConnect(config: FfiConnectConfig)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeConnectError.lift) {
     uniffi_r_shell_macos_fn_func_rshell_connect(
         FfiConverterTypeFfiConnectConfig.lower(config),$0
     )
@@ -1260,7 +1397,7 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_r_shell_macos_checksum_func_rshell_connect() != 24407) {
+    if (uniffi_r_shell_macos_checksum_func_rshell_connect() != 1800) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_disconnect() != 30319) {

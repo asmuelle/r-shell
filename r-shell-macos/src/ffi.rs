@@ -166,13 +166,81 @@ pub fn rshell_set_event_callback(callback: Box<dyn FfiEventCallback>) {
     start_event_listener(callback);
 }
 
-/// Establish an SSH connection.
-///
-/// Returns `FfiResult { success: true }` on success, or
-/// `FfiResult { success: false, error: "..." }` on failure (connection
-/// refused, auth failure, host key mismatch, etc.).
+/// Typed connect-time failures so the Swift side can pattern-match instead
+/// of substring-checking the error string. Variants are classified from
+/// the underlying `anyhow::Error` produced by `r-shell-core` based on
+/// well-known message phrases — uniffi 0.28 doesn't propagate Rust types
+/// through `anyhow`, so this is the natural place for the classification.
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum ConnectError {
+    /// Either no auth method was provided, or the request was missing a
+    /// required field. The user can't recover by retrying — they need to
+    /// fix the profile.
+    #[error("invalid configuration: {detail}")]
+    ConfigInvalid { detail: String },
+
+    /// SSH key is encrypted and either no passphrase was supplied or the
+    /// supplied one was wrong. The Swift side typically prompts and
+    /// retries.
+    #[error("SSH key needs a passphrase: {detail}")]
+    PassphraseRequired { detail: String },
+
+    /// Server rejected the credential — wrong password, key not in
+    /// `authorized_keys`, etc. Distinct from `PassphraseRequired` because
+    /// the recovery flow differs (re-prompt password vs unlock key).
+    #[error("authentication failed: {detail}")]
+    AuthFailed { detail: String },
+
+    /// The stored host fingerprint doesn't match the offered one. Caller
+    /// must surface the mismatch so the user can decide whether to
+    /// re-trust the host (and removes the old TOFU entry).
+    #[error("host key verification failed: {detail}")]
+    HostKeyMismatch { detail: String },
+
+    /// TCP-level failure: timeout, refused, reset, allow-list block.
+    #[error("network error: {detail}")]
+    Network { detail: String },
+
+    /// Anything else — unknown error string from r-shell-core. Swift falls
+    /// through to a generic alert.
+    #[error("{detail}")]
+    Other { detail: String },
+}
+
+/// Classify an `anyhow::Error` from r-shell-core into a typed `ConnectError`.
+/// The match order matters: passphrase matches must happen before the
+/// generic "authentication failed" check, since the passphrase-required
+/// error message also contains the word "key" but isn't a remote auth
+/// rejection.
+fn classify_connect_error(e: &anyhow::Error) -> ConnectError {
+    let msg = e.to_string();
+    let lower = msg.to_lowercase();
+
+    if lower.contains("passphrase") || lower.contains("encrypted") {
+        ConnectError::PassphraseRequired { detail: msg }
+    } else if lower.contains("authentication failed") {
+        ConnectError::AuthFailed { detail: msg }
+    } else if lower.contains("host key")
+        || lower.contains("fingerprint")
+        || lower.contains("verification failed")
+    {
+        ConnectError::HostKeyMismatch { detail: msg }
+    } else if lower.contains("timed out")
+        || lower.contains("reset")
+        || lower.contains("refused")
+        || lower.contains("connection")
+    {
+        ConnectError::Network { detail: msg }
+    } else {
+        ConnectError::Other { detail: msg }
+    }
+}
+
+/// Establish an SSH connection. Returns the canonical connection id
+/// (`"user@host:port"` or `"user@host:port#sessionId"`) on success;
+/// throws a typed `ConnectError` on failure.
 #[uniffi::export]
-pub fn rshell_connect(config: FfiConnectConfig) -> FfiResult {
+pub fn rshell_connect(config: FfiConnectConfig) -> Result<String, ConnectError> {
     let bridge = MacOsBridge::global();
     let mut connection_id = format!("{}@{}:{}", config.username, config.host, config.port);
     if let Some(sid) = config.session_id.as_ref() {
@@ -193,11 +261,9 @@ pub fn rshell_connect(config: FfiConnectConfig) -> FfiResult {
                 passphrase: config.passphrase,
             },
             (None, None) => {
-                return FfiResult {
-                    success: false,
-                    error: Some("Either password or key_path is required".into()),
-                    value: None,
-                }
+                return Err(ConnectError::ConfigInvalid {
+                    detail: "Either password or key_path is required".into(),
+                });
             }
         },
     };
@@ -205,21 +271,11 @@ pub fn rshell_connect(config: FfiConnectConfig) -> FfiResult {
     let cm = bridge.connection_manager.clone();
     let conn_id = connection_id.clone();
 
-    match bridge
+    bridge
         .runtime
         .block_on(async move { cm.create_connection(conn_id, ssh_config).await })
-    {
-        Ok(_) => FfiResult {
-            success: true,
-            error: None,
-            value: Some(serde_json::json!({"connectionId": connection_id}).to_string()),
-        },
-        Err(e) => FfiResult {
-            success: false,
-            error: Some(e.to_string()),
-            value: None,
-        },
-    }
+        .map(|_| connection_id)
+        .map_err(|e| classify_connect_error(&e))
 }
 
 /// Disconnect an SSH connection and tear down any associated PTY session.
@@ -533,8 +589,12 @@ mod tests {
             passphrase: None,
             session_id: None,
         });
-        assert!(!result.success);
-        assert!(result.error.unwrap().contains("password or key_path"));
+        match result {
+            Err(ConnectError::ConfigInvalid { detail }) => {
+                assert!(detail.contains("password or key_path"));
+            }
+            other => panic!("expected ConfigInvalid, got {:?}", other),
+        }
     }
 
     #[test]

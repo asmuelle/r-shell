@@ -90,27 +90,7 @@ struct TerminalView: NSViewRepresentable {
     // MARK: - Theme & font
 
     private func applyTheme(to term: SwiftTerm.TerminalView) {
-        let (bg, fg) = themeColors()
-        term.nativeBackgroundColor = bg
-        term.nativeForegroundColor = fg
-        term.caretColor = fg
-    }
-
-    /// Background / foreground pair for the current `terminalTheme`. The
-    /// "system" option follows light/dark mode via dynamic system colors;
-    /// the explicit "light"/"dark" choices override that. Sprint 8 will
-    /// add named themes (Solarized / Dracula / Nord) via SwiftTerm's
-    /// `installColors` for the full ANSI palette.
-    private func themeColors() -> (NSColor, NSColor) {
-        switch terminalTheme {
-        case "light":
-            return (NSColor.white, NSColor.black)
-        case "dark":
-            return (NSColor(calibratedWhite: 0.07, alpha: 1),
-                    NSColor(calibratedWhite: 0.92, alpha: 1))
-        default:
-            return (NSColor.textBackgroundColor, NSColor.textColor)
-        }
+        TerminalTheme.resolve(terminalTheme).apply(to: term)
     }
 
     private func applyFont(to term: SwiftTerm.TerminalView) {

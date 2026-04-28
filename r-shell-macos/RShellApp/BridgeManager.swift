@@ -110,31 +110,19 @@ final class BridgeManager {
             dispatchQueue.async { [weak self] in
                 guard let self else { return }
 
-                let result = rshellConnect(config: config)
-                if result.success {
-                    let connectionId = Self.parseConnectionId(from: result)
-                        ?? "\(profile.username)@\(profile.host):\(profile.port)"
+                do {
+                    let connectionId = try rshellConnect(config: config)
                     self.logger.log("Connected: \(connectionId, privacy: .public)")
                     cont.resume(returning: .success(connectionId))
-                } else {
-                    let msg = result.error ?? "unknown error"
-                    self.logger.error("Connect failed: \(msg, privacy: .public)")
-                    cont.resume(returning: .failure(.connect(msg)))
+                } catch let err as ConnectError {
+                    self.logger.error("Connect failed: \(String(describing: err), privacy: .public)")
+                    cont.resume(returning: .failure(BridgeError.from(err)))
+                } catch {
+                    self.logger.error("Connect failed (unexpected): \(error.localizedDescription, privacy: .public)")
+                    cont.resume(returning: .failure(.other(error.localizedDescription)))
                 }
             }
         }
-    }
-
-    /// Parse `{"connectionId": "..."}` out of `FfiResult.value` so we don't
-    /// duplicate the Rust-side key construction in Swift.
-    private static func parseConnectionId(from result: FfiResult) -> String? {
-        guard
-            let valueStr = result.value,
-            let data = valueStr.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let id = json["connectionId"] as? String
-        else { return nil }
-        return id
     }
 
     func disconnect(connectionId: String) {
@@ -209,16 +197,43 @@ final class BridgeManager {
 
 // MARK: - Errors
 
+/// Swift-side mirror of `ConnectError` plus the non-connect error cases.
+/// Keeping this Swift-typed (rather than passing `ConnectError` through
+/// directly) means the rest of the app doesn't have to depend on the
+/// uniffi-generated module.
 enum BridgeError: Error, LocalizedError {
-    case connect(String)
+    case configInvalid(String)
+    case passphraseRequired(String)
+    case authFailed(String)
+    case hostKeyMismatch(String)
+    case network(String)
     case ptyStart(String)
     case notInitialized
+    case other(String)
 
     var errorDescription: String? {
         switch self {
-        case .connect(let msg):    return "Failed to connect: \(msg)"
-        case .ptyStart(let msg):   return "Failed to start terminal: \(msg)"
-        case .notInitialized:      return "Rust bridge not initialized"
+        case .configInvalid(let msg):     return "Invalid configuration: \(msg)"
+        case .passphraseRequired(let msg): return "Key passphrase required: \(msg)"
+        case .authFailed(let msg):        return "Authentication failed: \(msg)"
+        case .hostKeyMismatch(let msg):   return "Host key mismatch: \(msg)"
+        case .network(let msg):           return "Network error: \(msg)"
+        case .ptyStart(let msg):          return "Failed to start terminal: \(msg)"
+        case .notInitialized:             return "Rust bridge not initialized"
+        case .other(let msg):             return msg
+        }
+    }
+
+    static func from(_ err: ConnectError) -> BridgeError {
+        // uniffi 0.28 generates PascalCase Swift enum cases from the Rust
+        // variant names — keep these in lock-step if a variant is added.
+        switch err {
+        case .ConfigInvalid(let detail):     return .configInvalid(detail)
+        case .PassphraseRequired(let detail): return .passphraseRequired(detail)
+        case .AuthFailed(let detail):        return .authFailed(detail)
+        case .HostKeyMismatch(let detail):   return .hostKeyMismatch(detail)
+        case .Network(let detail):           return .network(detail)
+        case .Other(let detail):             return .other(detail)
         }
     }
 }
