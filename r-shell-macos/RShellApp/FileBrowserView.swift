@@ -1,12 +1,15 @@
+import AppKit
 import SwiftUI
 import OSLog
 
-/// Single-pane remote file browser MVP.
+/// Single-pane remote file browser.
 ///
 /// Calls `rshellSftpListDir` over the FFI for the active connection.
 /// Path navigation is breadcrumb-style: clicking a directory drills in,
-/// clicking an ancestor crumb walks back up. No transfers in this slice
-/// — upload / download / delete / rename land in the next pass.
+/// clicking an ancestor crumb walks back up. Right-click → Download
+/// pushes a Transfer onto `TransferQueueStore`; the toolbar Upload
+/// button opens an NSOpenPanel and enqueues an upload to the current
+/// directory.
 ///
 /// Errors (no connection, SFTP open failure, permission denied) surface
 /// inline at the top of the list rather than via an alert; SFTP errors
@@ -18,6 +21,8 @@ struct FileBrowserView: View {
     let connectionId: String?
     /// Display name for the connection (shown in the title row).
     let connectionLabel: String
+
+    @EnvironmentObject var transfers: TransferQueueStore
 
     @State private var path: String = "."
     @State private var entries: [FfiFileEntry] = []
@@ -54,6 +59,16 @@ struct FileBrowserView: View {
                 Text(connectionLabel)
                     .font(.headline)
                 Spacer()
+                Button {
+                    presentUploadPicker()
+                } label: {
+                    Label("Upload", systemImage: "arrow.up.doc")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(connectionId == nil)
+                .help("Upload a file to the current directory")
+
                 Button {
                     refresh()
                 } label: {
@@ -141,11 +156,17 @@ struct FileBrowserView: View {
                         .buttonStyle(.plain)
                     }
                     ForEach(entries, id: \.name) { entry in
-                        FileEntryRow(entry: entry) {
-                            if entry.kind == .directory {
-                                navigate(into: entry.name)
-                            }
-                        }
+                        FileEntryRow(
+                            entry: entry,
+                            onActivate: {
+                                if entry.kind == .directory {
+                                    navigate(into: entry.name)
+                                }
+                            },
+                            onDownload: entry.kind == .file
+                                ? { presentDownloadPicker(for: entry) }
+                                : nil
+                        )
                     }
                 }
                 .listStyle(.plain)
@@ -186,6 +207,59 @@ struct FileBrowserView: View {
     private func navigate(to newPath: String) {
         path = newPath
         refresh()
+    }
+
+    // MARK: - Transfers
+
+    private func presentDownloadPicker(for entry: FfiFileEntry) {
+        guard let connectionId else { return }
+        let savePanel = NSSavePanel()
+        savePanel.title = "Download \(entry.name)"
+        savePanel.nameFieldStringValue = entry.name
+        // Default to ~/Downloads — matches macOS standard behaviour.
+        savePanel.directoryURL = FileManager.default.urls(
+            for: .downloadsDirectory,
+            in: .userDomainMask
+        ).first
+        guard savePanel.runModal() == .OK, let localURL = savePanel.url else {
+            return
+        }
+        let remotePath = absolutePath(joining: entry.name)
+        transfers.enqueueDownload(
+            connectionId: connectionId,
+            remotePath: remotePath,
+            localPath: localURL.path,
+            expectedSize: entry.size
+        )
+    }
+
+    private func presentUploadPicker() {
+        guard let connectionId else { return }
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Upload to \(path == "." ? "~" : path)"
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+        guard openPanel.runModal() == .OK, let localURL = openPanel.url else {
+            return
+        }
+        let filename = localURL.lastPathComponent
+        let remotePath = absolutePath(joining: filename)
+        transfers.enqueueUpload(
+            connectionId: connectionId,
+            localPath: localURL.path,
+            remotePath: remotePath
+        )
+    }
+
+    /// Build a remote path by joining the current `path` with a child
+    /// name. Handles the home-shorthand case (`.`) by passing the bare
+    /// name — SFTP servers resolve it relative to the user's home.
+    private func absolutePath(joining name: String) -> String {
+        if path == "." {
+            return name
+        }
+        return path.hasSuffix("/") ? path + name : path + "/" + name
     }
 
     private func navigateUp() {
@@ -249,6 +323,9 @@ struct FileBrowserView: View {
 private struct FileEntryRow: View {
     let entry: FfiFileEntry
     let onActivate: () -> Void
+    /// Non-nil only for plain files. Triggers an NSSavePanel-driven
+    /// download via the row's context menu.
+    let onDownload: (() -> Void)?
 
     var body: some View {
         Button(action: onActivate) {
@@ -276,6 +353,11 @@ private struct FileEntryRow: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let onDownload {
+                Button("Download…", action: onDownload)
+            }
+        }
     }
 
     private var icon: String {

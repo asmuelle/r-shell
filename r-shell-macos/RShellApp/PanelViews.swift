@@ -215,6 +215,7 @@ private struct ReconnectOverlay: View {
 // MARK: - Bottom panel
 
 struct BottomPanel: View {
+    @EnvironmentObject var transfers: TransferQueueStore
     @State private var selectedSegment = 0
 
     var body: some View {
@@ -223,6 +224,17 @@ struct BottomPanel: View {
                 Text("Output").tag(0)
                 Text("Logs").tag(1)
                 Text("Problems").tag(2)
+                // Badge the segment with active count when a transfer is
+                // in flight — gives a glanceable signal even when the
+                // user is on a different segment.
+                let active = transfers.transfers.filter {
+                    $0.status == .inProgress || $0.status == .queued
+                }.count
+                if active > 0 {
+                    Text("Transfers (\(active))").tag(3)
+                } else {
+                    Text("Transfers").tag(3)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -236,6 +248,7 @@ struct BottomPanel: View {
                 case 0: emptyState("No output yet", systemImage: "terminal")
                 case 1: emptyState("No logs", systemImage: "doc.text")
                 case 2: emptyState("No problems detected", systemImage: "checkmark.seal")
+                case 3: TransferQueueView(store: transfers)
                 default: EmptyView()
                 }
             }
@@ -254,6 +267,123 @@ struct BottomPanel: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Transfer queue view
+
+private struct TransferQueueView: View {
+    @ObservedObject var store: TransferQueueStore
+
+    var body: some View {
+        if store.transfers.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.tertiary)
+                Text("No file transfers")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(spacing: 0) {
+                List {
+                    ForEach(store.transfers) { transfer in
+                        TransferRow(transfer: transfer)
+                    }
+                }
+                .listStyle(.plain)
+
+                // Footer with a Clear-completed button when there's
+                // anything to clear.
+                let cleanable = store.transfers.contains {
+                    $0.status == .completed || $0.status == .failed
+                }
+                if cleanable {
+                    HStack {
+                        Spacer()
+                        Button("Clear Completed") { store.clearCompleted() }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+}
+
+private struct TransferRow: View {
+    let transfer: Transfer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: transfer.kind == .download ? "arrow.down.doc" : "arrow.up.doc")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+
+                Text(transfer.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer()
+
+                statusBadge
+            }
+
+            // Progress bar — only render when we know the total. For
+            // unknown-total uploads we fall back to a simple "X bytes"
+            // line so the row doesn't show a misleading 0% bar.
+            if transfer.status == .inProgress && transfer.totalBytes > 0 {
+                ProgressView(value: transfer.progress)
+                    .progressViewStyle(.linear)
+            }
+
+            HStack(spacing: 6) {
+                if transfer.totalBytes > 0 {
+                    Text("\(formatBytes(transfer.bytesTransferred)) / \(formatBytes(transfer.totalBytes))")
+                } else {
+                    Text(formatBytes(transfer.bytesTransferred))
+                }
+                if let error = transfer.error {
+                    Text("· \(error)")
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var statusBadge: some View {
+        Group {
+            switch transfer.status {
+            case .queued:
+                Text("Queued")
+                    .foregroundStyle(.secondary)
+            case .inProgress:
+                Text("\(Int(transfer.progress * 100))%")
+                    .monospacedDigit()
+                    .foregroundStyle(.tint)
+            case .completed:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .failed:
+                Image(systemName: "xmark.octagon.fill")
+                    .foregroundStyle(.red)
+            }
+        }
+        .font(.caption)
+    }
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }
 

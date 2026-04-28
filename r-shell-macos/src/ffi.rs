@@ -571,6 +571,106 @@ pub enum SftpError {
     Other { detail: String },
 }
 
+/// Stream a remote file to a local path. Returns the byte count on
+/// success. Publishes `TransferProgress` events on every SFTP chunk so
+/// the UI can drive a progress bar — the consumer (Swift
+/// `TransferQueueStore`) matches events back to the in-flight transfer
+/// by `path`. `expected_size` lets the consumer compute a percentage;
+/// pass `0` if unknown.
+#[uniffi::export]
+pub fn rshell_sftp_download(
+    connection_id: String,
+    remote_path: String,
+    local_path: String,
+    expected_size: u64,
+) -> Result<u64, SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    let conn_id = connection_id.clone();
+    let remote_for_event = remote_path.clone();
+
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&conn_id)
+            .await
+            .ok_or_else(|| SftpError::NotConnected {
+                connection_id: conn_id.clone(),
+            })?;
+
+        let event_tx = r_shell_core::event_bus::event_sender();
+        let conn_id_for_progress = conn_id.clone();
+        let remote_for_progress = remote_for_event.clone();
+
+        let bytes = {
+            let guard = client.read().await;
+            guard
+                .download_file_with_progress(&remote_path, &local_path, |bytes| {
+                    if let Some(tx) = event_tx.as_ref() {
+                        let _ = tx.send(r_shell_core::event_bus::CoreEvent::TransferProgress {
+                            connection_id: conn_id_for_progress.clone(),
+                            path: remote_for_progress.clone(),
+                            bytes_transferred: bytes,
+                            total_bytes: expected_size,
+                        });
+                    }
+                })
+                .await
+                .map_err(|e| SftpError::Other { detail: e.to_string() })?
+        };
+
+        Ok(bytes)
+    })
+}
+
+/// Stream a local file to a remote path. See `rshell_sftp_download` for
+/// the progress-event contract. The local file is `stat`'d once before
+/// the transfer so progress events carry a meaningful total.
+#[uniffi::export]
+pub fn rshell_sftp_upload(
+    connection_id: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<u64, SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    let conn_id = connection_id.clone();
+    let remote_for_event = remote_path.clone();
+
+    let total_bytes = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&conn_id)
+            .await
+            .ok_or_else(|| SftpError::NotConnected {
+                connection_id: conn_id.clone(),
+            })?;
+
+        let event_tx = r_shell_core::event_bus::event_sender();
+        let conn_id_for_progress = conn_id.clone();
+        let remote_for_progress = remote_for_event.clone();
+
+        let bytes = {
+            let guard = client.read().await;
+            guard
+                .upload_file_with_progress(&local_path, &remote_path, |bytes| {
+                    if let Some(tx) = event_tx.as_ref() {
+                        let _ = tx.send(r_shell_core::event_bus::CoreEvent::TransferProgress {
+                            connection_id: conn_id_for_progress.clone(),
+                            path: remote_for_progress.clone(),
+                            bytes_transferred: bytes,
+                            total_bytes,
+                        });
+                    }
+                })
+                .await
+                .map_err(|e| SftpError::Other { detail: e.to_string() })?
+        };
+
+        Ok(bytes)
+    })
+}
+
 #[uniffi::export]
 pub fn rshell_sftp_list_dir(
     connection_id: String,

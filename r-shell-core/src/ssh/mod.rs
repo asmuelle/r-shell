@@ -871,11 +871,29 @@ impl SshClient {
     }
 
     pub async fn download_file(&self, remote_path: &str, local_path: &str) -> Result<u64> {
+        self.download_file_with_progress(remote_path, local_path, |_| {})
+            .await
+    }
+
+    /// Stream a remote file to disk, calling `progress` after every SFTP
+    /// chunk with the running total of bytes transferred. Caller is
+    /// responsible for knowing the file's total size — use `list_dir` /
+    /// the entry's `size` field beforehand.
+    ///
+    /// The callback runs synchronously inside the read loop, so it must
+    /// be cheap. The macOS bridge uses it to emit `TransferProgress`
+    /// events on the event bus; the real work happens on the consumer
+    /// thread that drains the bus, not here.
+    pub async fn download_file_with_progress(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        mut progress: impl FnMut(u64),
+    ) -> Result<u64> {
         let sftp = self.sftp_session().await?;
         let mut remote_file = sftp.open(remote_path).await?;
         let mut local_file = tokio::fs::File::create(local_path).await?;
 
-        // Stream: read a chunk, write it, drop it. No whole-file allocation.
         let mut buf = vec![0u8; SFTP_CHUNK_SIZE];
         let mut total_bytes = 0u64;
         loop {
@@ -885,6 +903,7 @@ impl SshClient {
             }
             local_file.write_all(&buf[..n]).await?;
             total_bytes += n as u64;
+            progress(total_bytes);
         }
         local_file.flush().await?;
 
@@ -908,6 +927,19 @@ impl SshClient {
     }
 
     pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<u64> {
+        self.upload_file_with_progress(local_path, remote_path, |_| {})
+            .await
+    }
+
+    /// Stream a local file to the remote, calling `progress` after every
+    /// SFTP chunk. See `download_file_with_progress` for the threading
+    /// constraints — the callback is on the same task as the SFTP I/O.
+    pub async fn upload_file_with_progress(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+        mut progress: impl FnMut(u64),
+    ) -> Result<u64> {
         let sftp = self.sftp_session().await?;
         let mut local_file = tokio::fs::File::open(local_path).await?;
         let mut remote_file = sftp.create(remote_path).await?;
@@ -921,6 +953,7 @@ impl SshClient {
             }
             remote_file.write_all(&buf[..n]).await?;
             total_bytes += n as u64;
+            progress(total_bytes);
         }
         remote_file.flush().await?;
 

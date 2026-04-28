@@ -25,6 +25,7 @@ struct ContentView: View {
     @EnvironmentObject var layoutManager: LayoutManager
     @StateObject private var connectionStore = ConnectionStoreManager.shared
     @StateObject private var tabsStore = TerminalTabsStore()
+    @StateObject private var transfersStore = TransferQueueStore()
     @State private var selectedConnection: ConnectionProfile?
     @State private var selectedSection: SidebarView.NavSection = .terminals
 
@@ -60,6 +61,7 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .environmentObject(tabsStore)
+        .environmentObject(transfersStore)
         .frame(minWidth: 900, minHeight: 600)
         .alert("Connection error", isPresented: Binding(
             get: { tabsStore.lastError != nil },

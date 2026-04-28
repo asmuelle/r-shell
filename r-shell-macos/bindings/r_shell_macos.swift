@@ -1661,11 +1661,43 @@ public func rshellSetEventCallback(callback: FfiEventCallback) {try! rustCall() 
     )
 }
 }
+/**
+ * Stream a remote file to a local path. Returns the byte count on
+ * success. Publishes `TransferProgress` events on every SFTP chunk so
+ * the UI can drive a progress bar — the consumer (Swift
+ * `TransferQueueStore`) matches events back to the in-flight transfer
+ * by `path`. `expected_size` lets the consumer compute a percentage;
+ * pass `0` if unknown.
+ */
+public func rshellSftpDownload(connectionId: String, remotePath: String, localPath: String, expectedSize: UInt64)throws  -> UInt64 {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_download(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(remotePath),
+        FfiConverterString.lower(localPath),
+        FfiConverterUInt64.lower(expectedSize),$0
+    )
+})
+}
 public func rshellSftpListDir(connectionId: String, path: String)throws  -> [FfiFileEntry] {
     return try  FfiConverterSequenceTypeFfiFileEntry.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
     uniffi_r_shell_macos_fn_func_rshell_sftp_list_dir(
         FfiConverterString.lower(connectionId),
         FfiConverterString.lower(path),$0
+    )
+})
+}
+/**
+ * Stream a local file to a remote path. See `rshell_sftp_download` for
+ * the progress-event contract. The local file is `stat`'d once before
+ * the transfer so progress events carry a meaningful total.
+ */
+public func rshellSftpUpload(connectionId: String, localPath: String, remotePath: String)throws  -> UInt64 {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_upload(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(localPath),
+        FfiConverterString.lower(remotePath),$0
     )
 })
 }
@@ -1730,7 +1762,13 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_set_event_callback() != 25155) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_download() != 19143) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir() != 57015) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_upload() != 50008) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_method_ffieventcallback_on_event() != 59523) {

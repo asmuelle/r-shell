@@ -348,9 +348,19 @@ RustBuffer uniffi_r_shell_macos_fn_func_rshell_pty_write(RustBuffer connection_i
 void uniffi_r_shell_macos_fn_func_rshell_set_event_callback(uint64_t callback, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DOWNLOAD
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DOWNLOAD
+uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_download(RustBuffer connection_id, RustBuffer remote_path, RustBuffer local_path, uint64_t expected_size, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_LIST_DIR
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_LIST_DIR
 RustBuffer uniffi_r_shell_macos_fn_func_rshell_sftp_list_dir(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
+uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_upload(RustBuffer connection_id, RustBuffer local_path, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_R_SHELL_MACOS_RUSTBUFFER_ALLOC
@@ -723,9 +733,21 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_set_event_callback(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DOWNLOAD
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DOWNLOAD
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_download(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_LIST_DIR
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_LIST_DIR
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_UPLOAD
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_UPLOAD
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_upload(void
     
 );
 #endif
