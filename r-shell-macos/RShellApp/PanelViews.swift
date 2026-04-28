@@ -48,22 +48,37 @@ struct MainPanel: View {
 
             Divider()
 
-            if let active = tabsStore.activeTab {
-                TerminalView(
-                    connectionId: active.connectionId,
-                    ptyGeneration: active.ptyGeneration,
-                    terminalTitle: .constant(active.title),
-                    searchVisible: .constant(false),
-                    onSearchQueryChanged: nil,
-                    onSearchNext: nil,
-                    onSearchPrevious: nil
-                )
-                // The view's identity is the connection id — switching tabs
-                // tears down and rebuilds the underlying SwiftTerm view, so
-                // each tab gets its own scrollback / selection state.
-                .id(active.connectionId)
-            } else {
+            if tabsStore.tabs.isEmpty {
                 placeholder
+            } else {
+                // Render every open terminal once, stacked. Switching tabs
+                // toggles `.opacity` and `allowsHitTesting`; the SwiftTerm
+                // NSView for inactive tabs stays mounted, preserving its
+                // scrollback, selection, cursor position, and any in-flight
+                // PTY output that arrives while the tab is hidden.
+                //
+                // SwiftUI keeps each subview's identity stable via the tab
+                // UUID, so `dismantleNSView` only fires when a tab is
+                // actually closed (not on every switch).
+                ZStack {
+                    ForEach(tabsStore.tabs) { tab in
+                        let isActive = tab.id == tabsStore.activeTabId
+                        TerminalView(
+                            connectionId: tab.connectionId,
+                            ptyGeneration: tab.ptyGeneration,
+                            terminalTitle: .constant(tab.title),
+                            searchVisible: .constant(false),
+                            onSearchQueryChanged: nil,
+                            onSearchNext: nil,
+                            onSearchPrevious: nil
+                        )
+                        .opacity(isActive ? 1 : 0)
+                        .allowsHitTesting(isActive)
+                        // Stable per-tab identity — tab.id is generated
+                        // once when the tab is created and never reused.
+                        .id(tab.id)
+                    }
+                }
             }
         }
     }
