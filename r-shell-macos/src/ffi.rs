@@ -281,7 +281,19 @@ pub fn rshell_connect(config: FfiConnectConfig) -> Result<String, ConnectError> 
     bridge
         .runtime
         .block_on(async move { cm.create_connection(conn_id, ssh_config).await })
-        .map(|_| connection_id)
+        .map(|_| {
+            // Surface the new state so the UI can light up the
+            // connected indicator. Status events are best-effort —
+            // a future network blip won't be detected unless the SSH
+            // layer surfaces it (TODO sprint 10).
+            if let Some(tx) = r_shell_core::event_bus::event_sender() {
+                let _ = tx.send(r_shell_core::event_bus::CoreEvent::ConnectionStatus {
+                    connection_id: connection_id.clone(),
+                    status: r_shell_core::event_bus::ConnectionStatus::Connected,
+                });
+            }
+            connection_id
+        })
         .map_err(|e| classify_connect_error(&e))
 }
 
@@ -290,14 +302,23 @@ pub fn rshell_connect(config: FfiConnectConfig) -> Result<String, ConnectError> 
 pub fn rshell_disconnect(connection_id: String) -> FfiResult {
     let bridge = MacOsBridge::global();
     let cm = bridge.connection_manager.clone();
-    bridge
+    let conn_id_for_close = connection_id.clone();
+    let result = bridge
         .runtime
-        .block_on(async move { cm.close_connection(&connection_id).await })
-        .map(|_| FfiResult {
-            success: true,
-            error: None,
-            value: None,
-        })
+        .block_on(async move { cm.close_connection(&conn_id_for_close).await });
+
+    // Always publish disconnected — close_connection is idempotent on the
+    // r-shell-core side, so even an error path here means the session is
+    // effectively gone. UI status reflects observable state.
+    if let Some(tx) = r_shell_core::event_bus::event_sender() {
+        let _ = tx.send(r_shell_core::event_bus::CoreEvent::ConnectionStatus {
+            connection_id,
+            status: r_shell_core::event_bus::ConnectionStatus::Disconnected,
+        });
+    }
+
+    result
+        .map(|_| FfiResult { success: true, error: None, value: None })
         .unwrap_or_else(|e| FfiResult {
             success: false,
             error: Some(e.to_string()),
@@ -497,6 +518,32 @@ pub fn rshell_execute_command(connection_id: String, command: String) -> FfiResu
             success: true,
             error: None,
             value: Some(output),
+        },
+        Err(e) => FfiResult {
+            success: false,
+            error: Some(e.to_string()),
+            value: None,
+        },
+    }
+}
+
+/// Forget a stored host-key entry. Called from the Swift "Trust new key"
+/// flow after a `HostKeyMismatch` so the next connect TOFU-trusts the
+/// new fingerprint. Returns `success: true, value: "true"` if an entry
+/// was removed, `success: true, value: "false"` if there was nothing
+/// to remove, or `success: false, error: ...` on disk I/O failure.
+#[uniffi::export]
+pub fn rshell_forget_host_key(host: String, port: u16) -> FfiResult {
+    let bridge = MacOsBridge::global();
+    let store = bridge.connection_manager.host_keys();
+    match bridge
+        .runtime
+        .block_on(async move { store.forget(&host, port).await })
+    {
+        Ok(removed) => FfiResult {
+            success: true,
+            error: None,
+            value: Some(removed.to_string()),
         },
         Err(e) => FfiResult {
             success: false,

@@ -26,6 +26,28 @@ import Foundation
 /// Logger subsystem identifier used across the app.
 public let RShellLogSubsystem = "com.r-shell"
 
+/// Per-tab live connection state, surfaced from the
+/// `connection_status` event-bus payload (`{"status":"..."}`). Drives
+/// the coloured dot in the tab bar.
+public enum TerminalConnectionStatus: String, Sendable, Equatable, Codable {
+    case connected
+    case disconnected
+    case error
+    case connecting
+
+    /// Decode from the JSON payload Rust ships
+    /// (`{"status":"connected"}` etc.). Anything unrecognised maps to
+    /// `error` so we surface the unexpected state rather than silently
+    /// dropping it.
+    public static func parse(payload: String) -> TerminalConnectionStatus {
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = json["status"] as? String
+        else { return .error }
+        return TerminalConnectionStatus(rawValue: raw) ?? .error
+    }
+}
+
 /// Decoded contents of a `pty_output` event-bus payload.
 public struct PtyOutputFrame: Equatable, Sendable {
     public let generation: UInt64

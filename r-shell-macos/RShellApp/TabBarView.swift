@@ -12,6 +12,8 @@ struct TabBarView: View {
     /// Currently applied per-tab override, by tab id. Used to put a check
     /// mark next to the active selection in the context menu.
     var themeOverrides: [UUID: String] = [:]
+    /// Live connection state per tab id, for the coloured dot prefix.
+    var statuses: [UUID: TerminalConnectionStatus] = [:]
 
     var body: some View {
         HStack(spacing: 0) {
@@ -22,6 +24,7 @@ struct TabBarView: View {
                             tab: tab,
                             isActive: tab.id == activeTabId,
                             currentThemeOverride: themeOverrides[tab.id],
+                            status: statuses[tab.id] ?? .connected,
                             onSelect: { activeTabId = tab.id },
                             onClose: { onClose(tab) },
                             onSetTheme: onSetTheme.map { setter in
@@ -56,12 +59,18 @@ struct TabItemView: View {
     let tab: WorkspaceTab
     let isActive: Bool
     var currentThemeOverride: String? = nil
+    var status: TerminalConnectionStatus = .connected
     let onSelect: () -> Void
     let onClose: () -> Void
     var onSetTheme: ((String?) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 4) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 7, height: 7)
+                .help(statusTooltip)
+
             Text(tab.title)
                 .font(.system(size: 11))
                 .lineLimit(1)
@@ -104,6 +113,24 @@ struct TabItemView: View {
                 }
             }
             Button("Close Tab", action: onClose)
+        }
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .connected:    return .green
+        case .connecting:   return .yellow
+        case .disconnected: return Color(NSColor.tertiaryLabelColor)
+        case .error:        return .red
+        }
+    }
+
+    private var statusTooltip: String {
+        switch status {
+        case .connected:    return "Connected"
+        case .connecting:   return "Connecting…"
+        case .disconnected: return "Disconnected"
+        case .error:        return "Connection error"
         }
     }
 }

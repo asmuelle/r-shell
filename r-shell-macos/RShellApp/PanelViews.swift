@@ -51,6 +51,9 @@ struct MainPanel: View {
                     uniqueKeysWithValues: tabsStore.tabs.compactMap { tab in
                         tab.themeOverride.map { (tab.id, $0) }
                     }
+                ),
+                statuses: Dictionary(
+                    uniqueKeysWithValues: tabsStore.tabs.map { ($0.id, $0.status) }
                 )
             )
 
@@ -117,6 +120,10 @@ struct TerminalTab: Identifiable {
     /// — set via the tab's context menu so a single host can have a
     /// distinct visual signature (e.g., red palette for prod).
     var themeOverride: String?
+    /// Live connection state from the `connection_status` event bus.
+    /// Defaults to `.connected` since we only build a tab after a
+    /// successful `rshellConnect`.
+    var status: TerminalConnectionStatus = .connected
 }
 
 // MARK: - Bottom panel

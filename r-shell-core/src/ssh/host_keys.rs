@@ -136,6 +136,28 @@ impl HostKeyStore {
         Ok(())
     }
 
+    /// Forget a previously-trusted host. Returns `true` if an entry was
+    /// removed, `false` if there was nothing to remove. Used by the UI's
+    /// "Trust new key" flow on a `HostKeyMismatch`: forget the stale
+    /// entry, retry the connect, the next `verify()` falls through to
+    /// `Verdict::Unknown` and the new key is TOFU-trusted.
+    pub async fn forget(&self, host: &str, port: u16) -> Result<bool> {
+        let key_id = Self::make_key(host, port);
+
+        let mut guard = self.state.lock().await;
+        if guard.is_none() {
+            *guard = Some(Self::load_from_disk(&self.path).await?);
+        }
+
+        let mut snapshot = guard.as_ref().cloned().unwrap_or_default();
+        let removed = snapshot.remove(&key_id).is_some();
+        if removed {
+            self.write_to_disk(&snapshot).await?;
+            *guard = Some(snapshot);
+        }
+        Ok(removed)
+    }
+
     /// Normalize host:port into a known_hosts-style key.
     /// Non-default ports use the `[host]:port` form to match OpenSSH conventions.
     fn make_key(host: &str, port: u16) -> String {

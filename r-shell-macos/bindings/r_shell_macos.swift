@@ -1264,6 +1264,21 @@ public func rshellExecuteCommand(connectionId: String, command: String) -> FfiRe
 })
 }
 /**
+ * Forget a stored host-key entry. Called from the Swift "Trust new key"
+ * flow after a `HostKeyMismatch` so the next connect TOFU-trusts the
+ * new fingerprint. Returns `success: true, value: "true"` if an entry
+ * was removed, `success: true, value: "false"` if there was nothing
+ * to remove, or `success: false, error: ...` on disk I/O failure.
+ */
+public func rshellForgetHostKey(host: String, port: UInt16) -> FfiResult {
+    return try!  FfiConverterTypeFfiResult.lift(try! rustCall() {
+    uniffi_r_shell_macos_fn_func_rshell_forget_host_key(
+        FfiConverterString.lower(host),
+        FfiConverterUInt16.lower(port),$0
+    )
+})
+}
+/**
  * Initialise the macOS bridge. Must be called once before any other
  * `rshell_*` function. Creates the Tokio runtime and connection manager.
  * Safe to call multiple times — subsequent calls are no-ops.
@@ -1404,6 +1419,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_execute_command() != 15070) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_forget_host_key() != 53327) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_init() != 11104) {

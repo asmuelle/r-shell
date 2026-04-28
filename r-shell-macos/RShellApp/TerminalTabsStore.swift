@@ -24,6 +24,79 @@ final class TerminalTabsStore: ObservableObject {
     @Published var lastError: String?
 
     private let logger = Logger(subsystem: "com.r-shell", category: "terminal-tabs")
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        // SwiftTerm fires `setTerminalTitle` (OSC 1/2) on every prompt
+        // for shells that propagate it (zsh's prompt does by default,
+        // bash with PROMPT_COMMAND likewise). TerminalView posts a
+        // notification with the connectionId; we resolve to the
+        // matching tab and surface the live title.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalTitleChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in
+                guard let self,
+                      let info = note.userInfo,
+                      let connectionId = info["connectionId"] as? String,
+                      let title = info["title"] as? String,
+                      !title.isEmpty
+                else { return }
+                self.setTitle(title, forConnectionId: connectionId)
+            }
+        })
+
+        // Status events from r-shell-core's event bus: connect / disconnect
+        // currently fire from the FFI side; future SSH-layer reconnect
+        // logic can publish through the same channel.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .rshellConnectionStatus,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in
+                guard let self,
+                      let info = note.userInfo,
+                      let connectionId = info["connectionId"] as? String,
+                      let payload = info["payload"] as? String
+                else { return }
+                self.setStatus(
+                    TerminalConnectionStatus.parse(payload: payload),
+                    forConnectionId: connectionId
+                )
+            }
+        })
+    }
+
+    deinit {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Update the displayed title for a tab matched by its connection id.
+    /// Called from the SwiftTerm `setTerminalTitle` delegate via
+    /// NotificationCenter. Falls back silently if no matching tab is
+    /// active (the tab may have been closed in flight).
+    func setTitle(_ title: String, forConnectionId connectionId: String) {
+        guard let idx = tabs.firstIndex(where: { $0.connectionId == connectionId })
+        else { return }
+        // Don't replace the title with whitespace-only OSC payloads.
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        tabs[idx].title = trimmed
+    }
+
+    /// Update the connection status for a tab.
+    func setStatus(_ status: TerminalConnectionStatus, forConnectionId connectionId: String) {
+        guard let idx = tabs.firstIndex(where: { $0.connectionId == connectionId })
+        else { return }
+        guard tabs[idx].status != status else { return }
+        logger.info("\(connectionId, privacy: .public) status: \(status.rawValue)")
+        tabs[idx].status = status
+    }
 
     /// Open a terminal tab for a saved connection. Resolves the credential
     /// path internally:
@@ -139,6 +212,22 @@ final class TerminalTabsStore: ObservableObject {
                     message: "The stored password for \(account) was rejected. Enter a new password."
                 ) {
                     await openConnection(profile, password: fresh, passphrase: nil)
+                    return
+                }
+
+            // Host key changed since last connect: prompt the user with
+            // both fingerprints, and on confirm forget the stale TOFU
+            // entry so the retry trusts the new key. Treats Cancel as
+            // a hard stop — surface the message instead of looping.
+            case .hostKeyMismatch(let detail):
+                let outcome = HostKeyPrompt.presentMismatch(
+                    host: profile.host,
+                    port: profile.port,
+                    detail: detail
+                )
+                if outcome == .trust {
+                    logger.info("User trusted new host key for \(profile.host, privacy: .public):\(profile.port); retrying")
+                    await openConnection(profile, password: password, passphrase: passphrase)
                     return
                 }
 

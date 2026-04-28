@@ -122,6 +122,13 @@ impl ConnectionManager {
         }
     }
 
+    /// Access the shared host-key store. Used by the macOS bridge to
+    /// expose `forget` over FFI for the "Trust new key" flow on a
+    /// `HostKeyMismatch`.
+    pub fn host_keys(&self) -> Arc<HostKeyStore> {
+        self.host_keys.clone()
+    }
+
     // =========================================================================
     // Inspection
     // =========================================================================
