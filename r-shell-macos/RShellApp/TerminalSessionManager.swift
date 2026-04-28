@@ -79,6 +79,22 @@ final class TerminalSessionManager {
         sessions[connectionId]
     }
 
+    /// Bump the generation on an existing session — used by reconnect,
+    /// where the SwiftTerm view stays mounted but the underlying PTY
+    /// has been rebuilt. Without this, the stale-frame filter in
+    /// `dispatch` would drop the new PTY's output as if it were old.
+    /// Preserves the bufferManager so the SwiftTerm `feed` callback
+    /// registered at view-mount time still fires.
+    func updateGeneration(_ generation: UInt64, forConnectionId connectionId: String) {
+        guard let existing = sessions[connectionId] else { return }
+        sessions[connectionId] = Session(
+            connectionId: existing.connectionId,
+            ptyGeneration: generation,
+            bufferManager: existing.bufferManager,
+            isPaused: existing.isPaused
+        )
+    }
+
     func pauseSession(connectionId: String) {
         sessions[connectionId]?.isPaused = true
     }

@@ -758,6 +758,110 @@ public func FfiConverterTypeFfiEvent_lower(_ value: FfiEvent) -> RustBuffer {
 }
 
 
+public struct FfiFileEntry {
+    public var name: String
+    public var size: UInt64
+    /**
+     * Pre-formatted timestamp string from r-shell-core. `None` when
+     * the SFTP server doesn't supply mtime.
+     */
+    public var modified: String?
+    /**
+     * Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
+     */
+    public var permissions: String?
+    public var kind: FfiFileKind
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, size: UInt64, 
+        /**
+         * Pre-formatted timestamp string from r-shell-core. `None` when
+         * the SFTP server doesn't supply mtime.
+         */modified: String?, 
+        /**
+         * Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
+         */permissions: String?, kind: FfiFileKind) {
+        self.name = name
+        self.size = size
+        self.modified = modified
+        self.permissions = permissions
+        self.kind = kind
+    }
+}
+
+
+
+extension FfiFileEntry: Equatable, Hashable {
+    public static func ==(lhs: FfiFileEntry, rhs: FfiFileEntry) -> Bool {
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.size != rhs.size {
+            return false
+        }
+        if lhs.modified != rhs.modified {
+            return false
+        }
+        if lhs.permissions != rhs.permissions {
+            return false
+        }
+        if lhs.kind != rhs.kind {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(name)
+        hasher.combine(size)
+        hasher.combine(modified)
+        hasher.combine(permissions)
+        hasher.combine(kind)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiFileEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiFileEntry {
+        return
+            try FfiFileEntry(
+                name: FfiConverterString.read(from: &buf), 
+                size: FfiConverterUInt64.read(from: &buf), 
+                modified: FfiConverterOptionString.read(from: &buf), 
+                permissions: FfiConverterOptionString.read(from: &buf), 
+                kind: FfiConverterTypeFfiFileKind.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiFileEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterUInt64.write(value.size, into: &buf)
+        FfiConverterOptionString.write(value.modified, into: &buf)
+        FfiConverterOptionString.write(value.permissions, into: &buf)
+        FfiConverterTypeFfiFileKind.write(value.kind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiFileEntry_lift(_ buf: RustBuffer) throws -> FfiFileEntry {
+    return try FfiConverterTypeFfiFileEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiFileEntry_lower(_ value: FfiFileEntry) -> RustBuffer {
+    return FfiConverterTypeFfiFileEntry.lower(value)
+}
+
+
 /**
  * Universal result struct for FFI operations.
  *
@@ -1069,6 +1173,142 @@ extension FfiCredentialKind: Equatable, Hashable {}
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum FfiFileKind {
+    
+    case file
+    case directory
+    case symlink
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiFileKind: FfiConverterRustBuffer {
+    typealias SwiftType = FfiFileKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiFileKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .file
+        
+        case 2: return .directory
+        
+        case 3: return .symlink
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiFileKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .file:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .directory:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .symlink:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiFileKind_lift(_ buf: RustBuffer) throws -> FfiFileKind {
+    return try FfiConverterTypeFfiFileKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiFileKind_lower(_ value: FfiFileKind) -> RustBuffer {
+    return FfiConverterTypeFfiFileKind.lower(value)
+}
+
+
+
+extension FfiFileKind: Equatable, Hashable {}
+
+
+
+
+public enum SftpError {
+
+    
+    
+    case NotConnected(connectionId: String
+    )
+    case Other(detail: String
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSftpError: FfiConverterRustBuffer {
+    typealias SwiftType = SftpError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SftpError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .NotConnected(
+            connectionId: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .Other(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SftpError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .NotConnected(connectionId):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(connectionId, into: &buf)
+            
+        
+        case let .Other(detail):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+extension SftpError: Equatable, Hashable {}
+
+extension SftpError: Foundation.LocalizedError {
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+}
+
 
 
 
@@ -1225,6 +1465,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFfiFileEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiFileEntry]
+
+    public static func write(_ value: [FfiFileEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiFileEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiFileEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiFileEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiFileEntry.read(from: &buf))
         }
         return seq
     }
@@ -1396,6 +1661,14 @@ public func rshellSetEventCallback(callback: FfiEventCallback) {try! rustCall() 
     )
 }
 }
+public func rshellSftpListDir(connectionId: String, path: String)throws  -> [FfiFileEntry] {
+    return try  FfiConverterSequenceTypeFfiFileEntry.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_list_dir(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -1455,6 +1728,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_set_event_callback() != 25155) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir() != 57015) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_method_ffieventcallback_on_event() != 59523) {

@@ -348,6 +348,11 @@ RustBuffer uniffi_r_shell_macos_fn_func_rshell_pty_write(RustBuffer connection_i
 void uniffi_r_shell_macos_fn_func_rshell_set_event_callback(uint64_t callback, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_LIST_DIR
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_LIST_DIR
+RustBuffer uniffi_r_shell_macos_fn_func_rshell_sftp_list_dir(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_R_SHELL_MACOS_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_R_SHELL_MACOS_RUSTBUFFER_ALLOC
 RustBuffer ffi_r_shell_macos_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -715,6 +720,12 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_pty_write(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SET_EVENT_CALLBACK
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SET_EVENT_CALLBACK
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_set_event_callback(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_LIST_DIR
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_LIST_DIR
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir(void
     
 );
 #endif

@@ -428,6 +428,18 @@ fn spawn_pty_output_forwarder(connection_id: String, generation: u64, bridge: &M
                 }
             }
         }
+
+        // The PTY for this connection is gone. This covers both clean
+        // teardown (close_pty_connection cancels the token) and dirty
+        // disconnects (network drop, server kill — `output_rx.recv()`
+        // returns None when the SSH reader task exits). The Swift side
+        // observes `connection_status: disconnected` and lights up the
+        // reconnect affordance. Idempotent vs. the explicit publish in
+        // rshell_disconnect — TerminalTabsStore.setStatus dedupes.
+        let _ = tx.send(r_shell_core::event_bus::CoreEvent::ConnectionStatus {
+            connection_id: connection_id.clone(),
+            status: r_shell_core::event_bus::ConnectionStatus::Disconnected,
+        });
     });
 }
 
@@ -525,6 +537,80 @@ pub fn rshell_execute_command(connection_id: String, command: String) -> FfiResu
             value: None,
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// SFTP — list_dir for the file browser MVP. Upload / download / mkdir /
+// delete / rename land in the next slice.
+// ---------------------------------------------------------------------------
+
+#[derive(uniffi::Enum, Clone, Copy)]
+pub enum FfiFileKind {
+    File,
+    Directory,
+    Symlink,
+}
+
+#[derive(uniffi::Record)]
+pub struct FfiFileEntry {
+    pub name: String,
+    pub size: u64,
+    /// Pre-formatted timestamp string from r-shell-core. `None` when
+    /// the SFTP server doesn't supply mtime.
+    pub modified: Option<String>,
+    /// Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
+    pub permissions: Option<String>,
+    pub kind: FfiFileKind,
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum SftpError {
+    #[error("not connected: {connection_id}")]
+    NotConnected { connection_id: String },
+    #[error("{detail}")]
+    Other { detail: String },
+}
+
+#[uniffi::export]
+pub fn rshell_sftp_list_dir(
+    connection_id: String,
+    path: String,
+) -> Result<Vec<FfiFileEntry>, SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    let conn_id = connection_id.clone();
+
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&conn_id)
+            .await
+            .ok_or_else(|| SftpError::NotConnected {
+                connection_id: conn_id.clone(),
+            })?;
+
+        let entries = {
+            let guard = client.read().await;
+            guard
+                .list_dir(&path)
+                .await
+                .map_err(|e| SftpError::Other { detail: e.to_string() })?
+        };
+
+        Ok(entries
+            .into_iter()
+            .map(|e| FfiFileEntry {
+                name: e.name,
+                size: e.size,
+                modified: e.modified,
+                permissions: e.permissions,
+                kind: match e.file_type {
+                    r_shell_core::sftp_client::FileEntryType::File => FfiFileKind::File,
+                    r_shell_core::sftp_client::FileEntryType::Directory => FfiFileKind::Directory,
+                    r_shell_core::sftp_client::FileEntryType::Symlink => FfiFileKind::Symlink,
+                },
+            })
+            .collect())
+    })
 }
 
 /// Forget a stored host-key entry. Called from the Swift "Trust new key"

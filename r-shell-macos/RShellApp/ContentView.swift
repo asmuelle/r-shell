@@ -56,7 +56,7 @@ struct ContentView: View {
                 max: LayoutConstants.maxSidebarWidth
             )
         } detail: {
-            DetailColumn(layoutManager: layoutManager)
+            DetailColumn(layoutManager: layoutManager, selectedSection: $selectedSection)
         }
         .navigationSplitViewStyle(.balanced)
         .environmentObject(tabsStore)
@@ -76,13 +76,14 @@ struct ContentView: View {
 
 private struct DetailColumn: View {
     @ObservedObject var layoutManager: LayoutManager
+    @Binding var selectedSection: SidebarView.NavSection
     @State private var bottomHeightDebounce: Task<Void, Never>?
     @State private var inspectorWidthDebounce: Task<Void, Never>?
 
     var body: some View {
         HSplitView {
             VSplitView {
-                MainPanel()
+                MainPanel(selectedSection: $selectedSection)
                     .frame(minWidth: 320, minHeight: 200)
 
                 if layoutManager.layout.bottomVisible {

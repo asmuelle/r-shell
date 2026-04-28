@@ -48,7 +48,9 @@ final class WorkspaceSplitController: NSSplitViewController {
             selectedSection: .constant(.terminals)
         )
         self.sidebarController = NSHostingController(rootView: sidebar)
-        self.mainController = NSHostingController(rootView: MainPanel())
+        self.mainController = NSHostingController(
+            rootView: MainPanel(selectedSection: .constant(.terminals))
+        )
         self.bottomController = NSHostingController(rootView: BottomPanel())
         self.inspectorController = NSHostingController(rootView: InspectorPanel())
 

@@ -293,6 +293,8 @@ final class TerminalTabsStore: ObservableObject {
         // before any output arrives).
         let tab = TerminalTab(
             id: UUID(),
+            profile: profile,
+            sessionId: sessionId,
             connectionId: connectionId,
             ptyGeneration: generation,
             title: profile.name,
@@ -300,6 +302,86 @@ final class TerminalTabsStore: ObservableObject {
         )
         tabs.append(tab)
         activeTabId = tab.id
+    }
+
+    /// Re-establish a dead session in place. Called from the Reconnect
+    /// button overlay on disconnected tabs. Reuses the original
+    /// connection id (so the SwiftTerm view, registered against this
+    /// id, keeps feeding) and the original sessionId (so the
+    /// connection_id stays stable in r-shell-core's HashMap).
+    func reconnect(tabId: UUID) async {
+        guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let tab = tabs[idx]
+        let profile = tab.profile
+        let sessionId = tab.sessionId
+        let account = profile.keychainAccount
+
+        logger.info("Reconnecting \(tab.connectionId, privacy: .public)")
+        tabs[idx].status = .connecting
+        lastError = nil
+
+        // Tear down any leftover Rust state for this id. Idempotent;
+        // the connection may already be fully gone (network drop) or
+        // half-alive (server killed the channel but TCP is up).
+        BridgeManager.shared.disconnect(connectionId: tab.connectionId)
+
+        // Re-resolve credentials. The simple path: load from Keychain
+        // for password profiles, no prompt. If the stored credential
+        // is rejected this time, the existing auth-fail eviction in
+        // openConnection-style flows kicks in next round. For this MVP
+        // we don't fall through to interactive prompts on reconnect to
+        // keep the fast path silent — user can retry with full
+        // credential resolution by re-clicking the sidebar entry.
+        let resolvedPassword: String? = profile.authMethod == .password
+            ? KeychainManager.shared.loadPassword(kind: .sshPassword, account: account)
+            : nil
+        let resolvedPassphrase: String? = profile.authMethod == .publicKey
+            ? KeychainManager.shared.loadPassword(kind: .sshKeyPassphrase, account: account)
+            : nil
+
+        let connectResult = await BridgeManager.shared.connect(
+            profile: profile,
+            password: resolvedPassword,
+            keyPath: profile.privateKeyPath,
+            passphrase: resolvedPassphrase,
+            sessionId: sessionId
+        )
+
+        switch connectResult {
+        case .success(let id):
+            // Sanity check: r-shell-core should hand back the same
+            // connection_id we asked for (same `(user, host, port,
+            // sessionId)` tuple). Log + bail if not — we don't want
+            // to reroute the live SwiftTerm view to a different
+            // connection silently.
+            guard id == tab.connectionId else {
+                lastError = "Reconnect routed to a different connection id; aborting"
+                logger.error("Reconnect mismatch: expected \(tab.connectionId, privacy: .public), got \(id, privacy: .public)")
+                tabs[idx].status = .error
+                return
+            }
+
+            // Bring up a fresh PTY for the same connection_id.
+            guard let generation = await BridgeManager.shared.openTerminal(
+                connectionId: tab.connectionId
+            ) else {
+                lastError = "Failed to start terminal session on reconnect"
+                tabs[idx].status = .error
+                return
+            }
+
+            // The SwiftTerm view's session was registered with the OLD
+            // generation. Update so the new PTY's output isn't dropped
+            // by the stale-frame filter in dispatch.
+            tabs[idx].ptyGeneration = generation
+            TerminalSessionManager.shared.updateGeneration(generation, forConnectionId: tab.connectionId)
+            tabs[idx].status = .connected
+
+        case .failure(let error):
+            lastError = error.localizedDescription
+            logger.error("Reconnect failed: \(error.localizedDescription, privacy: .public)")
+            tabs[idx].status = .error
+        }
     }
 
     /// Close a tab, tearing down the PTY and disconnecting the SSH session.

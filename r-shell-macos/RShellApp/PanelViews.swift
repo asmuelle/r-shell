@@ -24,10 +24,42 @@ struct SidebarPanel: View {
 /// `MainPanel` consumes the shared `TerminalTabsStore` so the sidebar's
 /// "connect" action populates tabs here. The store owns the FFI lifecycle
 /// (SSH connect → PTY start → register session); `MainPanel` only renders.
+///
+/// Switches between the terminal stack and the SFTP file browser based
+/// on the sidebar's `selectedSection`. Tabs (terminals) are always
+/// resident — switching to Files just hides them.
 struct MainPanel: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
+    @Binding var selectedSection: SidebarView.NavSection
 
     var body: some View {
+        switch selectedSection {
+        case .terminals:
+            terminalsPane
+        case .files:
+            FileBrowserView(
+                connectionId: tabsStore.activeTab?.connectionId,
+                connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+            )
+        case .monitor:
+            monitorPlaceholder
+        }
+    }
+
+    private var monitorPlaceholder: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "chart.bar.xaxis")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("System monitoring lands in a future release.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var terminalsPane: some View {
         VStack(spacing: 0) {
             TabBarView(
                 tabs: tabsStore.tabs.map {
@@ -74,17 +106,29 @@ struct MainPanel: View {
                 ZStack {
                     ForEach(tabsStore.tabs) { tab in
                         let isActive = tab.id == tabsStore.activeTabId
-                        TerminalView(
-                            connectionId: tab.connectionId,
-                            ptyGeneration: tab.ptyGeneration,
-                            themeOverride: tab.themeOverride,
-                            isActive: isActive,
-                            terminalTitle: .constant(tab.title),
-                            searchVisible: .constant(false),
-                            onSearchQueryChanged: nil,
-                            onSearchNext: nil,
-                            onSearchPrevious: nil
-                        )
+                        ZStack {
+                            TerminalView(
+                                connectionId: tab.connectionId,
+                                ptyGeneration: tab.ptyGeneration,
+                                themeOverride: tab.themeOverride,
+                                isActive: isActive,
+                                terminalTitle: .constant(tab.title),
+                                searchVisible: .constant(false),
+                                onSearchQueryChanged: nil,
+                                onSearchNext: nil,
+                                onSearchPrevious: nil
+                            )
+
+                            // Reconnect affordance — covers disconnected
+                            // and errored tabs. The SwiftTerm view stays
+                            // alive underneath so its scrollback isn't
+                            // wiped; reconnect rebuilds only the PTY.
+                            if tab.status == .disconnected || tab.status == .error {
+                                ReconnectOverlay(tab: tab) {
+                                    Task { await tabsStore.reconnect(tabId: tab.id) }
+                                }
+                            }
+                        }
                         .opacity(isActive ? 1 : 0)
                         .allowsHitTesting(isActive)
                         // Stable per-tab identity — tab.id is generated
@@ -112,18 +156,60 @@ struct MainPanel: View {
 /// A terminal tab opened from the sidebar.
 struct TerminalTab: Identifiable {
     let id: UUID
+    /// Carried so a Reconnect action after a network drop can re-run
+    /// the connect flow with the same credentials.
+    let profile: ConnectionProfile
+    /// UUID-derived suffix so multiple tabs to the same host have
+    /// distinct connection_ids in r-shell-core. Stable across
+    /// reconnects so the rebuilt PTY routes to the same Swift session.
+    let sessionId: String
+    /// `user@host:port#sessionId` — looked up via this in the rest of
+    /// the bridge. Stays the same across reconnects.
     let connectionId: String
-    let ptyGeneration: UInt64
+    /// Generation counter from the most recent `rshellPtyStart` for
+    /// this tab. `var` so reconnect can update it without rebuilding
+    /// the SwiftTerm view.
+    var ptyGeneration: UInt64
     var title: String
     var order: Int
-    /// When non-nil, overrides the global `@AppStorage("terminalTheme")`
-    /// — set via the tab's context menu so a single host can have a
-    /// distinct visual signature (e.g., red palette for prod).
+    /// When non-nil, overrides the global `@AppStorage("terminalTheme")`.
     var themeOverride: String?
     /// Live connection state from the `connection_status` event bus.
     /// Defaults to `.connected` since we only build a tab after a
     /// successful `rshellConnect`.
     var status: TerminalConnectionStatus = .connected
+}
+
+// MARK: - Reconnect overlay
+
+private struct ReconnectOverlay: View {
+    let tab: TerminalTab
+    let onReconnect: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: tab.status == .error ? "exclamationmark.triangle.fill" : "wifi.slash")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(tab.status == .error ? .red : .yellow)
+
+            Text(tab.status == .error ? "Connection error" : "Disconnected")
+                .font(.headline)
+
+            Text("\(tab.profile.username)@\(tab.profile.host):\(tab.profile.port)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button(action: onReconnect) {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.4))
+    }
 }
 
 // MARK: - Bottom panel
