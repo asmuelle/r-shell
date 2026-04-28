@@ -291,6 +291,11 @@ RustBuffer uniffi_r_shell_macos_fn_func_rshell_execute_command(RustBuffer connec
 RustBuffer uniffi_r_shell_macos_fn_func_rshell_forget_host_key(RustBuffer host, uint16_t port, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_GET_SYSTEM_STATS
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_GET_SYSTEM_STATS
+RustBuffer uniffi_r_shell_macos_fn_func_rshell_get_system_stats(RustBuffer connection_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_INIT
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_INIT
 int8_t uniffi_r_shell_macos_fn_func_rshell_init(RustCallStatus *_Nonnull out_status
@@ -689,6 +694,12 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_execute_command(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_FORGET_HOST_KEY
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_FORGET_HOST_KEY
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_forget_host_key(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_GET_SYSTEM_STATS
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_GET_SYSTEM_STATS
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_get_system_stats(void
     
 );
 #endif

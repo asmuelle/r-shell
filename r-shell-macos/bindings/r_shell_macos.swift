@@ -463,6 +463,22 @@ fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
+    typealias FfiType = Double
+    typealias SwiftType = Double
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Double {
+        return try lift(readDouble(&buf))
+    }
+
+    public static func write(_ value: Double, into buf: inout [UInt8]) {
+        writeDouble(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -986,6 +1002,164 @@ public func FfiConverterTypeFfiResult_lower(_ value: FfiResult) -> RustBuffer {
 }
 
 
+public struct FfiSystemStats {
+    /**
+     * CPU utilisation 0..100 averaged across all cores during a
+     * brief 200 ms sampling window inside the call.
+     */
+    public var cpuPercent: Double
+    public var memoryTotal: UInt64
+    public var memoryUsed: UInt64
+    public var memoryAvailable: UInt64
+    public var swapTotal: UInt64
+    public var swapUsed: UInt64
+    /**
+     * Disk usage of `/` only — Sprint-11 work could surface every
+     * mount.
+     */
+    public var diskTotal: UInt64
+    public var diskUsed: UInt64
+    /**
+     * System uptime in seconds.
+     */
+    public var uptimeSeconds: UInt64
+    /**
+     * 1-minute load average from /proc/loadavg.
+     */
+    public var loadAverage1m: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * CPU utilisation 0..100 averaged across all cores during a
+         * brief 200 ms sampling window inside the call.
+         */cpuPercent: Double, memoryTotal: UInt64, memoryUsed: UInt64, memoryAvailable: UInt64, swapTotal: UInt64, swapUsed: UInt64, 
+        /**
+         * Disk usage of `/` only — Sprint-11 work could surface every
+         * mount.
+         */diskTotal: UInt64, diskUsed: UInt64, 
+        /**
+         * System uptime in seconds.
+         */uptimeSeconds: UInt64, 
+        /**
+         * 1-minute load average from /proc/loadavg.
+         */loadAverage1m: Double) {
+        self.cpuPercent = cpuPercent
+        self.memoryTotal = memoryTotal
+        self.memoryUsed = memoryUsed
+        self.memoryAvailable = memoryAvailable
+        self.swapTotal = swapTotal
+        self.swapUsed = swapUsed
+        self.diskTotal = diskTotal
+        self.diskUsed = diskUsed
+        self.uptimeSeconds = uptimeSeconds
+        self.loadAverage1m = loadAverage1m
+    }
+}
+
+
+
+extension FfiSystemStats: Equatable, Hashable {
+    public static func ==(lhs: FfiSystemStats, rhs: FfiSystemStats) -> Bool {
+        if lhs.cpuPercent != rhs.cpuPercent {
+            return false
+        }
+        if lhs.memoryTotal != rhs.memoryTotal {
+            return false
+        }
+        if lhs.memoryUsed != rhs.memoryUsed {
+            return false
+        }
+        if lhs.memoryAvailable != rhs.memoryAvailable {
+            return false
+        }
+        if lhs.swapTotal != rhs.swapTotal {
+            return false
+        }
+        if lhs.swapUsed != rhs.swapUsed {
+            return false
+        }
+        if lhs.diskTotal != rhs.diskTotal {
+            return false
+        }
+        if lhs.diskUsed != rhs.diskUsed {
+            return false
+        }
+        if lhs.uptimeSeconds != rhs.uptimeSeconds {
+            return false
+        }
+        if lhs.loadAverage1m != rhs.loadAverage1m {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(cpuPercent)
+        hasher.combine(memoryTotal)
+        hasher.combine(memoryUsed)
+        hasher.combine(memoryAvailable)
+        hasher.combine(swapTotal)
+        hasher.combine(swapUsed)
+        hasher.combine(diskTotal)
+        hasher.combine(diskUsed)
+        hasher.combine(uptimeSeconds)
+        hasher.combine(loadAverage1m)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiSystemStats: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiSystemStats {
+        return
+            try FfiSystemStats(
+                cpuPercent: FfiConverterDouble.read(from: &buf), 
+                memoryTotal: FfiConverterUInt64.read(from: &buf), 
+                memoryUsed: FfiConverterUInt64.read(from: &buf), 
+                memoryAvailable: FfiConverterUInt64.read(from: &buf), 
+                swapTotal: FfiConverterUInt64.read(from: &buf), 
+                swapUsed: FfiConverterUInt64.read(from: &buf), 
+                diskTotal: FfiConverterUInt64.read(from: &buf), 
+                diskUsed: FfiConverterUInt64.read(from: &buf), 
+                uptimeSeconds: FfiConverterUInt64.read(from: &buf), 
+                loadAverage1m: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiSystemStats, into buf: inout [UInt8]) {
+        FfiConverterDouble.write(value.cpuPercent, into: &buf)
+        FfiConverterUInt64.write(value.memoryTotal, into: &buf)
+        FfiConverterUInt64.write(value.memoryUsed, into: &buf)
+        FfiConverterUInt64.write(value.memoryAvailable, into: &buf)
+        FfiConverterUInt64.write(value.swapTotal, into: &buf)
+        FfiConverterUInt64.write(value.swapUsed, into: &buf)
+        FfiConverterUInt64.write(value.diskTotal, into: &buf)
+        FfiConverterUInt64.write(value.diskUsed, into: &buf)
+        FfiConverterUInt64.write(value.uptimeSeconds, into: &buf)
+        FfiConverterDouble.write(value.loadAverage1m, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSystemStats_lift(_ buf: RustBuffer) throws -> FfiSystemStats {
+    return try FfiConverterTypeFfiSystemStats.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSystemStats_lower(_ value: FfiSystemStats) -> RustBuffer {
+    return FfiConverterTypeFfiSystemStats.lower(value)
+}
+
+
 /**
  * Typed connect-time failures so the Swift side can pattern-match instead
  * of substring-checking the error string. Variants are classified from
@@ -1279,6 +1453,85 @@ public func FfiConverterTypeFfiFileKind_lower(_ value: FfiFileKind) -> RustBuffe
 extension FfiFileKind: Equatable, Hashable {}
 
 
+
+
+public enum MonitorError {
+
+    
+    
+    case NotConnected(connectionId: String
+    )
+    /**
+     * Server returned an unparseable response. /proc-based parsing
+     * is Linux-only — non-Linux hosts will surface here.
+     */
+    case ParseError(detail: String
+    )
+    case Other(detail: String
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMonitorError: FfiConverterRustBuffer {
+    typealias SwiftType = MonitorError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MonitorError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .NotConnected(
+            connectionId: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .ParseError(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .Other(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MonitorError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .NotConnected(connectionId):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(connectionId, into: &buf)
+            
+        
+        case let .ParseError(detail):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .Other(detail):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+extension MonitorError: Equatable, Hashable {}
+
+extension MonitorError: Foundation.LocalizedError {
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+}
 
 
 public enum SftpError {
@@ -1615,6 +1868,18 @@ public func rshellForgetHostKey(host: String, port: UInt16) -> FfiResult {
 })
 }
 /**
+ * Snapshot host stats over the active SSH connection. Two CPU samples
+ * 200 ms apart so the consumer gets a meaningful percentage without
+ * having to call twice.
+ */
+public func rshellGetSystemStats(connectionId: String)throws  -> FfiSystemStats {
+    return try  FfiConverterTypeFfiSystemStats.lift(try rustCallWithError(FfiConverterTypeMonitorError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_get_system_stats(
+        FfiConverterString.lower(connectionId),$0
+    )
+})
+}
+/**
  * Initialise the macOS bridge. Must be called once before any other
  * `rshell_*` function. Creates the Tokio runtime and connection manager.
  * Safe to call multiple times — subsequent calls are no-ops.
@@ -1864,6 +2129,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_forget_host_key() != 53327) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_get_system_stats() != 55414) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_init() != 11104) {

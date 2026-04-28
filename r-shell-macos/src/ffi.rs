@@ -895,6 +895,272 @@ pub fn rshell_sftp_list_dir(
     })
 }
 
+// ---------------------------------------------------------------------------
+// System monitoring — Linux-target MVP. Parses /proc + df output from a
+// single SSH command. CPU% is a 200 ms-spaced differential of /proc/stat
+// inside the call so the consumer doesn't have to maintain prior state.
+// ---------------------------------------------------------------------------
+
+#[derive(uniffi::Record)]
+pub struct FfiSystemStats {
+    /// CPU utilisation 0..100 averaged across all cores during a
+    /// brief 200 ms sampling window inside the call.
+    pub cpu_percent: f64,
+    pub memory_total: u64,
+    pub memory_used: u64,
+    pub memory_available: u64,
+    pub swap_total: u64,
+    pub swap_used: u64,
+    /// Disk usage of `/` only — Sprint-11 work could surface every
+    /// mount.
+    pub disk_total: u64,
+    pub disk_used: u64,
+    /// System uptime in seconds.
+    pub uptime_seconds: u64,
+    /// 1-minute load average from /proc/loadavg.
+    pub load_average_1m: f64,
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum MonitorError {
+    #[error("not connected: {connection_id}")]
+    NotConnected { connection_id: String },
+    /// Server returned an unparseable response. /proc-based parsing
+    /// is Linux-only — non-Linux hosts will surface here.
+    #[error("could not parse host stats: {detail}")]
+    ParseError { detail: String },
+    #[error("{detail}")]
+    Other { detail: String },
+}
+
+/// Snapshot host stats over the active SSH connection. Two CPU samples
+/// 200 ms apart so the consumer gets a meaningful percentage without
+/// having to call twice.
+#[uniffi::export]
+pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, MonitorError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or_else(|| MonitorError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+
+        // One-liner that prints all the data we need, with sentinel
+        // headers so we can split sections without ambiguity. Sample
+        // /proc/stat twice with a 200ms gap for the CPU diff.
+        let cmd = "\
+            cat /proc/stat | head -1; \
+            echo '---SLEEP---'; \
+            sleep 0.2; \
+            cat /proc/stat | head -1; \
+            echo '---MEM---'; \
+            cat /proc/meminfo; \
+            echo '---DISK---'; \
+            df -B1 /; \
+            echo '---UPTIME---'; \
+            cat /proc/uptime; \
+            echo '---LOAD---'; \
+            cat /proc/loadavg";
+
+        let output = {
+            let guard = client.read().await;
+            guard
+                .execute_command(cmd)
+                .await
+                .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+        };
+
+        parse_system_stats(&output).map_err(|e| MonitorError::ParseError { detail: e })
+    })
+}
+
+fn parse_system_stats(output: &str) -> Result<FfiSystemStats, String> {
+    // Walk the output once, accumulating the section bodies between
+    // sentinel headers. Iteration order is deterministic so the
+    // section keys appear in fixed sequence.
+    let mut sections: std::collections::HashMap<&'static str, String> =
+        std::collections::HashMap::new();
+    let mut current: &'static str = "CPU1";
+    let mut buf = String::new();
+    let mut commit = |key: &'static str, buf: &mut String| {
+        sections.insert(key, std::mem::take(buf));
+    };
+
+    for line in output.lines() {
+        match line {
+            "---SLEEP---" => {
+                commit(current, &mut buf);
+                current = "CPU2";
+            }
+            "---MEM---" => { commit(current, &mut buf); current = "MEM"; }
+            "---DISK---" => { commit(current, &mut buf); current = "DISK"; }
+            "---UPTIME---" => { commit(current, &mut buf); current = "UPTIME"; }
+            "---LOAD---" => { commit(current, &mut buf); current = "LOAD"; }
+            _ => {
+                buf.push_str(line);
+                buf.push('\n');
+            }
+        }
+    }
+    commit(current, &mut buf);
+
+    let cpu_percent = parse_cpu_diff(
+        sections.get("CPU1").ok_or("missing cpu1")?,
+        sections.get("CPU2").ok_or("missing cpu2")?,
+    )?;
+
+    let mem = parse_meminfo(sections.get("MEM").ok_or("missing memory")?)?;
+    let disk = parse_df(sections.get("DISK").ok_or("missing disk")?)?;
+    let uptime = parse_uptime(sections.get("UPTIME").ok_or("missing uptime")?)?;
+    let load = parse_loadavg(sections.get("LOAD").ok_or("missing load")?)?;
+
+    Ok(FfiSystemStats {
+        cpu_percent,
+        memory_total: mem.total,
+        memory_used: mem.used,
+        memory_available: mem.available,
+        swap_total: mem.swap_total,
+        swap_used: mem.swap_used,
+        disk_total: disk.total,
+        disk_used: disk.used,
+        uptime_seconds: uptime,
+        load_average_1m: load,
+    })
+}
+
+fn parse_cpu_diff(s1: &str, s2: &str) -> Result<f64, String> {
+    let extract = |s: &str| -> Result<(u64, u64), String> {
+        // Format: `cpu  user nice system idle iowait irq softirq ...`
+        let line = s.lines().find(|l| l.starts_with("cpu ")).ok_or("no cpu line")?;
+        let nums: Vec<u64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        if nums.len() < 4 { return Err("too few cpu fields".into()); }
+        let idle = nums[3] + nums.get(4).copied().unwrap_or(0); // idle + iowait
+        let total: u64 = nums.iter().sum();
+        Ok((total, idle))
+    };
+    let (t1, i1) = extract(s1)?;
+    let (t2, i2) = extract(s2)?;
+    let dt = t2.saturating_sub(t1);
+    let di = i2.saturating_sub(i1);
+    if dt == 0 { return Ok(0.0); }
+    Ok(((dt - di) as f64 / dt as f64) * 100.0)
+}
+
+struct MemInfo {
+    total: u64,
+    used: u64,
+    available: u64,
+    swap_total: u64,
+    swap_used: u64,
+}
+
+fn parse_meminfo(s: &str) -> Result<MemInfo, String> {
+    let mut total = 0u64;
+    let mut available = 0u64;
+    let mut free = 0u64;
+    let mut buffers = 0u64;
+    let mut cached = 0u64;
+    let mut swap_total = 0u64;
+    let mut swap_free = 0u64;
+
+    for line in s.lines() {
+        let mut parts = line.split_whitespace();
+        let key = parts.next().unwrap_or("");
+        let value: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0) * 1024; // kB → B
+        match key {
+            "MemTotal:"     => total = value,
+            "MemAvailable:" => available = value,
+            "MemFree:"      => free = value,
+            "Buffers:"      => buffers = value,
+            "Cached:"       => cached = value,
+            "SwapTotal:"    => swap_total = value,
+            "SwapFree:"     => swap_free = value,
+            _ => {}
+        }
+    }
+    if total == 0 { return Err("no MemTotal".into()); }
+    // Prefer MemAvailable on newer kernels; fall back to free+buffers+cached.
+    let avail = if available > 0 { available } else { free + buffers + cached };
+    let used = total.saturating_sub(avail);
+    let swap_used = swap_total.saturating_sub(swap_free);
+    Ok(MemInfo { total, used, available: avail, swap_total, swap_used })
+}
+
+struct DiskInfo { total: u64, used: u64 }
+
+fn parse_df(s: &str) -> Result<DiskInfo, String> {
+    // `df -B1 /` output:
+    //   Filesystem    1B-blocks       Used   Available Use% Mounted on
+    //   /dev/sda1   123456789012  9876543210 ...
+    let line = s.lines().nth(1).ok_or("no df data line")?;
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 4 { return Err("df row too short".into()); }
+    let total: u64 = parts[1].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let used: u64 = parts[2].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+    Ok(DiskInfo { total, used })
+}
+
+fn parse_uptime(s: &str) -> Result<u64, String> {
+    // Format: "12345.67 7891.23\n" — first number is uptime in seconds.
+    let token = s.split_whitespace().next().ok_or("empty uptime")?;
+    let secs: f64 = token.parse().map_err(|e: std::num::ParseFloatError| e.to_string())?;
+    Ok(secs as u64)
+}
+
+fn parse_loadavg(s: &str) -> Result<f64, String> {
+    // Format: "0.05 0.12 0.10 1/234 5678"
+    let token = s.split_whitespace().next().ok_or("empty loadavg")?;
+    token.parse().map_err(|e: std::num::ParseFloatError| e.to_string())
+}
+
+#[cfg(test)]
+mod system_stats_tests {
+    use super::*;
+
+    #[test]
+    fn parses_cpu_diff_correctly() {
+        let s1 = "cpu  100 0 50 850 0 0 0 0 0 0\n";
+        let s2 = "cpu  150 0 75 875 0 0 0 0 0 0\n";
+        let pct = parse_cpu_diff(s1, s2).unwrap();
+        // delta total = 100, delta idle = 25 → busy = 75 → 75%
+        assert!((pct - 75.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn parses_meminfo() {
+        let m = parse_meminfo(
+            "MemTotal:       16000000 kB\n\
+             MemFree:         2000000 kB\n\
+             MemAvailable:    8000000 kB\n\
+             Buffers:          500000 kB\n\
+             Cached:          1500000 kB\n\
+             SwapTotal:       4000000 kB\n\
+             SwapFree:        3000000 kB\n",
+        ).unwrap();
+        assert_eq!(m.total, 16_000_000 * 1024);
+        assert_eq!(m.available, 8_000_000 * 1024);
+        assert_eq!(m.used, 8_000_000 * 1024);
+        assert_eq!(m.swap_used, 1_000_000 * 1024);
+    }
+
+    #[test]
+    fn parses_df() {
+        let out = "Filesystem    1B-blocks       Used   Available Use% Mounted on\n\
+                   /dev/sda1   100000000000 60000000000 40000000000 60% /\n";
+        let d = parse_df(out).unwrap();
+        assert_eq!(d.total, 100_000_000_000);
+        assert_eq!(d.used, 60_000_000_000);
+    }
+}
+
 /// Forget a stored host-key entry. Called from the Swift "Trust new key"
 /// flow after a `HostKeyMismatch` so the next connect TOFU-trusts the
 /// new fingerprint. Returns `success: true, value: "true"` if an entry

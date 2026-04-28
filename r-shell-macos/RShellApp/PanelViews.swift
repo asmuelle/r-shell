@@ -42,20 +42,11 @@ struct MainPanel: View {
                 connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
             )
         case .monitor:
-            monitorPlaceholder
+            SystemMonitorView(
+                connectionId: tabsStore.activeTab?.connectionId,
+                connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+            )
         }
-    }
-
-    private var monitorPlaceholder: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "chart.bar.xaxis")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("System monitoring lands in a future release.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
