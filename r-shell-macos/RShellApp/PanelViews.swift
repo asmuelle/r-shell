@@ -75,6 +75,7 @@ struct MainPanel: View {
                             connectionId: tab.connectionId,
                             ptyGeneration: tab.ptyGeneration,
                             themeOverride: tab.themeOverride,
+                            isActive: isActive,
                             terminalTitle: .constant(tab.title),
                             searchVisible: .constant(false),
                             onSearchQueryChanged: nil,

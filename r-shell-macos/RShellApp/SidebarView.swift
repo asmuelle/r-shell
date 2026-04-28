@@ -48,9 +48,16 @@ struct SidebarView: View {
 
             if filteredRootConnections.isEmpty && filteredFolders.isEmpty {
                 Section("Connections") {
-                    Text(search.isEmpty ? "No saved connections" : "No matches")
-                        .foregroundColor(.secondary)
-                        .font(.caption)
+                    if search.isEmpty && storeManager.connections.isEmpty {
+                        // First-time onboarding — the toolbar `+` is easy
+                        // to miss, so surface a real CTA with both
+                        // entry points spelled out.
+                        emptyState
+                    } else {
+                        Text(search.isEmpty ? "No saved connections" : "No matches")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
                 }
             } else {
                 if !filteredRootConnections.isEmpty {
@@ -110,6 +117,44 @@ struct SidebarView: View {
                 _ = storeManager.importFromTauriJSON(url: url)
             }
         }
+    }
+
+    // MARK: - Empty state
+
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(.tint)
+                Text("Welcome to R-Shell")
+                    .font(.headline)
+            }
+
+            Text("Add a saved SSH profile to start a session. Existing profiles from the Tauri build can be imported.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Button {
+                    showNewConnection = true
+                } label: {
+                    Label("New Connection…", systemImage: "plus.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button {
+                    showImport = true
+                } label: {
+                    Label("Import…", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 8)
     }
 
     // MARK: - Filtering

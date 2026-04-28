@@ -33,6 +33,12 @@ struct TerminalView: NSViewRepresentable {
     /// `updateNSView` when this changes, so toggling per-tab via the
     /// tab context menu applies live without rebuilding the view.
     var themeOverride: String?
+    /// Whether this tab is the visible / focusable one. When this
+    /// transitions to true we make the SwiftTerm view firstResponder so
+    /// keyboard input and the standard Find menu (Cmd+F → SwiftTerm's
+    /// `performFindPanelAction:`) reach this terminal without requiring
+    /// the user to click first.
+    var isActive: Bool = true
     @Binding var terminalTitle: String
     @Binding var searchVisible: Bool
     var onSearchQueryChanged: ((String) -> Void)?
@@ -92,6 +98,19 @@ struct TerminalView: NSViewRepresentable {
         // already-open terminals immediately.
         applyTheme(to: term)
         applyFont(to: term)
+
+        // Grab focus on the false → true transition so a freshly-activated
+        // tab is keyboard-ready and Cmd+F goes to the right terminal.
+        // Calling on every update would fight other firstResponders (e.g.,
+        // the inspector text fields) — we only steal focus when the user
+        // just switched to this tab.
+        if isActive && !context.coordinator.wasActive {
+            DispatchQueue.main.async { [weak term] in
+                guard let term, let window = term.window else { return }
+                window.makeFirstResponder(term)
+            }
+        }
+        context.coordinator.wasActive = isActive
     }
 
     // MARK: - Theme & font
@@ -129,6 +148,10 @@ struct TerminalView: NSViewRepresentable {
         private var lastRows: Int = 0
         private var resizeWorkItem: DispatchWorkItem?
 
+        /// Tracks the previous `isActive` so we only call
+        /// `makeFirstResponder` on the inactive→active transition.
+        var wasActive: Bool = false
+
         init(connectionId: String) {
             self.connectionId = connectionId
         }
@@ -142,7 +165,15 @@ struct TerminalView: NSViewRepresentable {
             resizeWorkItem?.cancel()
 
             let connectionId = self.connectionId
+            let logger = self.logger
             let item = DispatchWorkItem {
+                // Debug-level so this stays out of the default Console
+                // unless the user filters for category=terminal. Visible
+                // proof that the Coordinator → BridgeManager.resize path
+                // fires when the user drags the window or resizes the
+                // sidebar. The Rust side then issues SIGWINCH to the
+                // remote PTY.
+                logger.debug("resize \(connectionId, privacy: .public) → \(cols)x\(rows)")
                 BridgeManager.shared.resize(connectionId: connectionId, cols: cols, rows: rows)
             }
             resizeWorkItem = item

@@ -53,12 +53,13 @@ final class TerminalTabsStore: ObservableObject {
         let account = profile.keychainAccount
 
         // Resolve credentials from Keychain or interactive prompt.
-        // `usedStoredPassword` distinguishes "loaded from Keychain" from
+        // `usedStored*` flags distinguish "loaded from Keychain" from
         // "freshly prompted / caller-provided" so we know whether to evict
-        // on auth failure.
+        // on auth/passphrase failure.
         let resolvedPassword: String?
         let resolvedPassphrase: String?
         var usedStoredPassword = false
+        var usedStoredPassphrase = false
 
         switch profile.authMethod {
         case .password:
@@ -84,8 +85,17 @@ final class TerminalTabsStore: ObservableObject {
 
         case .publicKey:
             resolvedPassword = nil
-            resolvedPassphrase = passphrase
-                ?? KeychainManager.shared.loadPassword(kind: .sshKeyPassphrase, account: account)
+            if let explicit = passphrase {
+                resolvedPassphrase = explicit
+            } else if let stored = KeychainManager.shared.loadPassword(
+                kind: .sshKeyPassphrase,
+                account: account
+            ) {
+                resolvedPassphrase = stored
+                usedStoredPassphrase = true
+            } else {
+                resolvedPassphrase = nil  // try without; key may be unencrypted
+            }
         }
 
         // SSH connect.
@@ -129,6 +139,25 @@ final class TerminalTabsStore: ObservableObject {
                     message: "The stored password for \(account) was rejected. Enter a new password."
                 ) {
                     await openConnection(profile, password: fresh, passphrase: nil)
+                    return
+                }
+
+            // Stored passphrase rejected → evict, re-prompt, retry once.
+            case .passphraseRequired
+                where profile.authMethod == .publicKey && usedStoredPassphrase:
+                logger.info("Evicting stale key passphrase for \(account, privacy: .public) and re-prompting")
+                KeychainManager.shared.deletePassword(kind: .sshKeyPassphrase, account: account)
+                if let fresh = KeychainManager.shared.promptPassphrase(
+                    keyPath: profile.privateKeyPath ?? account
+                ) {
+                    await openConnection(profile, password: nil, passphrase: fresh)
+                    if lastError == nil {
+                        KeychainManager.shared.savePassword(
+                            kind: .sshKeyPassphrase,
+                            account: account,
+                            secret: fresh
+                        )
+                    }
                     return
                 }
 
