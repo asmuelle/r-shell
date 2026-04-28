@@ -73,3 +73,48 @@ lipo -create "$ARM64_LIB" "$X86_64_LIB" -output "$UNIVERSAL_LIB"
 echo "✅ Universal static library: $UNIVERSAL_LIB"
 echo "   Size: $(du -h "$UNIVERSAL_LIB" | cut -f1)"
 echo "   Archs: $(lipo -info "$UNIVERSAL_LIB")"
+
+# ---------------------------------------------------------------------------
+# Regenerate Swift bindings whenever ffi.rs/lib.rs changed. Without this,
+# every edit to the FFI surface needs a manual `just mac-bindings` run, and
+# forgetting trips the uniffi checksum check at app launch with a fatalError.
+# ---------------------------------------------------------------------------
+
+BINDINGS_DIR="$SCRIPT_DIR/../bindings"
+BINDINGS_SWIFT="$BINDINGS_DIR/r_shell_macos.swift"
+HOST_DYLIB="$RUST_TARGET_DIR/aarch64-apple-darwin/$CARGO_PROFILE/libr_shell_macos.dylib"
+
+# Skip regen if the bindings file is already newer than every FFI source —
+# protects incremental builds from a needless rebuild of the bindgen tool.
+needs_regen=0
+for src in "$RUST_PROJECT_DIR/r-shell-macos/src/ffi.rs" \
+           "$RUST_PROJECT_DIR/r-shell-macos/src/lib.rs"; do
+    if [ ! -f "$BINDINGS_SWIFT" ] || [ "$src" -nt "$BINDINGS_SWIFT" ]; then
+        needs_regen=1
+        break
+    fi
+done
+
+if [ "$needs_regen" -eq 1 ]; then
+    UNIFFI_BIN="$RUST_TARGET_DIR/release/uniffi-bindgen"
+    if [ ! -x "$UNIFFI_BIN" ]; then
+        echo "🔧 Building uniffi-bindgen (one-time)"
+        cargo build -p r-shell-macos --release --bin uniffi-bindgen
+    fi
+
+    echo "📝 Regenerating Swift bindings from $HOST_DYLIB"
+    "$UNIFFI_BIN" generate \
+        --library "$HOST_DYLIB" \
+        --language swift \
+        --out-dir "$BINDINGS_DIR"
+
+    # Swift's SWIFT_INCLUDE_PATHS auto-discovers `module.modulemap`, not the
+    # uniffi-named file — rename in place.
+    if [ -f "$BINDINGS_DIR/r_shell_macosFFI.modulemap" ]; then
+        mv -f "$BINDINGS_DIR/r_shell_macosFFI.modulemap" "$BINDINGS_DIR/module.modulemap"
+    fi
+
+    echo "✅ Swift bindings regenerated"
+else
+    echo "✅ Swift bindings up to date (skipping regen)"
+fi
