@@ -3,12 +3,13 @@ import SwiftUI
 import OSLog
 
 /// Polls `rshellGetSystemStats` every few seconds for the active
-/// connection and renders CPU / memory / disk / uptime / load.
+/// connection and renders CPU / memory / per-mount disk / uptime / load.
 ///
-/// **Linux-only**: the Rust parser reads `/proc/meminfo`, `/proc/stat`,
-/// `/proc/uptime`, `/proc/loadavg`. macOS / BSD servers will surface
-/// `MonitorError.ParseError` and we display a one-line "host stats
-/// not available on this OS" placeholder instead of error spam.
+/// **Multi-OS**: the Rust side runs `uname -s` once per connection
+/// (cached) and routes to the matching parser. Linux (`/proc`) and
+/// macOS (`top`/`vm_stat`/`sysctl`/`df -k -P`) are supported; BSD /
+/// Solaris hosts surface as `MonitorError.Unsupported` and we render
+/// a friendly placeholder instead of error spam.
 ///
 /// The polling Task is bound to the view's lifetime via `.task` —
 /// switching tabs or disconnecting tears it down automatically.
@@ -18,7 +19,10 @@ struct SystemMonitorView: View {
 
     @State private var stats: FfiSystemStats?
     @State private var error: String?
-    @State private var unsupportedHost = false
+    /// Set when the host's OS isn't supported. Renders a stable
+    /// placeholder so we don't spam the user with parse errors on
+    /// every poll. Reset on connection change.
+    @State private var unsupportedOs: String?
     /// Sliding window of recent samples for the CPU / memory trend
     /// charts. Capped at `maxHistory` — older samples are dropped at
     /// each append. Reset on `connectionId` change so a switch between
@@ -81,10 +85,10 @@ struct SystemMonitorView: View {
                 icon: "network.slash",
                 message: "Open a terminal session to see live host stats."
             )
-        } else if unsupportedHost {
+        } else if let unsupportedOs {
             placeholder(
                 icon: "questionmark.circle",
-                message: "This host doesn't expose Linux-style /proc — system stats unavailable."
+                message: "Host OS \"\(unsupportedOs)\" isn't supported yet — only Linux and macOS hosts are recognised."
             )
         } else if let error {
             placeholder(icon: "exclamationmark.triangle", message: error)
@@ -145,14 +149,7 @@ struct SystemMonitorView: View {
                     )
                 }
 
-                metricRow(
-                    title: "Disk (/)",
-                    icon: "internaldrive",
-                    progress: stats.diskTotal > 0
-                        ? Double(stats.diskUsed) / Double(stats.diskTotal)
-                        : 0,
-                    rightLabel: "\(formatBytes(stats.diskUsed)) / \(formatBytes(stats.diskTotal))"
-                )
+                disksSection(stats.disks)
 
                 Divider()
 
@@ -242,6 +239,70 @@ struct SystemMonitorView: View {
         }
     }
 
+    /// Per-mount disk-usage section. Renders one `metricRow` per
+    /// volume; collapses to a single placeholder when nothing came
+    /// back (e.g. a host where `df` was filtered out by SELinux or
+    /// chroot). The mount path is used as the row's identity since
+    /// it's unique per host.
+    @ViewBuilder
+    private func disksSection(_ disks: [FfiDiskMount]) -> some View {
+        if disks.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "internaldrive")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text("No disk mounts reported")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "internaldrive")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+                    Text("Disks")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                }
+                ForEach(disks, id: \.mount) { disk in
+                    diskRow(disk)
+                }
+            }
+        }
+    }
+
+    private func diskRow(_ disk: FfiDiskMount) -> some View {
+        let progress = disk.total > 0 ? Double(disk.used) / Double(disk.total) : 0
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(disk.mount)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text("\(formatBytes(disk.used)) / \(formatBytes(disk.total))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            ProgressView(value: max(0, min(1, progress)))
+                .progressViewStyle(.linear)
+                .tint(progressTint(progress))
+            HStack(spacing: 4) {
+                Text(disk.source)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if disk.fsType != "—" && !disk.fsType.isEmpty {
+                    Text("·")
+                    Text(disk.fsType)
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+        .padding(.leading, 22)
+    }
+
     private func summaryRow(icon: String, label: String, value: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
@@ -267,14 +328,21 @@ struct SystemMonitorView: View {
     // MARK: - Polling
 
     private func pollLoop() async {
-        // Drop the previous connection's history. The `.task(id:)`
-        // semantics give us a fresh task per connectionId, so this
-        // line runs exactly when the user switches hosts.
+        // Drop the previous connection's history and any sticky
+        // error / unsupported flag. The `.task(id:)` semantics give us
+        // a fresh task per connectionId, so this runs exactly when the
+        // user switches hosts.
         history.removeAll()
+        unsupportedOs = nil
+        error = nil
 
         guard let connectionId else { return }
         while !Task.isCancelled {
             await fetchOnce(connectionId: connectionId)
+            // If we know the host is unsupported, stop polling — the
+            // result won't change without a reconnect, and the timer
+            // would just churn on the same uname/parser.
+            if unsupportedOs != nil { return }
             try? await Task.sleep(nanoseconds: Self.pollInterval)
         }
     }
@@ -308,16 +376,22 @@ struct SystemMonitorView: View {
         case .success(let s):
             stats = s
             error = nil
-            unsupportedHost = false
+            unsupportedOs = nil
             recordSample(s)
         case .failure(let err as MonitorError):
             switch err {
-            case .ParseError:
-                // Almost always means non-Linux host (no /proc). Treat
-                // as a permanent state for this connection rather than
-                // a transient error — no need to retry on the timer.
-                unsupportedHost = true
+            case .Unsupported(let os):
+                // The Rust side detected the OS via `uname -s` and
+                // doesn't have parsers for it. Surface the kernel
+                // name so the user knows whether to file a request.
+                unsupportedOs = os
                 error = nil
+            case .ParseError(let detail):
+                // Output didn't match the expected shape — usually
+                // a transient command timeout or a sysctl that's
+                // missing on a stripped-down host. Show the detail
+                // and let the next poll retry.
+                error = "Couldn't parse host stats: \(detail)"
             case .NotConnected:
                 error = "Not connected to this host."
             case .Other(let detail):

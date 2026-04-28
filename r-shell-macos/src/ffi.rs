@@ -312,10 +312,15 @@ pub fn rshell_disconnect(connection_id: String) -> FfiResult {
     // effectively gone. UI status reflects observable state.
     if let Some(tx) = r_shell_core::event_bus::event_sender() {
         let _ = tx.send(r_shell_core::event_bus::CoreEvent::ConnectionStatus {
-            connection_id,
+            connection_id: connection_id.clone(),
             status: r_shell_core::event_bus::ConnectionStatus::Disconnected,
         });
     }
+    // Drop the cached OS detection so a future reconnect to the same
+    // host re-runs `uname -s`. Cheap and bounded — wrong cached state
+    // would cause the parser to apply Linux logic to a Darwin host
+    // (or vice versa) for the lifetime of the next session.
+    crate::monitor::evict(&connection_id);
 
     result
         .map(|_| FfiResult { success: true, error: None, value: None })
@@ -896,28 +901,45 @@ pub fn rshell_sftp_list_dir(
 }
 
 // ---------------------------------------------------------------------------
-// System monitoring — Linux-target MVP. Parses /proc + df output from a
-// single SSH command. CPU% is a 200 ms-spaced differential of /proc/stat
-// inside the call so the consumer doesn't have to maintain prior state.
+// System monitoring — multi-OS. The first call to a new connection runs
+// `uname -s`, caches the result, and routes subsequent stats requests to
+// the matching parser. Unknown OSes surface as `MonitorError::Unsupported`
+// so the UI can render a friendly placeholder. Adding a new OS means
+// extending `crate::monitor::OsKind` and writing a new parser module.
 // ---------------------------------------------------------------------------
+
+use crate::monitor::{self, OsKind};
+
+/// One row in the disk-usage table.
+#[derive(uniffi::Record, Clone)]
+pub struct FfiDiskMount {
+    /// Device or backing source (e.g. `/dev/disk1s1`, `tmpfs`).
+    pub source: String,
+    /// Mount point on the host.
+    pub mount: String,
+    /// Filesystem type. `"—"` when the source command (e.g. macOS
+    /// default `df`) doesn't surface it.
+    pub fs_type: String,
+    pub total: u64,
+    pub used: u64,
+}
 
 #[derive(uniffi::Record)]
 pub struct FfiSystemStats {
     /// CPU utilisation 0..100 averaged across all cores during a
-    /// brief 200 ms sampling window inside the call.
+    /// brief sampling window inside the call.
     pub cpu_percent: f64,
     pub memory_total: u64,
     pub memory_used: u64,
     pub memory_available: u64,
     pub swap_total: u64,
     pub swap_used: u64,
-    /// Disk usage of `/` only — Sprint-11 work could surface every
-    /// mount.
-    pub disk_total: u64,
-    pub disk_used: u64,
+    /// Every non-pseudo mount — typically `/`, `/home`, external
+    /// volumes. Empty when `df` returned nothing parseable.
+    pub disks: Vec<FfiDiskMount>,
     /// System uptime in seconds.
     pub uptime_seconds: u64,
-    /// 1-minute load average from /proc/loadavg.
+    /// 1-minute load average.
     pub load_average_1m: f64,
 }
 
@@ -925,17 +947,22 @@ pub struct FfiSystemStats {
 pub enum MonitorError {
     #[error("not connected: {connection_id}")]
     NotConnected { connection_id: String },
-    /// Server returned an unparseable response. /proc-based parsing
-    /// is Linux-only — non-Linux hosts will surface here.
+    /// Output didn't match the expected per-OS shape. Almost always
+    /// transient (a command timed out, was truncated) — the UI may
+    /// retry on the next poll.
     #[error("could not parse host stats: {detail}")]
     ParseError { detail: String },
+    /// Host reported an OS we don't have parsers for yet (BSD,
+    /// Solaris, AIX, …). The UI surfaces this as a placeholder so
+    /// users know support is missing rather than broken.
+    #[error("unsupported host OS: {os}")]
+    Unsupported { os: String },
     #[error("{detail}")]
     Other { detail: String },
 }
 
-/// Snapshot host stats over the active SSH connection. Two CPU samples
-/// 200 ms apart so the consumer gets a meaningful percentage without
-/// having to call twice.
+/// Snapshot host stats over the active SSH connection. Detects the OS
+/// on the first call (cached), then routes to the matching parser.
 #[uniffi::export]
 pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, MonitorError> {
     let bridge = MacOsBridge::global();
@@ -949,74 +976,103 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
                 connection_id: connection_id.clone(),
             })?;
 
-        // One-liner that prints all the data we need, with sentinel
-        // headers so we can split sections without ambiguity. Sample
-        // /proc/stat twice with a 200ms gap for the CPU diff.
-        let cmd = "\
-            cat /proc/stat | head -1; \
-            echo '---SLEEP---'; \
-            sleep 0.2; \
-            cat /proc/stat | head -1; \
-            echo '---MEM---'; \
-            cat /proc/meminfo; \
-            echo '---DISK---'; \
-            df -B1 /; \
-            echo '---UPTIME---'; \
-            cat /proc/uptime; \
-            echo '---LOAD---'; \
-            cat /proc/loadavg";
-
-        let output = {
-            let guard = client.read().await;
-            guard
-                .execute_command(cmd)
-                .await
-                .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+        let os = match monitor::cached(&connection_id) {
+            Some(os) => os,
+            None => {
+                let uname = {
+                    let guard = client.read().await;
+                    guard
+                        .execute_command("uname -s")
+                        .await
+                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                };
+                let detected = monitor::classify_uname(&uname);
+                monitor::store(&connection_id, detected.clone());
+                detected
+            }
         };
 
-        parse_system_stats(&output).map_err(|e| MonitorError::ParseError { detail: e })
+        match os {
+            OsKind::Linux => {
+                let output = {
+                    let guard = client.read().await;
+                    guard
+                        .execute_command(monitor::linux::STATS_COMMAND)
+                        .await
+                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                };
+                parse_linux_stats(&output)
+                    .map_err(|e| MonitorError::ParseError { detail: e })
+            }
+            OsKind::Darwin => {
+                let output = {
+                    let guard = client.read().await;
+                    guard
+                        .execute_command(monitor::darwin::STATS_COMMAND)
+                        .await
+                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                };
+                parse_darwin_stats(&output)
+                    .map_err(|e| MonitorError::ParseError { detail: e })
+            }
+            OsKind::Other(name) => Err(MonitorError::Unsupported { os: name }),
+        }
     })
 }
 
-fn parse_system_stats(output: &str) -> Result<FfiSystemStats, String> {
-    // Walk the output once, accumulating the section bodies between
-    // sentinel headers. Iteration order is deterministic so the
-    // section keys appear in fixed sequence.
-    let mut sections: std::collections::HashMap<&'static str, String> =
-        std::collections::HashMap::new();
-    let mut current: &'static str = "CPU1";
+/// Split a sentinel-separated stream into named sections. The slice
+/// `keys` is one longer than `sentinels`: the buffer before the first
+/// sentinel goes under `keys[0]`, the buffer between sentinels[i] and
+/// sentinels[i+1] goes under `keys[i+1]`, and the tail under
+/// `keys[keys.len()-1]`.
+fn split_sections<'a>(
+    output: &str,
+    sentinels: &[&str],
+    keys: &'a [&'a str],
+) -> std::collections::HashMap<&'a str, String> {
+    debug_assert_eq!(sentinels.len() + 1, keys.len());
+    let mut result = std::collections::HashMap::<&str, String>::new();
+    let mut current = 0usize;
     let mut buf = String::new();
-    let mut commit = |key: &'static str, buf: &mut String| {
-        sections.insert(key, std::mem::take(buf));
-    };
-
     for line in output.lines() {
-        match line {
-            "---SLEEP---" => {
-                commit(current, &mut buf);
-                current = "CPU2";
-            }
-            "---MEM---" => { commit(current, &mut buf); current = "MEM"; }
-            "---DISK---" => { commit(current, &mut buf); current = "DISK"; }
-            "---UPTIME---" => { commit(current, &mut buf); current = "UPTIME"; }
-            "---LOAD---" => { commit(current, &mut buf); current = "LOAD"; }
-            _ => {
-                buf.push_str(line);
-                buf.push('\n');
-            }
+        if current < sentinels.len() && line == sentinels[current] {
+            result.insert(keys[current], std::mem::take(&mut buf));
+            current += 1;
+        } else {
+            buf.push_str(line);
+            buf.push('\n');
         }
     }
-    commit(current, &mut buf);
+    result.insert(keys[current], buf);
+    result
+}
 
-    let cpu_percent = parse_cpu_diff(
+fn disk_mount_to_ffi(d: monitor::DiskMount) -> FfiDiskMount {
+    FfiDiskMount {
+        source: d.source,
+        mount: d.mount,
+        fs_type: d.fs_type,
+        total: d.total,
+        used: d.used,
+    }
+}
+
+fn parse_linux_stats(output: &str) -> Result<FfiSystemStats, String> {
+    use monitor::linux;
+    let sections = split_sections(
+        output,
+        &["---SLEEP---", "---MEM---", "---DISKS---", "---UPTIME---", "---LOAD---"],
+        &["CPU1", "CPU2", "MEM", "DISKS", "UPTIME", "LOAD"],
+    );
+
+    let cpu_percent = linux::parse_cpu_diff(
         sections.get("CPU1").ok_or("missing cpu1")?,
         sections.get("CPU2").ok_or("missing cpu2")?,
     )?;
-
-    let mem = parse_meminfo(sections.get("MEM").ok_or("missing memory")?)?;
-    let disk = parse_df(sections.get("DISK").ok_or("missing disk")?)?;
-    let uptime = parse_uptime(sections.get("UPTIME").ok_or("missing uptime")?)?;
-    let load = parse_loadavg(sections.get("LOAD").ok_or("missing load")?)?;
+    let mem = linux::parse_meminfo(sections.get("MEM").ok_or("missing memory")?)?;
+    let disks = linux::parse_df_rows(sections.get("DISKS").ok_or("missing disks")?);
+    let uptime = linux::parse_uptime(sections.get("UPTIME").ok_or("missing uptime")?)?;
+    let load = linux::parse_loadavg(sections.get("LOAD").ok_or("missing load")?)?;
 
     Ok(FfiSystemStats {
         cpu_percent,
@@ -1025,100 +1081,54 @@ fn parse_system_stats(output: &str) -> Result<FfiSystemStats, String> {
         memory_available: mem.available,
         swap_total: mem.swap_total,
         swap_used: mem.swap_used,
-        disk_total: disk.total,
-        disk_used: disk.used,
+        disks: disks.into_iter().map(disk_mount_to_ffi).collect(),
         uptime_seconds: uptime,
         load_average_1m: load,
     })
 }
 
-fn parse_cpu_diff(s1: &str, s2: &str) -> Result<f64, String> {
-    let extract = |s: &str| -> Result<(u64, u64), String> {
-        // Format: `cpu  user nice system idle iowait irq softirq ...`
-        let line = s.lines().find(|l| l.starts_with("cpu ")).ok_or("no cpu line")?;
-        let nums: Vec<u64> = line
-            .split_whitespace()
-            .skip(1)
-            .filter_map(|t| t.parse().ok())
-            .collect();
-        if nums.len() < 4 { return Err("too few cpu fields".into()); }
-        let idle = nums[3] + nums.get(4).copied().unwrap_or(0); // idle + iowait
-        let total: u64 = nums.iter().sum();
-        Ok((total, idle))
-    };
-    let (t1, i1) = extract(s1)?;
-    let (t2, i2) = extract(s2)?;
-    let dt = t2.saturating_sub(t1);
-    let di = i2.saturating_sub(i1);
-    if dt == 0 { return Ok(0.0); }
-    Ok(((dt - di) as f64 / dt as f64) * 100.0)
-}
+fn parse_darwin_stats(output: &str) -> Result<FfiSystemStats, String> {
+    use monitor::darwin;
+    let sections = split_sections(
+        output,
+        &[
+            "---MEM---",
+            "---DISKS---",
+            "---PAGESIZE---",
+            "---MEMSIZE---",
+            "---SWAP---",
+            "---BOOTTIME---",
+            "---LOAD---",
+        ],
+        &["CPU", "MEM", "DISKS", "PAGESIZE", "MEMSIZE", "SWAP", "BOOTTIME", "LOAD"],
+    );
 
-struct MemInfo {
-    total: u64,
-    used: u64,
-    available: u64,
-    swap_total: u64,
-    swap_used: u64,
-}
+    let cpu_percent = darwin::parse_cpu_top(sections.get("CPU").ok_or("missing cpu")?)?;
+    let pagesize = darwin::parse_u64(sections.get("PAGESIZE").ok_or("missing pagesize")?)?;
+    let memsize = darwin::parse_u64(sections.get("MEMSIZE").ok_or("missing memsize")?)?;
+    let (_free, active, wired) = darwin::parse_vm_stat(
+        sections.get("MEM").ok_or("missing memory")?,
+        pagesize,
+    )?;
+    let memory_used = active + wired;
+    let memory_available = memsize.saturating_sub(memory_used);
+    let (swap_total, swap_used) =
+        darwin::parse_swapusage(sections.get("SWAP").ok_or("missing swap")?);
+    let uptime = darwin::parse_boottime(sections.get("BOOTTIME").ok_or("missing boottime")?)?;
+    let load = darwin::parse_loadavg(sections.get("LOAD").ok_or("missing load")?)?;
+    let disks = darwin::parse_df_rows(sections.get("DISKS").ok_or("missing disks")?);
 
-fn parse_meminfo(s: &str) -> Result<MemInfo, String> {
-    let mut total = 0u64;
-    let mut available = 0u64;
-    let mut free = 0u64;
-    let mut buffers = 0u64;
-    let mut cached = 0u64;
-    let mut swap_total = 0u64;
-    let mut swap_free = 0u64;
-
-    for line in s.lines() {
-        let mut parts = line.split_whitespace();
-        let key = parts.next().unwrap_or("");
-        let value: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0) * 1024; // kB → B
-        match key {
-            "MemTotal:"     => total = value,
-            "MemAvailable:" => available = value,
-            "MemFree:"      => free = value,
-            "Buffers:"      => buffers = value,
-            "Cached:"       => cached = value,
-            "SwapTotal:"    => swap_total = value,
-            "SwapFree:"     => swap_free = value,
-            _ => {}
-        }
-    }
-    if total == 0 { return Err("no MemTotal".into()); }
-    // Prefer MemAvailable on newer kernels; fall back to free+buffers+cached.
-    let avail = if available > 0 { available } else { free + buffers + cached };
-    let used = total.saturating_sub(avail);
-    let swap_used = swap_total.saturating_sub(swap_free);
-    Ok(MemInfo { total, used, available: avail, swap_total, swap_used })
-}
-
-struct DiskInfo { total: u64, used: u64 }
-
-fn parse_df(s: &str) -> Result<DiskInfo, String> {
-    // `df -B1 /` output:
-    //   Filesystem    1B-blocks       Used   Available Use% Mounted on
-    //   /dev/sda1   123456789012  9876543210 ...
-    let line = s.lines().nth(1).ok_or("no df data line")?;
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 4 { return Err("df row too short".into()); }
-    let total: u64 = parts[1].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    let used: u64 = parts[2].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    Ok(DiskInfo { total, used })
-}
-
-fn parse_uptime(s: &str) -> Result<u64, String> {
-    // Format: "12345.67 7891.23\n" — first number is uptime in seconds.
-    let token = s.split_whitespace().next().ok_or("empty uptime")?;
-    let secs: f64 = token.parse().map_err(|e: std::num::ParseFloatError| e.to_string())?;
-    Ok(secs as u64)
-}
-
-fn parse_loadavg(s: &str) -> Result<f64, String> {
-    // Format: "0.05 0.12 0.10 1/234 5678"
-    let token = s.split_whitespace().next().ok_or("empty loadavg")?;
-    token.parse().map_err(|e: std::num::ParseFloatError| e.to_string())
+    Ok(FfiSystemStats {
+        cpu_percent,
+        memory_total: memsize,
+        memory_used,
+        memory_available,
+        swap_total,
+        swap_used,
+        disks: disks.into_iter().map(disk_mount_to_ffi).collect(),
+        uptime_seconds: uptime,
+        load_average_1m: load,
+    })
 }
 
 #[cfg(test)]
@@ -1126,38 +1136,76 @@ mod system_stats_tests {
     use super::*;
 
     #[test]
-    fn parses_cpu_diff_correctly() {
-        let s1 = "cpu  100 0 50 850 0 0 0 0 0 0\n";
-        let s2 = "cpu  150 0 75 875 0 0 0 0 0 0\n";
-        let pct = parse_cpu_diff(s1, s2).unwrap();
-        // delta total = 100, delta idle = 25 → busy = 75 → 75%
-        assert!((pct - 75.0).abs() < 0.01);
+    fn parses_linux_stats_end_to_end() {
+        let output = "\
+cpu  100 0 50 850 0 0 0 0 0 0
+---SLEEP---
+cpu  150 0 75 875 0 0 0 0 0 0
+---MEM---
+MemTotal:       16000000 kB
+MemFree:         2000000 kB
+MemAvailable:    8000000 kB
+SwapTotal:       4000000 kB
+SwapFree:        3000000 kB
+---DISKS---
+/dev/sda1 ext4 100000000000 60000000000 40000000000 60% /
+tmpfs tmpfs 4096 0 4096 0% /run
+---UPTIME---
+12345.67 7891.23
+---LOAD---
+0.50 0.40 0.30 1/234 5678
+";
+        let stats = parse_linux_stats(output).unwrap();
+        assert!((stats.cpu_percent - 75.0).abs() < 0.01);
+        assert_eq!(stats.memory_total, 16_000_000 * 1024);
+        assert_eq!(stats.swap_used, 1_000_000 * 1024);
+        // tmpfs row dropped, real disk kept.
+        assert_eq!(stats.disks.len(), 1);
+        assert_eq!(stats.disks[0].mount, "/");
+        assert_eq!(stats.uptime_seconds, 12345);
+        assert!((stats.load_average_1m - 0.50).abs() < 0.001);
     }
 
     #[test]
-    fn parses_meminfo() {
-        let m = parse_meminfo(
-            "MemTotal:       16000000 kB\n\
-             MemFree:         2000000 kB\n\
-             MemAvailable:    8000000 kB\n\
-             Buffers:          500000 kB\n\
-             Cached:          1500000 kB\n\
-             SwapTotal:       4000000 kB\n\
-             SwapFree:        3000000 kB\n",
-        ).unwrap();
-        assert_eq!(m.total, 16_000_000 * 1024);
-        assert_eq!(m.available, 8_000_000 * 1024);
-        assert_eq!(m.used, 8_000_000 * 1024);
-        assert_eq!(m.swap_used, 1_000_000 * 1024);
-    }
-
-    #[test]
-    fn parses_df() {
-        let out = "Filesystem    1B-blocks       Used   Available Use% Mounted on\n\
-                   /dev/sda1   100000000000 60000000000 40000000000 60% /\n";
-        let d = parse_df(out).unwrap();
-        assert_eq!(d.total, 100_000_000_000);
-        assert_eq!(d.used, 60_000_000_000);
+    fn parses_darwin_stats_end_to_end() {
+        // Build a synthetic boottime so uptime ≈ 200s.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let boottime_line = format!("{{ sec = {}, usec = 0 }} Sat Apr 29", now - 200);
+        let output = format!(
+            "\
+CPU usage: 12.34% user, 5.66% sys, 82.0% idle
+---MEM---
+Pages free:                          100000.
+Pages active:                        200000.
+Pages wired down:                    150000.
+---DISKS---
+/dev/disk1s1 100000000 50000000 50000000 50% /
+/dev/disk1s2 100000000 1000000 99000000 1% /System/Volumes/Preboot
+---PAGESIZE---
+16384
+---MEMSIZE---
+17179869184
+---SWAP---
+total = 4096.00M  used = 123.45M  free = 3972.55M
+---BOOTTIME---
+{boottime_line}
+---LOAD---
+{{ 1.23 0.98 0.76 }}
+"
+        );
+        let stats = parse_darwin_stats(&output).unwrap();
+        assert!((stats.cpu_percent - 18.0).abs() < 0.5);
+        assert_eq!(stats.memory_total, 17_179_869_184);
+        // used = (active + wired) * pagesize = 350000 * 16384
+        assert_eq!(stats.memory_used, 350_000 * 16_384);
+        assert_eq!(stats.swap_total, (4096.00 * 1024.0 * 1024.0) as u64);
+        assert_eq!(stats.disks.len(), 1);
+        assert_eq!(stats.disks[0].mount, "/");
+        assert!((200..=210).contains(&stats.uptime_seconds));
+        assert!((stats.load_average_1m - 1.23).abs() < 0.01);
     }
 }
 

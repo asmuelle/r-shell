@@ -9,5 +9,6 @@
 
 mod bridge;
 mod ffi;
+mod monitor;
 
 uniffi::setup_scaffolding!();

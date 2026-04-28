@@ -706,6 +706,119 @@ public func FfiConverterTypeFfiConnectConfig_lower(_ value: FfiConnectConfig) ->
 
 
 /**
+ * One row in the disk-usage table.
+ */
+public struct FfiDiskMount {
+    /**
+     * Device or backing source (e.g. `/dev/disk1s1`, `tmpfs`).
+     */
+    public var source: String
+    /**
+     * Mount point on the host.
+     */
+    public var mount: String
+    /**
+     * Filesystem type. `"—"` when the source command (e.g. macOS
+     * default `df`) doesn't surface it.
+     */
+    public var fsType: String
+    public var total: UInt64
+    public var used: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Device or backing source (e.g. `/dev/disk1s1`, `tmpfs`).
+         */source: String, 
+        /**
+         * Mount point on the host.
+         */mount: String, 
+        /**
+         * Filesystem type. `"—"` when the source command (e.g. macOS
+         * default `df`) doesn't surface it.
+         */fsType: String, total: UInt64, used: UInt64) {
+        self.source = source
+        self.mount = mount
+        self.fsType = fsType
+        self.total = total
+        self.used = used
+    }
+}
+
+
+
+extension FfiDiskMount: Equatable, Hashable {
+    public static func ==(lhs: FfiDiskMount, rhs: FfiDiskMount) -> Bool {
+        if lhs.source != rhs.source {
+            return false
+        }
+        if lhs.mount != rhs.mount {
+            return false
+        }
+        if lhs.fsType != rhs.fsType {
+            return false
+        }
+        if lhs.total != rhs.total {
+            return false
+        }
+        if lhs.used != rhs.used {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(source)
+        hasher.combine(mount)
+        hasher.combine(fsType)
+        hasher.combine(total)
+        hasher.combine(used)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiDiskMount: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiDiskMount {
+        return
+            try FfiDiskMount(
+                source: FfiConverterString.read(from: &buf), 
+                mount: FfiConverterString.read(from: &buf), 
+                fsType: FfiConverterString.read(from: &buf), 
+                total: FfiConverterUInt64.read(from: &buf), 
+                used: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiDiskMount, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterString.write(value.mount, into: &buf)
+        FfiConverterString.write(value.fsType, into: &buf)
+        FfiConverterUInt64.write(value.total, into: &buf)
+        FfiConverterUInt64.write(value.used, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiDiskMount_lift(_ buf: RustBuffer) throws -> FfiDiskMount {
+    return try FfiConverterTypeFfiDiskMount.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiDiskMount_lower(_ value: FfiDiskMount) -> RustBuffer {
+    return FfiConverterTypeFfiDiskMount.lower(value)
+}
+
+
+/**
  * An event emitted by the Rust core and delivered to the Swift layer via
  * the registered `FfiEventCallback`.
  *
@@ -1005,7 +1118,7 @@ public func FfiConverterTypeFfiResult_lower(_ value: FfiResult) -> RustBuffer {
 public struct FfiSystemStats {
     /**
      * CPU utilisation 0..100 averaged across all cores during a
-     * brief 200 ms sampling window inside the call.
+     * brief sampling window inside the call.
      */
     public var cpuPercent: Double
     public var memoryTotal: UInt64
@@ -1014,17 +1127,16 @@ public struct FfiSystemStats {
     public var swapTotal: UInt64
     public var swapUsed: UInt64
     /**
-     * Disk usage of `/` only — Sprint-11 work could surface every
-     * mount.
+     * Every non-pseudo mount — typically `/`, `/home`, external
+     * volumes. Empty when `df` returned nothing parseable.
      */
-    public var diskTotal: UInt64
-    public var diskUsed: UInt64
+    public var disks: [FfiDiskMount]
     /**
      * System uptime in seconds.
      */
     public var uptimeSeconds: UInt64
     /**
-     * 1-minute load average from /proc/loadavg.
+     * 1-minute load average.
      */
     public var loadAverage1m: Double
 
@@ -1033,17 +1145,17 @@ public struct FfiSystemStats {
     public init(
         /**
          * CPU utilisation 0..100 averaged across all cores during a
-         * brief 200 ms sampling window inside the call.
+         * brief sampling window inside the call.
          */cpuPercent: Double, memoryTotal: UInt64, memoryUsed: UInt64, memoryAvailable: UInt64, swapTotal: UInt64, swapUsed: UInt64, 
         /**
-         * Disk usage of `/` only — Sprint-11 work could surface every
-         * mount.
-         */diskTotal: UInt64, diskUsed: UInt64, 
+         * Every non-pseudo mount — typically `/`, `/home`, external
+         * volumes. Empty when `df` returned nothing parseable.
+         */disks: [FfiDiskMount], 
         /**
          * System uptime in seconds.
          */uptimeSeconds: UInt64, 
         /**
-         * 1-minute load average from /proc/loadavg.
+         * 1-minute load average.
          */loadAverage1m: Double) {
         self.cpuPercent = cpuPercent
         self.memoryTotal = memoryTotal
@@ -1051,8 +1163,7 @@ public struct FfiSystemStats {
         self.memoryAvailable = memoryAvailable
         self.swapTotal = swapTotal
         self.swapUsed = swapUsed
-        self.diskTotal = diskTotal
-        self.diskUsed = diskUsed
+        self.disks = disks
         self.uptimeSeconds = uptimeSeconds
         self.loadAverage1m = loadAverage1m
     }
@@ -1080,10 +1191,7 @@ extension FfiSystemStats: Equatable, Hashable {
         if lhs.swapUsed != rhs.swapUsed {
             return false
         }
-        if lhs.diskTotal != rhs.diskTotal {
-            return false
-        }
-        if lhs.diskUsed != rhs.diskUsed {
+        if lhs.disks != rhs.disks {
             return false
         }
         if lhs.uptimeSeconds != rhs.uptimeSeconds {
@@ -1102,8 +1210,7 @@ extension FfiSystemStats: Equatable, Hashable {
         hasher.combine(memoryAvailable)
         hasher.combine(swapTotal)
         hasher.combine(swapUsed)
-        hasher.combine(diskTotal)
-        hasher.combine(diskUsed)
+        hasher.combine(disks)
         hasher.combine(uptimeSeconds)
         hasher.combine(loadAverage1m)
     }
@@ -1123,8 +1230,7 @@ public struct FfiConverterTypeFfiSystemStats: FfiConverterRustBuffer {
                 memoryAvailable: FfiConverterUInt64.read(from: &buf), 
                 swapTotal: FfiConverterUInt64.read(from: &buf), 
                 swapUsed: FfiConverterUInt64.read(from: &buf), 
-                diskTotal: FfiConverterUInt64.read(from: &buf), 
-                diskUsed: FfiConverterUInt64.read(from: &buf), 
+                disks: FfiConverterSequenceTypeFfiDiskMount.read(from: &buf), 
                 uptimeSeconds: FfiConverterUInt64.read(from: &buf), 
                 loadAverage1m: FfiConverterDouble.read(from: &buf)
         )
@@ -1137,8 +1243,7 @@ public struct FfiConverterTypeFfiSystemStats: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.memoryAvailable, into: &buf)
         FfiConverterUInt64.write(value.swapTotal, into: &buf)
         FfiConverterUInt64.write(value.swapUsed, into: &buf)
-        FfiConverterUInt64.write(value.diskTotal, into: &buf)
-        FfiConverterUInt64.write(value.diskUsed, into: &buf)
+        FfiConverterSequenceTypeFfiDiskMount.write(value.disks, into: &buf)
         FfiConverterUInt64.write(value.uptimeSeconds, into: &buf)
         FfiConverterDouble.write(value.loadAverage1m, into: &buf)
     }
@@ -1462,10 +1567,18 @@ public enum MonitorError {
     case NotConnected(connectionId: String
     )
     /**
-     * Server returned an unparseable response. /proc-based parsing
-     * is Linux-only — non-Linux hosts will surface here.
+     * Output didn't match the expected per-OS shape. Almost always
+     * transient (a command timed out, was truncated) — the UI may
+     * retry on the next poll.
      */
     case ParseError(detail: String
+    )
+    /**
+     * Host reported an OS we don't have parsers for yet (BSD,
+     * Solaris, AIX, …). The UI surfaces this as a placeholder so
+     * users know support is missing rather than broken.
+     */
+    case Unsupported(os: String
     )
     case Other(detail: String
     )
@@ -1491,7 +1604,10 @@ public struct FfiConverterTypeMonitorError: FfiConverterRustBuffer {
         case 2: return .ParseError(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 3: return .Other(
+        case 3: return .Unsupported(
+            os: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .Other(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -1516,8 +1632,13 @@ public struct FfiConverterTypeMonitorError: FfiConverterRustBuffer {
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .Other(detail):
+        case let .Unsupported(os):
             writeInt(&buf, Int32(3))
+            FfiConverterString.write(os, into: &buf)
+            
+        
+        case let .Other(detail):
+            writeInt(&buf, Int32(4))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -1797,6 +1918,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeFfiDiskMount: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiDiskMount]
+
+    public static func write(_ value: [FfiDiskMount], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiDiskMount.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiDiskMount] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiDiskMount]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiDiskMount.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeFfiFileEntry: FfiConverterRustBuffer {
     typealias SwiftType = [FfiFileEntry]
 
@@ -1868,9 +2014,8 @@ public func rshellForgetHostKey(host: String, port: UInt16) -> FfiResult {
 })
 }
 /**
- * Snapshot host stats over the active SSH connection. Two CPU samples
- * 200 ms apart so the consumer gets a meaningful percentage without
- * having to call twice.
+ * Snapshot host stats over the active SSH connection. Detects the OS
+ * on the first call (cached), then routes to the matching parser.
  */
 public func rshellGetSystemStats(connectionId: String)throws  -> FfiSystemStats {
     return try  FfiConverterTypeFfiSystemStats.lift(try rustCallWithError(FfiConverterTypeMonitorError.lift) {
@@ -2131,7 +2276,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_forget_host_key() != 53327) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_r_shell_macos_checksum_func_rshell_get_system_stats() != 55414) {
+    if (uniffi_r_shell_macos_checksum_func_rshell_get_system_stats() != 1537) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_init() != 11104) {
