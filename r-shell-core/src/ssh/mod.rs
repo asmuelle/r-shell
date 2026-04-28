@@ -839,7 +839,8 @@ impl SshClient {
 
             let attrs = entry.metadata();
             let size = attrs.size.unwrap_or(0);
-            let modified = attrs.mtime.map(|t| format_unix_timestamp(t as i64));
+            let mtime_secs = attrs.mtime.map(|t| t as i64);
+            let modified = mtime_secs.map(format_unix_timestamp);
             let permissions = attrs.permissions.map(format_permissions);
 
             let file_type = if attrs.is_dir() {
@@ -854,6 +855,7 @@ impl SshClient {
                 name,
                 size,
                 modified,
+                modified_unix: mtime_secs,
                 permissions,
                 file_type,
             });

@@ -251,7 +251,7 @@ struct FileBrowserView: View {
             .width(min: 70, ideal: 90, max: 140)
 
             TableColumn("Modified", value: \.modifiedSortKey) { row in
-                Text(row.entry.modified ?? "—")
+                Text(row.modifiedDisplay)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -271,6 +271,12 @@ struct FileBrowserView: View {
         .contextMenu(forSelectionType: String.self) { selectedIds in
             contextMenuContent(for: selectedIds)
         }
+        // Return on a selected directory drills in. SwiftUI's
+        // `.onSubmit(of: .table)` doesn't exist (only text/search), so
+        // we attach a hidden keyboard-shortcut button: enabled only
+        // when exactly one directory is selected, so Return is a
+        // no-op everywhere else and doesn't shadow other handlers.
+        .background(returnKeyShortcut)
         .dropDestination(for: URL.self) { urls, _ in
             acceptDrop(urls: urls)
         } isTargeted: { hovering in
@@ -296,10 +302,24 @@ struct FileBrowserView: View {
         var name: String { entry.name }
         var size: UInt64 { entry.size }
         var permissions: String { entry.permissions ?? "" }
-        /// The Rust side ships an already-formatted timestamp string;
-        /// it sorts lexically the same as numerically for the format
-        /// we use, so the raw string is fine as a sort key.
-        var modifiedSortKey: String { entry.modified ?? "" }
+        /// Raw Unix epoch seconds from the FFI. `0` (rather than nil)
+        /// for missing timestamps so the column sort places undated
+        /// entries together at one end consistently.
+        var modifiedSortKey: Int64 { entry.modifiedUnix ?? 0 }
+        /// Display string — locale-aware short date/time, falling back
+        /// to "—" when no timestamp was provided.
+        var modifiedDisplay: String {
+            guard let secs = entry.modifiedUnix else { return "—" }
+            let date = Date(timeIntervalSince1970: TimeInterval(secs))
+            return Self.dateFormatter.string(from: date)
+        }
+        private static let dateFormatter: DateFormatter = {
+            let f = DateFormatter()
+            f.dateStyle = .short
+            f.timeStyle = .short
+            f.locale = Locale.current
+            return f
+        }()
         var kindOrder: Int {
             switch entry.kind {
             case .directory: return 0
@@ -320,6 +340,29 @@ struct FileBrowserView: View {
             if lhs.kindOrder != rhs.kindOrder { return lhs.kindOrder < rhs.kindOrder }
             return sortOrder.compare(lhs, rhs) == .orderedAscending
         }
+    }
+
+    /// Hidden Button that activates on Return. Enabled only when
+    /// exactly one directory is selected — otherwise Return falls
+    /// through to whichever control SwiftUI's responder chain picks
+    /// (e.g. an input sheet's default Cancel button).
+    @ViewBuilder
+    private var returnKeyShortcut: some View {
+        Button {
+            guard selection.count == 1,
+                  let id = selection.first,
+                  let entry = entries.first(where: { $0.name == id }),
+                  entry.kind == .directory
+            else { return }
+            navigate(into: entry.name)
+        } label: { EmptyView() }
+        .keyboardShortcut(.return, modifiers: [])
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .disabled(
+            selection.count != 1
+                || entries.first(where: { selection.contains($0.name) })?.kind != .directory
+        )
     }
 
     @ViewBuilder

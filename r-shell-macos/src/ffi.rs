@@ -558,6 +558,11 @@ pub struct FfiFileEntry {
     /// Pre-formatted timestamp string from r-shell-core. `None` when
     /// the SFTP server doesn't supply mtime.
     pub modified: Option<String>,
+    /// Raw modification time as Unix epoch seconds — surfaced so the
+    /// macOS file table can sort numerically and reformat per-locale
+    /// instead of relying on lexical comparison of the formatted
+    /// `modified` string.
+    pub modified_unix: Option<i64>,
     /// Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
     pub permissions: Option<String>,
     pub kind: FfiFileKind,
@@ -878,6 +883,7 @@ pub fn rshell_sftp_list_dir(
                 name: e.name,
                 size: e.size,
                 modified: e.modified,
+                modified_unix: e.modified_unix,
                 permissions: e.permissions,
                 kind: match e.file_type {
                     r_shell_core::sftp_client::FileEntryType::File => FfiFileKind::File,

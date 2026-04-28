@@ -447,6 +447,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -767,6 +783,13 @@ public struct FfiFileEntry {
      */
     public var modified: String?
     /**
+     * Raw modification time as Unix epoch seconds — surfaced so the
+     * macOS file table can sort numerically and reformat per-locale
+     * instead of relying on lexical comparison of the formatted
+     * `modified` string.
+     */
+    public var modifiedUnix: Int64?
+    /**
      * Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
      */
     public var permissions: String?
@@ -780,11 +803,18 @@ public struct FfiFileEntry {
          * the SFTP server doesn't supply mtime.
          */modified: String?, 
         /**
+         * Raw modification time as Unix epoch seconds — surfaced so the
+         * macOS file table can sort numerically and reformat per-locale
+         * instead of relying on lexical comparison of the formatted
+         * `modified` string.
+         */modifiedUnix: Int64?, 
+        /**
          * Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
          */permissions: String?, kind: FfiFileKind) {
         self.name = name
         self.size = size
         self.modified = modified
+        self.modifiedUnix = modifiedUnix
         self.permissions = permissions
         self.kind = kind
     }
@@ -803,6 +833,9 @@ extension FfiFileEntry: Equatable, Hashable {
         if lhs.modified != rhs.modified {
             return false
         }
+        if lhs.modifiedUnix != rhs.modifiedUnix {
+            return false
+        }
         if lhs.permissions != rhs.permissions {
             return false
         }
@@ -816,6 +849,7 @@ extension FfiFileEntry: Equatable, Hashable {
         hasher.combine(name)
         hasher.combine(size)
         hasher.combine(modified)
+        hasher.combine(modifiedUnix)
         hasher.combine(permissions)
         hasher.combine(kind)
     }
@@ -832,6 +866,7 @@ public struct FfiConverterTypeFfiFileEntry: FfiConverterRustBuffer {
                 name: FfiConverterString.read(from: &buf), 
                 size: FfiConverterUInt64.read(from: &buf), 
                 modified: FfiConverterOptionString.read(from: &buf), 
+                modifiedUnix: FfiConverterOptionInt64.read(from: &buf), 
                 permissions: FfiConverterOptionString.read(from: &buf), 
                 kind: FfiConverterTypeFfiFileKind.read(from: &buf)
         )
@@ -841,6 +876,7 @@ public struct FfiConverterTypeFfiFileEntry: FfiConverterRustBuffer {
         FfiConverterString.write(value.name, into: &buf)
         FfiConverterUInt64.write(value.size, into: &buf)
         FfiConverterOptionString.write(value.modified, into: &buf)
+        FfiConverterOptionInt64.write(value.modifiedUnix, into: &buf)
         FfiConverterOptionString.write(value.permissions, into: &buf)
         FfiConverterTypeFfiFileKind.write(value.kind, into: &buf)
     }
@@ -1429,6 +1465,30 @@ extension FfiConverterCallbackInterfaceFfiEventCallback : FfiConverter {
 #endif
     public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
         writeInt(&buf, lower(v))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+    typealias SwiftType = Int64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
     }
 }
 

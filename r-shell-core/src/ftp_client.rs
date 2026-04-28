@@ -347,6 +347,7 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
                 name: last.to_string(),
                 size: 0,
                 modified: None,
+                modified_unix: None,
                 permissions: None,
                 file_type: FileEntryType::File,
             });
@@ -371,6 +372,7 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
             name,
             size: 0,
             modified: None,
+            modified_unix: None,
             permissions: Some(perms_str.to_string()),
             file_type,
         });
@@ -394,6 +396,7 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
         name,
         size,
         modified,
+        modified_unix: None,
         permissions: Some(perms_str.to_string()),
         file_type,
     })

@@ -49,11 +49,11 @@ pub async fn list_local_files(path: String) -> Result<Vec<FileEntry>, String> {
 
         let size = metadata.len();
 
-        let modified = metadata.modified().ok().map(|t| {
+        let mtime_secs = metadata.modified().ok().map(|t| {
             let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            let secs = duration.as_secs() as i64;
-            format_unix_timestamp(secs)
+            duration.as_secs() as i64
         });
+        let modified = mtime_secs.map(format_unix_timestamp);
 
         #[cfg(unix)]
         let permissions = {
@@ -68,6 +68,7 @@ pub async fn list_local_files(path: String) -> Result<Vec<FileEntry>, String> {
             name,
             size,
             modified,
+            modified_unix: mtime_secs,
             permissions,
             file_type,
         });

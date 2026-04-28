@@ -28,6 +28,15 @@ final class TransferQueueStore: ObservableObject {
     /// chain so transfers to host A don't block transfers to host B.
     private var runningPerConnection: [String: Task<Void, Never>] = [:]
 
+    /// Buffer of recently-completed download URLs awaiting a single
+    /// Finder reveal. Coalesces N rapid completions (e.g. a multi-row
+    /// download batch) into one `activateFileViewerSelecting` call so
+    /// Finder is fronted once with all files selected, instead of
+    /// thrashing once per transfer.
+    private var pendingReveals: [URL] = []
+    private var revealTask: Task<Void, Never>?
+    private static let revealDebounce: UInt64 = 500_000_000  // 500 ms
+
     init() {
         observer = NotificationCenter.default.addObserver(
             forName: .rshellTransferProgress,
@@ -188,14 +197,12 @@ final class TransferQueueStore: ObservableObject {
             transfers[idx].status = .completed
             logger.info("Transfer completed: \(transfer.remotePath, privacy: .public) (\(bytes) bytes)")
 
-            // Reveal the downloaded file in Finder. Mirrors how Safari
-            // and most macOS browsers behave on download completion;
-            // the user almost always wants to do something with the
-            // file next. Skip for uploads — the local source is
-            // unchanged and the user is interacting with our window.
+            // Reveal the downloaded file in Finder. Coalesce — if more
+            // downloads finish within the debounce window they get
+            // batched into a single Finder activation with all files
+            // selected, instead of fronting Finder once per file.
             if transfer.kind == .download {
-                let url = URL(fileURLWithPath: transfer.localPath)
-                NSWorkspace.shared.activateFileViewerSelecting([url])
+                scheduleReveal(URL(fileURLWithPath: transfer.localPath))
             }
         case .failure(let error as SftpError):
             switch error {
@@ -211,6 +218,31 @@ final class TransferQueueStore: ObservableObject {
             transfers[idx].status = .failed
             transfers[idx].error = error.localizedDescription
             logger.error("Transfer failed for \(transfer.remotePath, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: - Coalesced reveal
+
+    private func scheduleReveal(_ url: URL) {
+        pendingReveals.append(url)
+        revealTask?.cancel()
+        revealTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.revealDebounce)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                let urls = self.pendingReveals
+                self.pendingReveals.removeAll()
+                self.revealTask = nil
+                guard !urls.isEmpty else { return }
+                // `activateFileViewerSelecting` takes an array — when
+                // every URL shares a parent, Finder opens that parent
+                // and selects all of them. Mixed-parent batches open
+                // a "All My Files"-style selection, which is rare in
+                // practice (single-batch UI flows download into one
+                // destination directory).
+                NSWorkspace.shared.activateFileViewerSelecting(urls)
+            }
         }
     }
 

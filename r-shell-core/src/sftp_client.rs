@@ -71,7 +71,13 @@ impl std::fmt::Debug for SftpAuthMethod {
 pub struct FileEntry {
     pub name: String,
     pub size: u64,
+    /// Pre-formatted timestamp string for human display.
     pub modified: Option<String>,
+    /// Raw modification time as Unix epoch seconds. Surfaced
+    /// alongside `modified` so consumers (the macOS file table)
+    /// can sort numerically and reformat per-locale instead of
+    /// relying on lexical comparison of the formatted string.
+    pub modified_unix: Option<i64>,
     pub permissions: Option<String>,
     pub file_type: FileEntryType,
 }
@@ -176,7 +182,8 @@ impl StandaloneSftpClient {
 
             let attrs = entry.metadata();
             let size = attrs.size.unwrap_or(0);
-            let modified = attrs.mtime.map(|t| format_unix_timestamp(t as i64));
+            let mtime_secs = attrs.mtime.map(|t| t as i64);
+            let modified = mtime_secs.map(format_unix_timestamp);
 
             let permissions = attrs.permissions.map(format_permissions);
 
@@ -192,6 +199,7 @@ impl StandaloneSftpClient {
                 name,
                 size,
                 modified,
+                modified_unix: mtime_secs,
                 permissions,
                 file_type,
             });
@@ -422,6 +430,7 @@ mod tests {
             name: "test.txt".to_string(),
             size: 1024,
             modified: Some("2024-01-01 00:00:00".to_string()),
+            modified_unix: Some(1_704_067_200),
             permissions: Some("rw-r--r--".to_string()),
             file_type: FileEntryType::File,
         };
@@ -437,6 +446,7 @@ mod tests {
             name: "mydir".to_string(),
             size: 4096,
             modified: None,
+            modified_unix: None,
             permissions: Some("rwxr-xr-x".to_string()),
             file_type: FileEntryType::Directory,
         };
@@ -451,6 +461,7 @@ mod tests {
             name: "link".to_string(),
             size: 0,
             modified: None,
+            modified_unix: None,
             permissions: None,
             file_type: FileEntryType::Symlink,
         };
