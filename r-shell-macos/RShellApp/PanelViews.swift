@@ -43,7 +43,15 @@ struct MainPanel: View {
                     set: { id in if let id { tabsStore.setActive(id) } }
                 ),
                 onClose: { tab in tabsStore.closeTab(tab.id) },
-                onNewTab: {}
+                onNewTab: {},
+                onSetTheme: { tab, themeId in
+                    tabsStore.setTheme(themeId, forTabId: tab.id)
+                },
+                themeOverrides: Dictionary(
+                    uniqueKeysWithValues: tabsStore.tabs.compactMap { tab in
+                        tab.themeOverride.map { (tab.id, $0) }
+                    }
+                )
             )
 
             Divider()
@@ -66,6 +74,7 @@ struct MainPanel: View {
                         TerminalView(
                             connectionId: tab.connectionId,
                             ptyGeneration: tab.ptyGeneration,
+                            themeOverride: tab.themeOverride,
                             terminalTitle: .constant(tab.title),
                             searchVisible: .constant(false),
                             onSearchQueryChanged: nil,
@@ -103,6 +112,10 @@ struct TerminalTab: Identifiable {
     let ptyGeneration: UInt64
     var title: String
     var order: Int
+    /// When non-nil, overrides the global `@AppStorage("terminalTheme")`
+    /// — set via the tab's context menu so a single host can have a
+    /// distinct visual signature (e.g., red palette for prod).
+    var themeOverride: String?
 }
 
 // MARK: - Bottom panel

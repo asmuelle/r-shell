@@ -27,33 +27,38 @@ import XCTest
 @testable import RShellMacOS
 
 final class PtyPayloadDecoderTests: XCTestCase {
-    func testDecodesByteArray() {
-        let data = PtyPayloadDecoder.decode("[72,101,108,108,111]")
-        XCTAssertEqual(data, Data([72, 101, 108, 108, 111]))  // "Hello"
+    func testDecodesFrame() {
+        let frame = PtyPayloadDecoder.decode(#"{"generation":7,"bytes":[72,101,108,108,111]}"#)
+        XCTAssertEqual(frame?.generation, 7)
+        XCTAssertEqual(frame?.data, Data([72, 101, 108, 108, 111]))  // "Hello"
     }
 
-    func testDecodesEmptyArray() {
-        XCTAssertEqual(PtyPayloadDecoder.decode("[]"), Data())
+    func testDecodesEmptyBytes() {
+        let frame = PtyPayloadDecoder.decode(#"{"generation":1,"bytes":[]}"#)
+        XCTAssertEqual(frame?.generation, 1)
+        XCTAssertEqual(frame?.data, Data())
     }
 
     func testDecodesAllByteValues() {
-        // Every value from 0 to 255 must round-trip cleanly. SwiftTerm's
-        // `feed(byteArray:)` doesn't care about content, but UTF-8 sequences,
+        // Every value 0..255 must round-trip cleanly. UTF-8 sequences,
         // ANSI escapes (0x1B), and high bytes (0x80+) all need to land
-        // unchanged.
-        let payload = "[" + (0...255).map(String.init).joined(separator: ",") + "]"
-        let decoded = PtyPayloadDecoder.decode(payload)
-        XCTAssertEqual(decoded?.count, 256)
-        XCTAssertEqual(decoded?.first, 0)
-        XCTAssertEqual(decoded?.last, 255)
+        // unchanged in `frame.data` for SwiftTerm's `feed(byteArray:)`.
+        let bytes = (0...255).map(String.init).joined(separator: ",")
+        let payload = #"{"generation":3,"bytes":[\#(bytes)]}"#
+        let frame = PtyPayloadDecoder.decode(payload)
+        XCTAssertEqual(frame?.generation, 3)
+        XCTAssertEqual(frame?.data.count, 256)
+        XCTAssertEqual(frame?.data.first, 0)
+        XCTAssertEqual(frame?.data.last, 255)
     }
 
     func testReturnsNilOnMalformed() {
-        XCTAssertNil(PtyPayloadDecoder.decode("not-an-array"))
-        XCTAssertNil(PtyPayloadDecoder.decode("[1, 2, "))     // truncated
-        XCTAssertNil(PtyPayloadDecoder.decode("\"Hello\""))    // string, not array
-        XCTAssertNil(PtyPayloadDecoder.decode("[256]"))        // out of UInt8 range
-        XCTAssertNil(PtyPayloadDecoder.decode("[-1]"))         // out of UInt8 range
+        XCTAssertNil(PtyPayloadDecoder.decode("not-json"))
+        XCTAssertNil(PtyPayloadDecoder.decode(#"{"generation":1,"bytes":"#))         // truncated
+        XCTAssertNil(PtyPayloadDecoder.decode(#"{"generation":1,"bytes":[256]}"#))   // out of UInt8 range
+        XCTAssertNil(PtyPayloadDecoder.decode(#"{"generation":1,"bytes":[-1]}"#))    // out of UInt8 range
+        XCTAssertNil(PtyPayloadDecoder.decode(#"{"bytes":[1,2]}"#))                  // missing generation
+        XCTAssertNil(PtyPayloadDecoder.decode(#"{"generation":1}"#))                 // missing bytes
     }
 
     func testReturnsNilOnEmptyString() {

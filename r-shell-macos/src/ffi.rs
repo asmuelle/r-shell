@@ -91,10 +91,17 @@ fn start_event_listener(callback: Box<dyn FfiEventCallback>) {
                 Ok(core_event) => {
                     use r_shell_core::event_bus::{ConnectionStatus, CoreEvent};
                     let (ty, connection_id, payload) = match core_event {
-                        CoreEvent::PtyOutput { connection_id, data } => (
+                        CoreEvent::PtyOutput { connection_id, generation, data } => (
                             "pty_output".into(),
                             connection_id,
-                            serde_json::to_string(&data).unwrap_or_default(),
+                            // `{"generation": N, "bytes": [...]}` so the
+                            // consumer can drop stale frames whose
+                            // generation no longer matches the active
+                            // session. Bare-array payloads are gone.
+                            serde_json::json!({
+                                "generation": generation,
+                                "bytes": data,
+                            }).to_string(),
                         ),
                         CoreEvent::ConnectionStatus { connection_id, status } => {
                             let status_str = match status {
@@ -319,7 +326,7 @@ pub fn rshell_pty_start(connection_id: String, cols: u32, rows: u32) -> FfiResul
 
     match result {
         Ok(generation) => {
-            spawn_pty_output_forwarder(connection_id.clone(), bridge);
+            spawn_pty_output_forwarder(connection_id.clone(), generation, bridge);
             FfiResult {
                 success: true,
                 error: None,
@@ -335,11 +342,17 @@ pub fn rshell_pty_start(connection_id: String, cols: u32, rows: u32) -> FfiResul
 }
 
 /// Drain the active PTY's `output_rx` and publish each chunk on the event
-/// bus. Captures the `Arc<PtySession>` once so a subsequent restart of the
-/// PTY for the same `connection_id` doesn't redirect this loop to the new
-/// session's receiver — when the captured session is cancelled or its
-/// channel closes, the loop exits.
-fn spawn_pty_output_forwarder(connection_id: String, bridge: &MacOsBridge) {
+/// bus, tagged with `generation`. Captures the `Arc<PtySession>` once so
+/// a subsequent restart of the PTY for the same `connection_id` doesn't
+/// redirect this loop to the new session's receiver — when the captured
+/// session is cancelled or its channel closes, the loop exits.
+///
+/// Stamping every published event with `generation` lets the consumer
+/// drop frames from an old PTY session that's tearing down: the new
+/// session has a higher generation counter, the consumer remembers it,
+/// and any straggler events from before the swap are recognisable as
+/// stale.
+fn spawn_pty_output_forwarder(connection_id: String, generation: u64, bridge: &MacOsBridge) {
     let cm = bridge.connection_manager.clone();
     bridge.runtime.spawn(async move {
         let pty = match cm.get_pty_session(&connection_id).await {
@@ -381,6 +394,7 @@ fn spawn_pty_output_forwarder(connection_id: String, bridge: &MacOsBridge) {
                             // back-pressure the SSH reader.
                             let _ = tx.send(r_shell_core::event_bus::CoreEvent::PtyOutput {
                                 connection_id: connection_id.clone(),
+                                generation,
                                 data,
                             });
                         }

@@ -24,11 +24,13 @@ final class TerminalSessionManager {
 
     private var sessions: [String: Session] = [:]
 
-    /// Event payloads that arrived before the matching `TerminalView` ran
+    /// Event frames that arrived before the matching `TerminalView` ran
     /// `registerSession`. Drained into the buffer manager when registration
     /// completes. Capped to avoid unbounded growth if the user dismisses
     /// the connect flow without ever materialising the terminal view.
-    private var pendingPayloads: [String: [Data]] = [:]
+    /// We keep the typed frame (generation + data) so replay still gets
+    /// the generation check applied.
+    private var pendingPayloads: [String: [PtyOutputFrame]] = [:]
     private static let maxPendingBytesPerConnection = 1 << 20  // 1 MiB
 
     private init() {}
@@ -45,14 +47,21 @@ final class TerminalSessionManager {
         sessions[connectionId] = session
         logger.info("Terminal session registered: \(connectionId, privacy: .public) gen=\(generation)")
 
-        // Drain any payloads that arrived during the gap between
+        // Drain any frames that arrived during the gap between
         // `rshell_pty_start` returning and SwiftUI materialising the
         // TerminalView. Without this, the shell prompt / vim opening
-        // screen / etc. is silently lost.
+        // screen / etc. is silently lost. Skip frames whose generation
+        // doesn't match — pre-registration buffering can outlive a
+        // PTY restart in pathological flows.
         if let pending = pendingPayloads.removeValue(forKey: connectionId), !pending.isEmpty {
-            logger.info("Replaying \(pending.count) buffered chunks for \(connectionId, privacy: .public)")
-            for data in pending {
-                bufferManager.append(data)
+            let live = pending.filter { $0.generation == generation }
+            if live.count != pending.count {
+                logger.info("Replaying \(live.count) of \(pending.count) buffered frames for \(connectionId, privacy: .public) (rest stale)")
+            } else {
+                logger.info("Replaying \(live.count) buffered frames for \(connectionId, privacy: .public)")
+            }
+            for frame in live {
+                bufferManager.append(frame.data)
             }
         }
     }
@@ -89,22 +98,31 @@ final class TerminalSessionManager {
     func dispatch(connectionId: String, type: String, payload: String) {
         guard type == "pty_output" else { return }
 
-        guard let data = PtyPayloadDecoder.decode(payload) else {
+        guard let frame = PtyPayloadDecoder.decode(payload) else {
             logger.error("Failed to decode pty_output payload (\(payload.prefix(60), privacy: .public)…)")
             return
         }
 
         if let session = sessions[connectionId] {
             guard !session.isPaused else { return }
-            session.bufferManager.append(data)
+            // Drop frames from a previous PTY session for this connection.
+            // Equal generation = current session; lower = leftover from
+            // before the most recent rshell_pty_start.
+            guard frame.generation == session.ptyGeneration else {
+                logger.debug("Dropping stale PTY frame for \(connectionId, privacy: .public): gen \(frame.generation) vs current \(session.ptyGeneration)")
+                return
+            }
+            session.bufferManager.append(frame.data)
         } else {
             // Race: PTY started before the SwiftUI view registered the
             // session. Buffer until registration. Bound the buffer so a
-            // forgotten connection can't grow without limit.
+            // forgotten connection can't grow without limit. We buffer
+            // the frame as a whole (not just bytes) so registerSession
+            // can apply its own generation check on replay.
             var queue = pendingPayloads[connectionId] ?? []
-            let pendingBytes = queue.reduce(0) { $0 + $1.count }
-            if pendingBytes + data.count <= Self.maxPendingBytesPerConnection {
-                queue.append(data)
+            let pendingBytes = queue.reduce(0) { $0 + $1.data.count }
+            if pendingBytes + frame.data.count <= Self.maxPendingBytesPerConnection {
+                queue.append(frame)
                 pendingPayloads[connectionId] = queue
             } else {
                 logger.warning("pendingPayloads cap reached for \(connectionId, privacy: .public); dropping early output")

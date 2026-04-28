@@ -29,8 +29,16 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
     /// PTY output data for a connection.
+    ///
+    /// `generation` is the PTY-session counter the publisher captured at
+    /// `start_pty_connection` time. Consumers (Swift native, future
+    /// CLI harness) compare it against the latest generation they've
+    /// seen to discard frames from a PTY session that has since been
+    /// torn down and replaced — without it, the brief tail of in-flight
+    /// output from an old session can spill into a new one.
     PtyOutput {
         connection_id: String,
+        generation: u64,
         data: Vec<u8>,
     },
     /// A connection's status changed.
@@ -120,6 +128,7 @@ mod tests {
 
         tx.send(CoreEvent::PtyOutput {
             connection_id: "c1".into(),
+            generation: 1,
             data: vec![1, 2, 3],
         })
         .ok();

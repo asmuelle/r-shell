@@ -7,6 +7,11 @@ struct TabBarView: View {
     @Binding var activeTabId: UUID?
     var onClose: (WorkspaceTab) -> Void
     var onNewTab: () -> Void
+    /// Tab right-click → "Theme" submenu. `nil` means "use global".
+    var onSetTheme: ((WorkspaceTab, String?) -> Void)? = nil
+    /// Currently applied per-tab override, by tab id. Used to put a check
+    /// mark next to the active selection in the context menu.
+    var themeOverrides: [UUID: String] = [:]
 
     var body: some View {
         HStack(spacing: 0) {
@@ -16,8 +21,12 @@ struct TabBarView: View {
                         TabItemView(
                             tab: tab,
                             isActive: tab.id == activeTabId,
+                            currentThemeOverride: themeOverrides[tab.id],
                             onSelect: { activeTabId = tab.id },
-                            onClose: { onClose(tab) }
+                            onClose: { onClose(tab) },
+                            onSetTheme: onSetTheme.map { setter in
+                                { themeId in setter(tab, themeId) }
+                            }
                         )
                     }
 
@@ -46,8 +55,10 @@ struct TabBarView: View {
 struct TabItemView: View {
     let tab: WorkspaceTab
     let isActive: Bool
+    var currentThemeOverride: String? = nil
     let onSelect: () -> Void
     let onClose: () -> Void
+    var onSetTheme: ((String?) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 4) {
@@ -68,5 +79,31 @@ struct TabItemView: View {
         .background(isActive ? Color(NSColor.selectedContentBackgroundColor).opacity(0.15) : Color.clear)
         .cornerRadius(4)
         .onTapGesture(perform: onSelect)
+        .contextMenu {
+            if let onSetTheme {
+                Menu("Theme") {
+                    Button {
+                        onSetTheme(nil)
+                    } label: {
+                        Label(
+                            "Use global",
+                            systemImage: currentThemeOverride == nil ? "checkmark" : ""
+                        )
+                    }
+                    Divider()
+                    ForEach(TerminalTheme.all) { theme in
+                        Button {
+                            onSetTheme(theme.id)
+                        } label: {
+                            Label(
+                                theme.label,
+                                systemImage: currentThemeOverride == theme.id ? "checkmark" : ""
+                            )
+                        }
+                    }
+                }
+            }
+            Button("Close Tab", action: onClose)
+        }
     }
 }

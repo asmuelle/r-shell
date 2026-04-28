@@ -142,16 +142,23 @@ mac-run:
     @test -d {{mac_app}} || (echo "❌ {{mac_app}} not found — run 'just mac-build' first"; exit 1)
     open {{mac_app}}
 
-# xcodebuild test — runs RShellMacOSTests against the framework scheme.
-# The app scheme (RShellApp) doesn't include a test action because the
-# uniffi-generated FFI surface lives in the app target and would only be
-# exercisable from a host-process integration test.
+# xcodebuild test — runs both the framework scheme (pure-Swift unit
+# tests over RShellMacOS models + helpers) and the app scheme (FFI
+# integration tests that exercise the uniffi bindings inside the app's
+# process).
 mac-test:
     @just _ensure-xcodeproj
     xcodebuild test \
         -project {{xcode_proj}} \
         -scheme RShellMacOS \
         -destination 'platform=macOS'
+    xcodebuild test \
+        -project {{xcode_proj}} \
+        -scheme RShellApp \
+        -destination 'platform=macOS' \
+        CODE_SIGN_IDENTITY="-" \
+        CODE_SIGNING_REQUIRED=YES \
+        CODE_SIGNING_ALLOWED=YES
 
 # Verify the .app's signature & Gatekeeper status.
 mac-verify:

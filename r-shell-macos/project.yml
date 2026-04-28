@@ -75,6 +75,10 @@ targets:
         INFOPLIST_FILE: RShellApp/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos
         PRODUCT_NAME: "R-Shell"
+        # Auto-derived module name would be "R_Shell" (dash → underscore).
+        # Force a clean identifier so the test bundle's `@testable import
+        # RShellApp` resolves.
+        PRODUCT_MODULE_NAME: RShellApp
         CODE_SIGN_ENTITLEMENTS: RShellApp/RShell.entitlements
         ENABLE_HARDENED_RUNTIME: true
         # Hardened runtime exceptions needed for the Rust bridge
@@ -108,6 +112,9 @@ targets:
         basedOnDependencyAnalysis: false
         inputFiles: []
         outputFiles: []
+    scheme:
+      testTargets:
+        - RShellAppTests
 
   RShellMacOS:
     type: framework
@@ -140,3 +147,29 @@ targets:
         PRODUCT_NAME: RShellMacOSTests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: ""
+
+  # FFI integration tests — runs inside the app's process so the linked
+  # Rust static library is reachable. Covers the uniffi-generated surface
+  # (rshellInit, rshellConnect, rshellKeychain*) which the framework's
+  # test bundle can't see.
+  RShellAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/RShellAppTests
+        type: group
+    dependencies:
+      - target: RShellApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos.app-tests
+        PRODUCT_NAME: RShellAppTests
+        GENERATE_INFOPLIST_FILE: YES
+        # The app's PRODUCT_NAME is "R-Shell" (with a dash) which doesn't
+        # match the target name, so xcodegen can't infer the right
+        # TEST_HOST path. Set both explicitly.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/R-Shell.app/Contents/MacOS/R-Shell
+        BUNDLE_LOADER: $(TEST_HOST)
+        # The test bundle re-compiles the bindings transitively when it
+        # @testable-imports RShellApp; needs the same module-map path.
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/bindings

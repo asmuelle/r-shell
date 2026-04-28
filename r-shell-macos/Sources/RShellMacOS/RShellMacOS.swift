@@ -26,19 +26,36 @@ import Foundation
 /// Logger subsystem identifier used across the app.
 public let RShellLogSubsystem = "com.r-shell"
 
-/// Decodes a `pty_output` event-bus payload — a JSON-array string of byte
-/// values like `"[72,101,108,108,111]"` — into a `Data` for terminal feed.
+/// Decoded contents of a `pty_output` event-bus payload.
+public struct PtyOutputFrame: Equatable, Sendable {
+    public let generation: UInt64
+    public let data: Data
+}
+
+/// Decodes a `pty_output` event-bus payload of the form
+/// `{"generation": N, "bytes": [...]}` into a typed frame.
 ///
-/// Lives in the framework so it can be exercised by unit tests without
-/// linking the FFI surface. `TerminalSessionManager.dispatch` calls this
-/// on every PTY output frame; if it returns nil, the frame is dropped
-/// (caller logs the malformed payload).
+/// `generation` is the PTY session counter from `rshell_pty_start` and
+/// lets the consumer drop frames whose generation doesn't match the
+/// currently registered session — needed because the forwarder task on
+/// the Rust side can briefly continue draining an old session's
+/// `output_rx` after a new session has been started for the same
+/// connection id.
+///
+/// Returns nil on malformed JSON, missing fields, or out-of-range byte
+/// values. The caller logs and drops in that case.
 public enum PtyPayloadDecoder {
-    public static func decode(_ payload: String) -> Data? {
-        guard let utf8 = payload.data(using: .utf8),
-              let bytes = try? JSONDecoder().decode([UInt8].self, from: utf8) else {
+    public static func decode(_ payload: String) -> PtyOutputFrame? {
+        guard let utf8 = payload.data(using: .utf8) else { return nil }
+
+        struct Wire: Decodable {
+            let generation: UInt64
+            let bytes: [UInt8]
+        }
+
+        guard let wire = try? JSONDecoder().decode(Wire.self, from: utf8) else {
             return nil
         }
-        return Data(bytes)
+        return PtyOutputFrame(generation: wire.generation, data: Data(wire.bytes))
     }
 }

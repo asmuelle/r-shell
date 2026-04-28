@@ -28,6 +28,11 @@ import SwiftUI
 struct TerminalView: NSViewRepresentable {
     let connectionId: String
     let ptyGeneration: UInt64
+    /// Per-tab theme override. When non-nil, takes precedence over the
+    /// global `@AppStorage("terminalTheme")`. SwiftUI re-runs
+    /// `updateNSView` when this changes, so toggling per-tab via the
+    /// tab context menu applies live without rebuilding the view.
+    var themeOverride: String?
     @Binding var terminalTitle: String
     @Binding var searchVisible: Bool
     var onSearchQueryChanged: ((String) -> Void)?
@@ -36,9 +41,11 @@ struct TerminalView: NSViewRepresentable {
 
     /// Live-updated from SettingsView. SwiftUI re-runs `updateNSView` whenever
     /// these change, so editing the Settings tab applies immediately to every
-    /// open terminal.
-    @AppStorage("terminalTheme") private var terminalTheme = "system"
+    /// open terminal whose tab doesn't have a `themeOverride`.
+    @AppStorage("terminalTheme") private var globalTheme = "system"
     @AppStorage("fontSize") private var fontSize = 12.0
+
+    private var effectiveTheme: String { themeOverride ?? globalTheme }
 
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
         let term = SwiftTerm.TerminalView()
@@ -90,7 +97,7 @@ struct TerminalView: NSViewRepresentable {
     // MARK: - Theme & font
 
     private func applyTheme(to term: SwiftTerm.TerminalView) {
-        TerminalTheme.resolve(terminalTheme).apply(to: term)
+        TerminalTheme.resolve(effectiveTheme).apply(to: term)
     }
 
     private func applyFont(to term: SwiftTerm.TerminalView) {

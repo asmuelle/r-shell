@@ -208,6 +208,14 @@ final class TerminalTabsStore: ObservableObject {
         activeTabId = tabId
     }
 
+    /// Set or clear the per-tab theme override. `nil` falls back to the
+    /// global `@AppStorage("terminalTheme")`. Triggers SwiftUI to re-run
+    /// `TerminalView.updateNSView` for the tab, applying immediately.
+    func setTheme(_ themeId: String?, forTabId tabId: UUID) {
+        guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        tabs[idx].themeOverride = themeId
+    }
+
     var activeTab: TerminalTab? {
         guard let activeTabId else { return nil }
         return tabs.first { $0.id == activeTabId }

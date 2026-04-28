@@ -170,10 +170,35 @@ final class BridgeManager {
     }
 
     /// Send keyboard input to a running PTY.
+    ///
+    /// Coalesced through a per-connection batcher so a paste of N bytes
+    /// produces one FFI call (or a handful) instead of one per byte.
+    /// Single keystrokes still flush within ~16 ms so latency is
+    /// imperceptible.
     func sendInput(connectionId: String, data: Data) {
-        dispatchQueue.async {
-            _ = rshellPtyWrite(connectionId: connectionId, data: data)
+        dispatchQueue.async { [weak self] in
+            guard let self else { return }
+            self.writeBatcher(for: connectionId).append(data)
         }
+    }
+
+    /// Flush any pending writes for a connection (used on close so we
+    /// don't lose the trailing bytes of a final command).
+    func flushPendingInput(connectionId: String) {
+        dispatchQueue.async { [weak self] in
+            self?.writeBatchers.removeValue(forKey: connectionId)?.flushNow()
+        }
+    }
+
+    // MARK: - Write batching
+
+    private var writeBatchers: [String: WriteBatcher] = [:]
+
+    private func writeBatcher(for connectionId: String) -> WriteBatcher {
+        if let existing = writeBatchers[connectionId] { return existing }
+        let new = WriteBatcher(connectionId: connectionId, queue: dispatchQueue)
+        writeBatchers[connectionId] = new
+        return new
     }
 
     /// Resize a running PTY. Currently called only from explicit resize
@@ -189,7 +214,11 @@ final class BridgeManager {
     }
 
     func closeTerminal(connectionId: String, generation: UInt64) {
-        dispatchQueue.async {
+        dispatchQueue.async { [weak self] in
+            // Flush any pending input before tearing down — bytes typed
+            // within the 16 ms batching window before Cmd+W would
+            // otherwise be lost.
+            self?.writeBatchers.removeValue(forKey: connectionId)?.flushNow()
             _ = rshellPtyClose(connectionId: connectionId, expectedGeneration: generation)
         }
     }
