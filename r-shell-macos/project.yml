@@ -122,6 +122,9 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         DEFINES_MODULE: YES
         SKIP_INSTALL: YES
+    scheme:
+      testTargets:
+        - RShellMacOSTests
 
   RShellMacOSTests:
     type: bundle.unit-test

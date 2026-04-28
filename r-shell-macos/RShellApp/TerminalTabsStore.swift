@@ -29,13 +29,14 @@ final class TerminalTabsStore: ObservableObject {
     /// path internally:
     ///
     /// - Password profiles: load from Keychain, prompt if absent, persist
-    ///   on first successful entry so the next connect is silent.
-    /// - Public-key profiles: load any saved passphrase from Keychain. If
-    ///   the connect fails (e.g., the key was passphrase-protected and
-    ///   we had nothing stored), prompt and retry once.
+    ///   on first successful entry. On auth-failure with a stored password,
+    ///   evict the Keychain entry, prompt, and retry once.
+    /// - Public-key profiles: load any saved passphrase from Keychain. On
+    ///   connect failure with no passphrase, prompt and retry once.
     ///
-    /// `password`/`passphrase` overrides exist for tests and special-cased
-    /// callers; production UI just passes the profile.
+    /// `password`/`passphrase` overrides exist for tests and the auto-retry
+    /// recursion; passing them short-circuits Keychain lookup, so the retry
+    /// path can't recurse forever.
     func openConnection(
         _ profile: ConnectionProfile,
         password: String? = nil,
@@ -52,8 +53,12 @@ final class TerminalTabsStore: ObservableObject {
         let account = profile.keychainAccount
 
         // Resolve credentials from Keychain or interactive prompt.
+        // `usedStoredPassword` distinguishes "loaded from Keychain" from
+        // "freshly prompted / caller-provided" so we know whether to evict
+        // on auth failure.
         let resolvedPassword: String?
         let resolvedPassphrase: String?
+        var usedStoredPassword = false
 
         switch profile.authMethod {
         case .password:
@@ -64,6 +69,7 @@ final class TerminalTabsStore: ObservableObject {
                 account: account
             ) {
                 resolvedPassword = stored
+                usedStoredPassword = true
             } else {
                 resolvedPassword = KeychainManager.shared.promptPassword(
                     account: account,
@@ -102,7 +108,7 @@ final class TerminalTabsStore: ObservableObject {
             if profile.authMethod == .password,
                let used = resolvedPassword,
                password == nil,
-               KeychainManager.shared.loadPassword(kind: .sshPassword, account: account) == nil {
+               !usedStoredPassword {
                 KeychainManager.shared.savePassword(
                     kind: .sshPassword,
                     account: account,
@@ -111,11 +117,34 @@ final class TerminalTabsStore: ObservableObject {
             }
 
         case .failure(let error):
-            // If the failure looks like a missing key passphrase and we
-            // didn't have one, prompt and retry once. Heuristic-based on
-            // the error message — r-shell-core surfaces SSH errors as
-            // strings, so we match on the substring. Crude but effective
-            // until the FFI grows typed errors (Sprint 8).
+            let msg = error.localizedDescription
+
+            // Auth failure with a stale stored password: evict and re-prompt.
+            // We match the substring "authentication failed" — every error
+            // path in r-shell-core's SSH client (`Password authentication
+            // failed`, `Public key authentication failed`, `Authentication
+            // failed for ...`) contains it case-insensitively.
+            if profile.authMethod == .password,
+               usedStoredPassword,
+               Self.looksLikeAuthFailure(msg)
+            {
+                logger.info("Evicting stale Keychain entry for \(account, privacy: .public) and re-prompting")
+                KeychainManager.shared.deletePassword(kind: .sshPassword, account: account)
+                if let fresh = KeychainManager.shared.promptPassword(
+                    account: account,
+                    message: "The stored password for \(account) was rejected. Enter a new password."
+                ) {
+                    await openConnection(profile, password: fresh, passphrase: nil)
+                    return
+                }
+                lastError = msg
+                logger.error("Connect failed: \(msg, privacy: .public)")
+                return
+            }
+
+            // Public-key failure with no passphrase available: prompt and
+            // retry once. Same crude substring check until typed FFI errors
+            // arrive (Sprint 8).
             if profile.authMethod == .publicKey,
                resolvedPassphrase == nil,
                passphrase == nil,
@@ -134,8 +163,9 @@ final class TerminalTabsStore: ObservableObject {
                 }
                 return
             }
-            lastError = error.localizedDescription
-            logger.error("Connect failed: \(error.localizedDescription, privacy: .public)")
+
+            lastError = msg
+            logger.error("Connect failed: \(msg, privacy: .public)")
             return
         }
 
@@ -189,5 +219,14 @@ final class TerminalTabsStore: ObservableObject {
     var activeTab: TerminalTab? {
         guard let activeTabId else { return nil }
         return tabs.first { $0.id == activeTabId }
+    }
+
+    /// Heuristic match for SSH auth failures from r-shell-core. Every
+    /// failing-auth path there bottoms out in an `anyhow!("...
+    /// authentication failed ...")`, so a single case-insensitive
+    /// substring check covers them. Replace with typed FFI errors when
+    /// the FFI grows them in Sprint 8.
+    private static func looksLikeAuthFailure(_ message: String) -> Bool {
+        message.range(of: "authentication failed", options: .caseInsensitive) != nil
     }
 }

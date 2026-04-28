@@ -6,7 +6,7 @@ struct SettingsView: View {
     @AppStorage("defaultColumns") private var defaultColumns = 80
     @AppStorage("defaultRows") private var defaultRows = 24
     @AppStorage("fontSize") private var fontSize = 12.0
-    @AppStorage("theme") private var theme = "system"
+    @AppStorage("terminalTheme") private var terminalTheme = "system"
 
     @StateObject private var connectionStore = ConnectionStoreManager.shared
     @State private var selectedConnections = Set<String>()
@@ -68,13 +68,19 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Theme") {
-                Picker("Appearance", selection: $theme) {
-                    Text("System").tag("system")
+            Section {
+                Picker("Theme", selection: $terminalTheme) {
+                    Text("Follow system").tag("system")
                     Text("Light").tag("light")
                     Text("Dark").tag("dark")
                 }
                 .pickerStyle(.radioGroup)
+            } header: {
+                Text("Terminal colours")
+            } footer: {
+                Text("Background / foreground / caret. Named ANSI palettes (Solarized, Dracula, Nord) come in a later release.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

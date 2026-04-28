@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import RShellMacOS
 
 /// Manages all active terminal sessions. Routes events from the global
 /// Rust event-bus callback to the correct `PTYBufferManager` for each
@@ -88,12 +89,10 @@ final class TerminalSessionManager {
     func dispatch(connectionId: String, type: String, payload: String) {
         guard type == "pty_output" else { return }
 
-        guard let payloadData = payload.data(using: .utf8),
-              let bytes = try? JSONDecoder().decode([UInt8].self, from: payloadData) else {
+        guard let data = PtyPayloadDecoder.decode(payload) else {
             logger.error("Failed to decode pty_output payload (\(payload.prefix(60), privacy: .public)…)")
             return
         }
-        let data = Data(bytes)
 
         if let session = sessions[connectionId] {
             guard !session.isPaused else { return }

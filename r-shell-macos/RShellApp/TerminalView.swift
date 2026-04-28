@@ -34,20 +34,22 @@ struct TerminalView: NSViewRepresentable {
     var onSearchNext: (() -> Void)?
     var onSearchPrevious: (() -> Void)?
 
+    /// Live-updated from SettingsView. SwiftUI re-runs `updateNSView` whenever
+    /// these change, so editing the Settings tab applies immediately to every
+    /// open terminal.
+    @AppStorage("terminalTheme") private var terminalTheme = "system"
+    @AppStorage("fontSize") private var fontSize = 12.0
+
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
         let term = SwiftTerm.TerminalView()
 
-        // Sensible defaults. Sprint 8 will expose these via Settings.
         term.terminal?.changeScrollback(10_000)
         term.terminal?.setCursorStyle(.blinkBlock)
         term.allowMouseReporting = true
         term.optionAsMetaKey = true
 
-        // Match the system colour scheme — SwiftTerm's defaults are tuned
-        // for light backgrounds, so the contrast on Dark Mode is poor.
-        term.nativeBackgroundColor = NSColor.textBackgroundColor
-        term.nativeForegroundColor = NSColor.textColor
-        term.caretColor = NSColor.textColor
+        applyTheme(to: term)
+        applyFont(to: term)
 
         // The coordinator owns the link to BridgeManager — wire its
         // weak terminalDelegate ref before we register the session, so
@@ -75,14 +77,50 @@ struct TerminalView: NSViewRepresentable {
     }
 
     func updateNSView(_ term: SwiftTerm.TerminalView, context: Context) {
-        // Resize is debounced per Sprint 8 — for now, only react to the
-        // initial layout.
-        guard term.frame.size != .zero else { return }
-        guard let terminal = term.terminal else { return }
-        let cols = terminal.cols
-        let rows = terminal.rows
-        guard cols > 0, rows > 0 else { return }
-        context.coordinator.scheduleResize(cols: cols, rows: rows)
+        // SwiftTerm.TerminalView.setFrameSize handles frame-driven re-grid
+        // internally — we don't need to call rshellPtyResize from here.
+        //
+        // The work this hook DOES need to do is re-apply settings whenever
+        // they change in @AppStorage, so theme/font edits propagate to
+        // already-open terminals immediately.
+        applyTheme(to: term)
+        applyFont(to: term)
+    }
+
+    // MARK: - Theme & font
+
+    private func applyTheme(to term: SwiftTerm.TerminalView) {
+        let (bg, fg) = themeColors()
+        term.nativeBackgroundColor = bg
+        term.nativeForegroundColor = fg
+        term.caretColor = fg
+    }
+
+    /// Background / foreground pair for the current `terminalTheme`. The
+    /// "system" option follows light/dark mode via dynamic system colors;
+    /// the explicit "light"/"dark" choices override that. Sprint 8 will
+    /// add named themes (Solarized / Dracula / Nord) via SwiftTerm's
+    /// `installColors` for the full ANSI palette.
+    private func themeColors() -> (NSColor, NSColor) {
+        switch terminalTheme {
+        case "light":
+            return (NSColor.white, NSColor.black)
+        case "dark":
+            return (NSColor(calibratedWhite: 0.07, alpha: 1),
+                    NSColor(calibratedWhite: 0.92, alpha: 1))
+        default:
+            return (NSColor.textBackgroundColor, NSColor.textColor)
+        }
+    }
+
+    private func applyFont(to term: SwiftTerm.TerminalView) {
+        let target = NSFont(name: "Menlo", size: CGFloat(fontSize))
+            ?? NSFont.monospacedSystemFont(ofSize: CGFloat(fontSize), weight: .regular)
+        // Skip the assignment when nothing changed — every set triggers
+        // SwiftTerm's full re-layout (cell-size recompute, redraw).
+        if term.font.pointSize != target.pointSize || term.font.fontName != target.fontName {
+            term.font = target
+        }
     }
 
     func makeCoordinator() -> Coordinator {

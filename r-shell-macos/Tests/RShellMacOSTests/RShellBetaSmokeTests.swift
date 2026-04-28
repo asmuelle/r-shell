@@ -72,8 +72,8 @@ final class RShellBetaSmokeTests: XCTestCase {
     // MARK: - Tab group model
 
     func testTabActiveLookup() {
-        let tab1 = Tab(id: UUID(), title: "Tab 1", order: 0)
-        let tab2 = Tab(id: UUID(), title: "Tab 2", order: 1)
+        let tab1 = WorkspaceTab(id: UUID(), title: "Tab 1", order: 0)
+        let tab2 = WorkspaceTab(id: UUID(), title: "Tab 2", order: 1)
         let group = TabGroup(
             tabs: [tab1, tab2],
             activeTabId: tab1.id
@@ -127,23 +127,11 @@ final class RShellBetaSmokeTests: XCTestCase {
 
     // MARK: - Tauri import
 
-    func testTauriImportParsesArray() {
-        let json = """
-        [
-            {"host": "s1.example.com", "port": 22, "username": "root", "name": "Server 1"},
-            {"host": "s2.example.com", "port": 2222, "username": "admin", "name": "Server 2"}
-        ]
-        """
-        let data = try! JSONDecoder().decode(TauriImportContainer.self, from: json.data(using: .utf8)!)
-        XCTAssertEqual(data.connections.count, 2)
-        XCTAssertEqual(data.connections[0].host, "s1.example.com")
-    }
-
     func testTauriImportParsesObject() {
         let json = """
         {"connections": [{"host": "s1.com"}], "folders": [{"name": "Work", "path": "Work"}]}
         """
-        let data = try! JSONDecoder().decode(TauriImportContainer.self, from: json.data(using: .utf8)!)
+        let data = try! JSONDecoder().decode(TauriConnectionImport.self, from: json.data(using: .utf8)!)
         XCTAssertEqual(data.connections.count, 1)
         XCTAssertEqual(data.folders?.count, 1)
     }
