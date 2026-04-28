@@ -29,6 +29,19 @@ struct FileBrowserView: View {
     @State private var error: String?
     @State private var loading = false
 
+    /// Sheet state for the New Folder / Rename text-input flows. Both
+    /// share the same model — the action is what differs.
+    @State private var inputSheet: InputSheet?
+
+    private struct InputSheet: Identifiable {
+        let id = UUID()
+        let title: String
+        let prompt: String
+        let initialValue: String
+        let confirmLabel: String
+        let action: (String) -> Void
+    }
+
     private let logger = Logger(subsystem: "com.r-shell", category: "file-browser")
 
     var body: some View {
@@ -47,6 +60,19 @@ struct FileBrowserView: View {
             refresh()
         }
         .onAppear { refresh() }
+        .sheet(item: $inputSheet) { sheet in
+            FileBrowserInputSheet(
+                title: sheet.title,
+                prompt: sheet.prompt,
+                initialValue: sheet.initialValue,
+                confirmLabel: sheet.confirmLabel,
+                onConfirm: { value in
+                    inputSheet = nil
+                    sheet.action(value)
+                },
+                onCancel: { inputSheet = nil }
+            )
+        }
     }
 
     // MARK: - Header (title + breadcrumb)
@@ -59,6 +85,16 @@ struct FileBrowserView: View {
                 Text(connectionLabel)
                     .font(.headline)
                 Spacer()
+                Button {
+                    presentNewFolderPrompt()
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(connectionId == nil)
+                .help("Create a folder in the current directory")
+
                 Button {
                     presentUploadPicker()
                 } label: {
@@ -165,7 +201,9 @@ struct FileBrowserView: View {
                             },
                             onDownload: entry.kind == .file
                                 ? { presentDownloadPicker(for: entry) }
-                                : nil
+                                : nil,
+                            onRename: { presentRenamePrompt(for: entry) },
+                            onDelete: { presentDeleteConfirmation(for: entry) }
                         )
                     }
                 }
@@ -262,6 +300,96 @@ struct FileBrowserView: View {
         return path.hasSuffix("/") ? path + name : path + "/" + name
     }
 
+    // MARK: - mkdir / rename / delete
+
+    private func presentNewFolderPrompt() {
+        guard let connectionId else { return }
+        inputSheet = InputSheet(
+            title: "New Folder",
+            prompt: "Folder name",
+            initialValue: "untitled folder",
+            confirmLabel: "Create"
+        ) { name in
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.contains("/") else { return }
+            let target = absolutePath(joining: trimmed)
+            performSftp(action: "create folder") {
+                try rshellSftpCreateDir(connectionId: connectionId, path: target)
+            }
+        }
+    }
+
+    private func presentRenamePrompt(for entry: FfiFileEntry) {
+        guard let connectionId else { return }
+        inputSheet = InputSheet(
+            title: "Rename",
+            prompt: "New name",
+            initialValue: entry.name,
+            confirmLabel: "Rename"
+        ) { newName in
+            let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.contains("/"), trimmed != entry.name else { return }
+            let oldPath = absolutePath(joining: entry.name)
+            let newPath = absolutePath(joining: trimmed)
+            performSftp(action: "rename") {
+                try rshellSftpRename(
+                    connectionId: connectionId,
+                    oldPath: oldPath,
+                    newPath: newPath
+                )
+            }
+        }
+    }
+
+    private func presentDeleteConfirmation(for entry: FfiFileEntry) {
+        guard let connectionId else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete \"\(entry.name)\"?"
+        alert.informativeText = entry.kind == .directory
+            ? "Directories must be empty. The deletion is permanent and cannot be undone."
+            : "This is permanent and cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let target = absolutePath(joining: entry.name)
+        performSftp(action: "delete") {
+            switch entry.kind {
+            case .directory:
+                try rshellSftpDeleteDir(connectionId: connectionId, path: target)
+            case .file, .symlink:
+                try rshellSftpDeleteFile(connectionId: connectionId, path: target)
+            }
+        }
+    }
+
+    /// Run an SFTP mutation off the main actor, refresh on success,
+    /// surface failures inline (rather than as a modal — every alert
+    /// for a failed delete in a loop would be hostile).
+    private func performSftp(action: String, _ work: @escaping () throws -> Void) {
+        Task.detached {
+            do {
+                try work()
+                await MainActor.run { self.refresh() }
+            } catch let err as SftpError {
+                await MainActor.run {
+                    switch err {
+                    case .NotConnected:
+                        self.error = "Not connected to this host."
+                    case .Other(let detail):
+                        self.error = "Could not \(action): \(detail)"
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = "Could not \(action): \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     private func navigateUp() {
         guard path != "." && path != "/" else { return }
         if let lastSlash = path.lastIndex(of: "/") {
@@ -326,6 +454,8 @@ private struct FileEntryRow: View {
     /// Non-nil only for plain files. Triggers an NSSavePanel-driven
     /// download via the row's context menu.
     let onDownload: (() -> Void)?
+    let onRename: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         Button(action: onActivate) {
@@ -356,7 +486,10 @@ private struct FileEntryRow: View {
         .contextMenu {
             if let onDownload {
                 Button("Download…", action: onDownload)
+                Divider()
             }
+            Button("Rename…", action: onRename)
+            Button("Delete", role: .destructive, action: onDelete)
         }
     }
 
@@ -378,5 +511,60 @@ private struct FileEntryRow: View {
 
     private func formatSize(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
+// MARK: - Text-input sheet (used for New Folder + Rename)
+
+private struct FileBrowserInputSheet: View {
+    let title: String
+    let prompt: String
+    let initialValue: String
+    let confirmLabel: String
+    let onConfirm: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var value: String = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(prompt)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($fieldFocused)
+                    .onSubmit { confirm() }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(confirmLabel, action: confirm)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmedValue.isEmpty || trimmedValue.contains("/"))
+            }
+        }
+        .padding(20)
+        .frame(width: 320)
+        .onAppear {
+            value = initialValue
+            fieldFocused = true
+        }
+    }
+
+    private var trimmedValue: String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func confirm() {
+        guard !trimmedValue.isEmpty, !trimmedValue.contains("/") else { return }
+        onConfirm(trimmedValue)
     }
 }

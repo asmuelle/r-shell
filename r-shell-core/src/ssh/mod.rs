@@ -971,6 +971,47 @@ impl SshClient {
 
         Ok(data.len() as u64)
     }
+
+    /// Create a directory on the remote. Fails if the parent doesn't
+    /// exist or the path is already taken.
+    pub async fn create_dir(&self, path: &str) -> Result<()> {
+        let sftp = self.sftp_session().await?;
+        sftp.create_dir(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create directory '{}': {}", path, e))?;
+        Ok(())
+    }
+
+    /// Rename a file or directory. SFTP RENAME is atomic when source
+    /// and destination are on the same filesystem; cross-filesystem
+    /// renames may copy-then-delete depending on the server.
+    pub async fn rename(&self, old_path: &str, new_path: &str) -> Result<()> {
+        let sftp = self.sftp_session().await?;
+        sftp.rename(old_path, new_path).await.map_err(|e| {
+            anyhow::anyhow!("Failed to rename '{}' to '{}': {}", old_path, new_path, e)
+        })?;
+        Ok(())
+    }
+
+    /// Delete a regular file. For directories, use `delete_dir`.
+    pub async fn delete_file(&self, path: &str) -> Result<()> {
+        let sftp = self.sftp_session().await?;
+        sftp.remove_file(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete file '{}': {}", path, e))?;
+        Ok(())
+    }
+
+    /// Delete an empty directory. SFTP requires the directory be empty;
+    /// recursive removal would need a list-then-delete loop, which
+    /// belongs at the caller layer (with progress reporting).
+    pub async fn delete_dir(&self, path: &str) -> Result<()> {
+        let sftp = self.sftp_session().await?;
+        sftp.remove_dir(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete directory '{}': {}", path, e))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

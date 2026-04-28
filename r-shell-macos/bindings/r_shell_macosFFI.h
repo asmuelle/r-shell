@@ -348,6 +348,21 @@ RustBuffer uniffi_r_shell_macos_fn_func_rshell_pty_write(RustBuffer connection_i
 void uniffi_r_shell_macos_fn_func_rshell_set_event_callback(uint64_t callback, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CREATE_DIR
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CREATE_DIR
+void uniffi_r_shell_macos_fn_func_rshell_sftp_create_dir(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DELETE_DIR
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DELETE_DIR
+void uniffi_r_shell_macos_fn_func_rshell_sftp_delete_dir(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DELETE_FILE
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DELETE_FILE
+void uniffi_r_shell_macos_fn_func_rshell_sftp_delete_file(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DOWNLOAD
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DOWNLOAD
 uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_download(RustBuffer connection_id, RustBuffer remote_path, RustBuffer local_path, uint64_t expected_size, RustCallStatus *_Nonnull out_status
@@ -356,6 +371,11 @@ uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_download(RustBuffer connection
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_LIST_DIR
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_LIST_DIR
 RustBuffer uniffi_r_shell_macos_fn_func_rshell_sftp_list_dir(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RENAME
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RENAME
+void uniffi_r_shell_macos_fn_func_rshell_sftp_rename(RustBuffer connection_id, RustBuffer old_path, RustBuffer new_path, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
@@ -733,6 +753,24 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_set_event_callback(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CREATE_DIR
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CREATE_DIR
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_create_dir(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DELETE_DIR
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DELETE_DIR
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_delete_dir(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DELETE_FILE
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DELETE_FILE
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_delete_file(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DOWNLOAD
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_DOWNLOAD
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_download(void
@@ -742,6 +780,12 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_download(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_LIST_DIR
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_LIST_DIR
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RENAME
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RENAME
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_rename(void
     
 );
 #endif

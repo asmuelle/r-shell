@@ -1662,6 +1662,38 @@ public func rshellSetEventCallback(callback: FfiEventCallback) {try! rustCall() 
 }
 }
 /**
+ * Create a directory on the remote. Fails if the parent doesn't
+ * exist or the name is already taken.
+ */
+public func rshellSftpCreateDir(connectionId: String, path: String)throws  {try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_create_dir(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),$0
+    )
+}
+}
+/**
+ * Delete an empty directory. Recursive removal is the UI's
+ * responsibility — list_dir + per-entry delete in a loop with progress.
+ */
+public func rshellSftpDeleteDir(connectionId: String, path: String)throws  {try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_delete_dir(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),$0
+    )
+}
+}
+/**
+ * Delete a regular file. For directories, use `rshell_sftp_delete_dir`.
+ */
+public func rshellSftpDeleteFile(connectionId: String, path: String)throws  {try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_delete_file(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),$0
+    )
+}
+}
+/**
  * Stream a remote file to a local path. Returns the byte count on
  * success. Publishes `TransferProgress` events on every SFTP chunk so
  * the UI can drive a progress bar — the consumer (Swift
@@ -1686,6 +1718,17 @@ public func rshellSftpListDir(connectionId: String, path: String)throws  -> [Ffi
         FfiConverterString.lower(path),$0
     )
 })
+}
+/**
+ * Rename or move a file or directory.
+ */
+public func rshellSftpRename(connectionId: String, oldPath: String, newPath: String)throws  {try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_rename(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(oldPath),
+        FfiConverterString.lower(newPath),$0
+    )
+}
 }
 /**
  * Stream a local file to a remote path. See `rshell_sftp_download` for
@@ -1762,10 +1805,22 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_set_event_callback() != 25155) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_create_dir() != 42046) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_delete_dir() != 56750) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_delete_file() != 46597) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_download() != 19143) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir() != 57015) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_rename() != 3589) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_upload() != 50008) {

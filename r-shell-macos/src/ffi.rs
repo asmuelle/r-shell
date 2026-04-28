@@ -671,6 +671,92 @@ pub fn rshell_sftp_upload(
     })
 }
 
+/// Create a directory on the remote. Fails if the parent doesn't
+/// exist or the name is already taken.
+#[uniffi::export]
+pub fn rshell_sftp_create_dir(connection_id: String, path: String) -> Result<(), SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        guard
+            .create_dir(&path)
+            .await
+            .map_err(|e| SftpError::Other { detail: e.to_string() })
+    })
+}
+
+/// Rename or move a file or directory.
+#[uniffi::export]
+pub fn rshell_sftp_rename(
+    connection_id: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        guard
+            .rename(&old_path, &new_path)
+            .await
+            .map_err(|e| SftpError::Other { detail: e.to_string() })
+    })
+}
+
+/// Delete a regular file. For directories, use `rshell_sftp_delete_dir`.
+#[uniffi::export]
+pub fn rshell_sftp_delete_file(connection_id: String, path: String) -> Result<(), SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        guard
+            .delete_file(&path)
+            .await
+            .map_err(|e| SftpError::Other { detail: e.to_string() })
+    })
+}
+
+/// Delete an empty directory. Recursive removal is the UI's
+/// responsibility — list_dir + per-entry delete in a loop with progress.
+#[uniffi::export]
+pub fn rshell_sftp_delete_dir(connection_id: String, path: String) -> Result<(), SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        guard
+            .delete_dir(&path)
+            .await
+            .map_err(|e| SftpError::Other { detail: e.to_string() })
+    })
+}
+
 #[uniffi::export]
 pub fn rshell_sftp_list_dir(
     connection_id: String,
