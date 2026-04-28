@@ -32,6 +32,19 @@ struct FileBrowserView: View {
     /// subtle accent-tinted overlay so the drop target is obvious.
     @State private var isDropTargeted = false
 
+    /// Selected row ids (each row's `id` is its file name, unique
+    /// within the directory). `Set` so the user can shift-/cmd-click
+    /// multiple rows; the selection-aware context menu picks the
+    /// single-vs-multi shape based on count.
+    @State private var selection: Set<String> = []
+
+    /// Column sort order. `kindOrder` first keeps directories grouped
+    /// at the top regardless of the active sort key; the user-chosen
+    /// column comes second. Tapping a column header rebinds the lead.
+    @State private var sortOrder: [KeyPathComparator<FileRow>] = [
+        KeyPathComparator(\.name)
+    ]
+
     /// Sheet state for the New Folder / Rename text-input flows. Both
     /// share the same model — the action is what differs.
     @State private var inputSheet: InputSheet?
@@ -125,9 +138,25 @@ struct FileBrowserView: View {
     }
 
     private var breadcrumb: some View {
-        // Render the path as clickable segments. The first segment is
-        // either `~` (when path is "." — the SFTP server's home) or `/`
-        // (when the user has navigated to an absolute path).
+        HStack(spacing: 6) {
+            Button {
+                navigateUp()
+            } label: {
+                Image(systemName: "arrow.turn.left.up")
+            }
+            .buttonStyle(.plain)
+            .disabled(path == "." || path == "/")
+            .help("Up one level")
+
+            // Render the path as clickable segments. The first segment is
+            // either `~` (when path is "." — the SFTP server's home) or `/`
+            // (when the user has navigated to an absolute path).
+            crumbSegments
+        }
+    }
+
+    @ViewBuilder
+    private var crumbSegments: some View {
         HStack(spacing: 4) {
             if path == "." {
                 Text("~")
@@ -184,51 +213,165 @@ struct FileBrowserView: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
-                    if path != "." && path != "/" {
-                        Button {
-                            navigateUp()
-                        } label: {
-                            Label("..", systemImage: "arrow.turn.left.up")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    ForEach(entries, id: \.name) { entry in
-                        FileEntryRow(
-                            entry: entry,
-                            onActivate: {
-                                if entry.kind == .directory {
-                                    navigate(into: entry.name)
-                                }
-                            },
-                            onDownload: entry.kind == .file
-                                ? { presentDownloadPicker(for: entry) }
-                                : nil,
-                            onRename: { presentRenamePrompt(for: entry) },
-                            onDelete: { presentDeleteConfirmation(for: entry) }
-                        )
-                    }
+                fileTable
+            }
+        }
+    }
+
+    /// SwiftUI `Table` with native column headers, click-to-sort, and
+    /// multi-row selection. Each row's id is its file name (unique per
+    /// directory). Double-click on a directory drills in; the
+    /// selection-aware `.contextMenu(forSelectionType:)` adapts to the
+    /// number of selected rows for batch actions.
+    private var fileTable: some View {
+        Table(sortedRows, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Name", value: \.name) { row in
+                HStack(spacing: 8) {
+                    Image(systemName: rowIcon(row.entry.kind))
+                        .foregroundStyle(rowIconTint(row.entry.kind))
+                        .frame(width: 16)
+                    Text(row.entry.name)
+                        .lineLimit(1)
                 }
-                .listStyle(.plain)
-                // Finder drag → upload. URLs come in as the user releases
-                // the drop; we filter to plain files (no directories yet
-                // — recursive upload is a future slice) and enqueue each.
-                .dropDestination(for: URL.self) { urls, _ in
-                    acceptDrop(urls: urls)
-                } isTargeted: { hovering in
-                    isDropTargeted = hovering
-                }
-                .overlay(alignment: .center) {
-                    if isDropTargeted {
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.accentColor, lineWidth: 2)
-                            .padding(8)
-                            .allowsHitTesting(false)
+                // Double-click → drill into a directory. Single-click is
+                // owned by Table for selection; we don't intercept it.
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    if row.entry.kind == .directory {
+                        navigate(into: row.entry.name)
                     }
                 }
             }
+
+            TableColumn("Size", value: \.size) { row in
+                Text(row.entry.kind == .directory ? "—" : formatSize(row.entry.size))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .width(min: 70, ideal: 90, max: 140)
+
+            TableColumn("Modified", value: \.modifiedSortKey) { row in
+                Text(row.entry.modified ?? "—")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .width(min: 110, ideal: 140, max: 200)
+
+            TableColumn("Permissions", value: \.permissions) { row in
+                Text(row.entry.permissions ?? "—")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            .width(min: 90, ideal: 110, max: 140)
         }
+        // Selection-aware context menu: shape adapts to single vs.
+        // multi-row selection. Right-click on an unselected row puts
+        // that row in `selectedIds` for the duration of the menu.
+        .contextMenu(forSelectionType: String.self) { selectedIds in
+            contextMenuContent(for: selectedIds)
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            acceptDrop(urls: urls)
+        } isTargeted: { hovering in
+            isDropTargeted = hovering
+        }
+        .overlay(alignment: .center) {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Row data wrapped from `FfiFileEntry` so it's `Identifiable +
+    /// Hashable + Comparable`-keyable for the Table. Keeps directories
+    /// grouped above files regardless of sort key by exposing
+    /// `kindOrder` as a tie-breaker.
+    fileprivate struct FileRow: Identifiable, Hashable {
+        let entry: FfiFileEntry
+        var id: String { entry.name }
+        var name: String { entry.name }
+        var size: UInt64 { entry.size }
+        var permissions: String { entry.permissions ?? "" }
+        /// The Rust side ships an already-formatted timestamp string;
+        /// it sorts lexically the same as numerically for the format
+        /// we use, so the raw string is fine as a sort key.
+        var modifiedSortKey: String { entry.modified ?? "" }
+        var kindOrder: Int {
+            switch entry.kind {
+            case .directory: return 0
+            case .symlink:   return 1
+            case .file:      return 2
+            }
+        }
+
+        static func == (lhs: FileRow, rhs: FileRow) -> Bool { lhs.id == rhs.id }
+        func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    }
+
+    /// Apply the user-chosen sort, then keep directories grouped above
+    /// files via `kindOrder` as a stable secondary key.
+    private var sortedRows: [FileRow] {
+        let rows = entries.map(FileRow.init)
+        return rows.sorted { lhs, rhs in
+            if lhs.kindOrder != rhs.kindOrder { return lhs.kindOrder < rhs.kindOrder }
+            return sortOrder.compare(lhs, rhs) == .orderedAscending
+        }
+    }
+
+    @ViewBuilder
+    private func contextMenuContent(for selectedIds: Set<String>) -> some View {
+        switch selectedIds.count {
+        case 0:
+            // Empty-area right-click — only the directory-wide actions.
+            Button("New Folder…") { presentNewFolderPrompt() }
+            Button("Upload…") { presentUploadPicker() }
+
+        case 1:
+            // Single selection: show the existing file/dir actions.
+            if let id = selectedIds.first, let entry = entries.first(where: { $0.name == id }) {
+                if entry.kind == .file {
+                    Button("Download…") { presentDownloadPicker(for: entry) }
+                    Divider()
+                }
+                Button("Rename…") { presentRenamePrompt(for: entry) }
+                Button("Delete", role: .destructive) {
+                    presentDeleteConfirmation(for: entry)
+                }
+            }
+
+        default:
+            // Multi-selection: batch actions only — single-row mutations
+            // (rename) don't make sense, and download splits per file.
+            Button("Download Selected (\(selectedIds.count))…") {
+                downloadSelected(selectedIds)
+            }
+            Button("Delete Selected (\(selectedIds.count))…", role: .destructive) {
+                deleteSelected(selectedIds)
+            }
+        }
+    }
+
+    private func rowIcon(_ kind: FfiFileKind) -> String {
+        switch kind {
+        case .directory: return "folder.fill"
+        case .symlink:   return "link"
+        case .file:      return "doc"
+        }
+    }
+
+    private func rowIconTint(_ kind: FfiFileKind) -> Color {
+        switch kind {
+        case .directory: return .accentColor
+        default:         return .secondary
+        }
+    }
+
+    private func formatSize(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
     private var noConnection: some View {
@@ -506,6 +649,87 @@ struct FileBrowserView: View {
         }
     }
 
+    // MARK: - Multi-selection actions
+
+    /// Batch download. NSOpenPanel-based directory chooser — each
+    /// selected file lands inside that destination folder, named by
+    /// its remote name. Reveal-in-Finder fires per transfer (so the
+    /// user lands on whichever finished last); follow-up could batch
+    /// these into one reveal of the destination directory.
+    private func downloadSelected(_ ids: Set<String>) {
+        guard let connectionId else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose download destination"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+
+        for id in ids {
+            guard let entry = entries.first(where: { $0.name == id }),
+                  entry.kind == .file
+            else { continue }
+            let remotePath = absolutePath(joining: entry.name)
+            let localURL = directory.appendingPathComponent(entry.name)
+            transfers.enqueueDownload(
+                connectionId: connectionId,
+                remotePath: remotePath,
+                localPath: localURL.path,
+                expectedSize: entry.size
+            )
+        }
+    }
+
+    /// Batch delete: one confirmation dialog covering all selected
+    /// rows, then delete each (recursively for directories) on a
+    /// background task. Refreshes the listing once at the end.
+    private func deleteSelected(_ ids: Set<String>) {
+        guard let connectionId else { return }
+        let names = entries
+            .filter { ids.contains($0.name) }
+            .map { $0.name }
+        guard !names.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete \(names.count) item\(names.count == 1 ? "" : "s")?"
+        alert.informativeText = names.prefix(5).joined(separator: ", ")
+            + (names.count > 5 ? ", and \(names.count - 5) more" : "")
+            + "\n\nDirectories are removed recursively. This is permanent."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let toDelete = entries.filter { ids.contains($0.name) }
+        Task.detached {
+            var failures: [String] = []
+            for entry in toDelete {
+                let target = await MainActor.run {
+                    self.absolutePath(joining: entry.name)
+                }
+                do {
+                    switch entry.kind {
+                    case .directory:
+                        try Self.deleteRecursive(connectionId: connectionId, path: target)
+                    case .file, .symlink:
+                        try rshellSftpDeleteFile(connectionId: connectionId, path: target)
+                    }
+                } catch {
+                    failures.append("\(entry.name): \(error.localizedDescription)")
+                }
+            }
+            await MainActor.run {
+                self.selection.removeAll()
+                if !failures.isEmpty {
+                    self.error = "Could not delete \(failures.count) item\(failures.count == 1 ? "" : "s"): "
+                        + failures.prefix(3).joined(separator: "; ")
+                }
+                self.refresh()
+            }
+        }
+    }
+
     /// Recursive delete: walk the directory contents, delete each
     /// child (subdirectories first via recursion), then delete the
     /// now-empty directory itself. Synchronous — runs on the
@@ -621,72 +845,6 @@ struct FileBrowserView: View {
 }
 
 // MARK: - Row
-
-private struct FileEntryRow: View {
-    let entry: FfiFileEntry
-    let onActivate: () -> Void
-    /// Non-nil only for plain files. Triggers an NSSavePanel-driven
-    /// download via the row's context menu.
-    let onDownload: (() -> Void)?
-    let onRename: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        Button(action: onActivate) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(iconTint)
-                    .frame(width: 16)
-
-                Text(entry.name)
-                    .lineLimit(1)
-
-                Spacer()
-
-                if let modified = entry.modified {
-                    Text(modified)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                if entry.kind != .directory {
-                    Text(formatSize(entry.size))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 70, alignment: .trailing)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            if let onDownload {
-                Button("Download…", action: onDownload)
-                Divider()
-            }
-            Button("Rename…", action: onRename)
-            Button("Delete", role: .destructive, action: onDelete)
-        }
-    }
-
-    private var icon: String {
-        switch entry.kind {
-        case .directory: return "folder.fill"
-        case .symlink:   return "link"
-        case .file:      return "doc"
-        }
-    }
-
-    private var iconTint: Color {
-        switch entry.kind {
-        case .directory: return .accentColor
-        case .symlink:   return .secondary
-        case .file:      return .secondary
-        }
-    }
-
-    private func formatSize(_ bytes: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
-}
 
 // MARK: - Text-input sheet (used for New Folder + Rename)
 
