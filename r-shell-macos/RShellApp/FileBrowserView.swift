@@ -290,30 +290,126 @@ struct FileBrowserView: View {
         )
     }
 
-    /// Handle URLs dropped from Finder onto the listing. Each plain
-    /// file is enqueued as an upload to the current directory.
-    /// Directories are skipped (recursive upload is deferred); a
-    /// folder drop with no plain-file siblings logs and no-ops.
+    /// Handle URLs dropped from Finder onto the listing. Plain files
+    /// are enqueued as uploads to the current directory; directories
+    /// trigger a recursive walk — the directory tree is mirrored on
+    /// the remote (mkdir per subdirectory in BFS order) and each
+    /// file enqueued individually.
     private func acceptDrop(urls: [URL]) -> Bool {
         guard let connectionId else { return false }
         var enqueued = 0
+
         for url in urls where url.isFileURL {
             var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
-                  !isDir.boolValue
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
             else {
-                logger.info("Skipping non-file drop: \(url.path, privacy: .public)")
+                logger.info("Skipping non-existent drop: \(url.path, privacy: .public)")
                 continue
             }
-            let remote = absolutePath(joining: url.lastPathComponent)
-            transfers.enqueueUpload(
-                connectionId: connectionId,
-                localPath: url.path,
-                remotePath: remote
-            )
-            enqueued += 1
+
+            if isDir.boolValue {
+                // Spin off the directory walk so we don't block the
+                // main actor while traversing potentially-deep trees.
+                let remoteRoot = absolutePath(joining: url.lastPathComponent)
+                let connectionId = connectionId
+                Task.detached {
+                    await self.uploadDirectory(
+                        connectionId: connectionId,
+                        localRoot: url,
+                        remoteRoot: remoteRoot
+                    )
+                }
+                enqueued += 1
+            } else {
+                let remote = absolutePath(joining: url.lastPathComponent)
+                transfers.enqueueUpload(
+                    connectionId: connectionId,
+                    localPath: url.path,
+                    remotePath: remote
+                )
+                enqueued += 1
+            }
         }
         return enqueued > 0
+    }
+
+    /// Mirror a local directory tree onto the remote: mkdir each
+    /// subdirectory in BFS order, then enqueue every file. mkdir is
+    /// synchronous (one round trip per dir, fast); file uploads go
+    /// through `TransferQueueStore` for progress / cancel UX.
+    ///
+    /// Errors mid-walk surface inline at the top of the listing —
+    /// failed mkdirs stop their subtree, but other branches keep
+    /// going so a single permission error doesn't cascade-fail the
+    /// whole drop.
+    private func uploadDirectory(
+        connectionId: String,
+        localRoot: URL,
+        remoteRoot: String
+    ) async {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: localRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            await MainActor.run { self.error = "Could not enumerate \(localRoot.lastPathComponent)" }
+            return
+        }
+
+        // Make the root directory first.
+        do {
+            try rshellSftpCreateDir(connectionId: connectionId, path: remoteRoot)
+        } catch let err as SftpError {
+            // mkdir often fails with "already exists" — accept that
+            // silently and proceed. Real errors (permission, no parent)
+            // surface in the inline error banner.
+            if case .Other(let detail) = err,
+               !detail.lowercased().contains("exist") {
+                await MainActor.run { self.error = "Could not create \(remoteRoot): \(detail)" }
+                // Don't return — the upload-children loop below will
+                // surface its own errors, but if the root mkdir failed
+                // because it's a missing parent, those will be loud.
+            }
+        } catch {
+            await MainActor.run { self.error = "Could not create \(remoteRoot): \(error.localizedDescription)" }
+        }
+
+        // Walk every entry. The enumerator yields files and directories
+        // in some traversal order; we mkdir directories synchronously
+        // (so a child file enqueue can rely on its parent existing) and
+        // enqueue files via the transfer queue.
+        for case let url as URL in enumerator {
+            guard let resolved = try? url.resourceValues(forKeys: [.isDirectoryKey]) else {
+                continue
+            }
+            let relativePath = url.path
+                .replacingOccurrences(of: localRoot.path, with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !relativePath.isEmpty else { continue }
+
+            let remoteChild = remoteRoot.hasSuffix("/")
+                ? remoteRoot + relativePath
+                : remoteRoot + "/" + relativePath
+
+            if resolved.isDirectory == true {
+                // Best-effort mkdir; ignore "already exists".
+                _ = try? rshellSftpCreateDir(connectionId: connectionId, path: remoteChild)
+            } else {
+                await MainActor.run {
+                    transfers.enqueueUpload(
+                        connectionId: connectionId,
+                        localPath: url.path,
+                        remotePath: remoteChild
+                    )
+                }
+            }
+        }
+
+        // The uploads are now queued; refresh the listing once on the
+        // main actor so the new top-level directory shows up
+        // immediately even before the per-file uploads finish.
+        await MainActor.run { self.refresh() }
     }
 
     private func presentUploadPicker() {
@@ -391,7 +487,7 @@ struct FileBrowserView: View {
         let alert = NSAlert()
         alert.messageText = "Delete \"\(entry.name)\"?"
         alert.informativeText = entry.kind == .directory
-            ? "Directories must be empty. The deletion is permanent and cannot be undone."
+            ? "All contents will be removed recursively. This is permanent and cannot be undone."
             : "This is permanent and cannot be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
@@ -403,11 +499,35 @@ struct FileBrowserView: View {
         performSftp(action: "delete") {
             switch entry.kind {
             case .directory:
-                try rshellSftpDeleteDir(connectionId: connectionId, path: target)
+                try Self.deleteRecursive(connectionId: connectionId, path: target)
             case .file, .symlink:
                 try rshellSftpDeleteFile(connectionId: connectionId, path: target)
             }
         }
+    }
+
+    /// Recursive delete: walk the directory contents, delete each
+    /// child (subdirectories first via recursion), then delete the
+    /// now-empty directory itself. Synchronous — runs on the
+    /// background `Task.detached` that `performSftp` already uses.
+    ///
+    /// Each step is its own SFTP round-trip, so a deep tree is N+1
+    /// requests where N is the descendant count. Acceptable for a
+    /// single user-initiated delete; bulk operations would benefit
+    /// from a server-side `rm -rf` over the SSH channel, but that's
+    /// a larger UX shift (we'd lose the per-step error handling).
+    private static func deleteRecursive(connectionId: String, path: String) throws {
+        let entries = try rshellSftpListDir(connectionId: connectionId, path: path)
+        for entry in entries {
+            let childPath = path.hasSuffix("/") ? path + entry.name : path + "/" + entry.name
+            switch entry.kind {
+            case .directory:
+                try deleteRecursive(connectionId: connectionId, path: childPath)
+            case .file, .symlink:
+                try rshellSftpDeleteFile(connectionId: connectionId, path: childPath)
+            }
+        }
+        try rshellSftpDeleteDir(connectionId: connectionId, path: path)
     }
 
     /// Run an SFTP mutation off the main actor, refresh on success,
@@ -423,6 +543,11 @@ struct FileBrowserView: View {
                     switch err {
                     case .NotConnected:
                         self.error = "Not connected to this host."
+                    case .Cancelled:
+                        // Mutations don't go through cancellation paths
+                        // (they're one-shot SFTP commands), but the
+                        // exhaustive switch needs the case.
+                        self.error = "\(action.capitalized) cancelled."
                     case .Other(let detail):
                         self.error = "Could not \(action): \(detail)"
                     }
@@ -476,6 +601,10 @@ struct FileBrowserView: View {
                     switch err {
                     case .NotConnected:
                         self.error = "Not connected to this host."
+                    case .Cancelled:
+                        // list_dir doesn't accept cancellation today,
+                        // but kept for exhaustiveness if it does.
+                        self.error = "Listing cancelled."
                     case .Other(let detail):
                         self.error = detail
                     }

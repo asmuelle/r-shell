@@ -348,6 +348,11 @@ RustBuffer uniffi_r_shell_macos_fn_func_rshell_pty_write(RustBuffer connection_i
 void uniffi_r_shell_macos_fn_func_rshell_set_event_callback(uint64_t callback, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CANCEL
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CANCEL
+int8_t uniffi_r_shell_macos_fn_func_rshell_sftp_cancel(RustBuffer transfer_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CREATE_DIR
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CREATE_DIR
 void uniffi_r_shell_macos_fn_func_rshell_sftp_create_dir(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
@@ -365,7 +370,7 @@ void uniffi_r_shell_macos_fn_func_rshell_sftp_delete_file(RustBuffer connection_
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DOWNLOAD
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_DOWNLOAD
-uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_download(RustBuffer connection_id, RustBuffer remote_path, RustBuffer local_path, uint64_t expected_size, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_download(RustBuffer transfer_id, RustBuffer connection_id, RustBuffer remote_path, RustBuffer local_path, uint64_t expected_size, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_LIST_DIR
@@ -380,7 +385,7 @@ void uniffi_r_shell_macos_fn_func_rshell_sftp_rename(RustBuffer connection_id, R
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
-uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_upload(RustBuffer connection_id, RustBuffer local_path, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_upload(RustBuffer transfer_id, RustBuffer connection_id, RustBuffer local_path, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_R_SHELL_MACOS_RUSTBUFFER_ALLOC
@@ -750,6 +755,12 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_pty_write(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SET_EVENT_CALLBACK
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SET_EVENT_CALLBACK
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_set_event_callback(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CANCEL
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CANCEL
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_cancel(void
     
 );
 #endif

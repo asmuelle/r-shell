@@ -101,7 +101,26 @@ final class TransferQueueStore: ObservableObject {
     }
 
     func clearCompleted() {
-        transfers.removeAll { $0.status == .completed || $0.status == .failed }
+        transfers.removeAll {
+            $0.status == .completed || $0.status == .failed || $0.status == .cancelled
+        }
+    }
+
+    /// Cancel a transfer. For `.queued` items the FFI hasn't been
+    /// called yet — we just remove the row. For `.inProgress` items
+    /// the FFI signals the running transfer; the running Task observes
+    /// `SftpError::Cancelled` and marks the row.
+    func cancel(transferId: UUID) {
+        guard let idx = transfers.firstIndex(where: { $0.id == transferId }) else { return }
+        switch transfers[idx].status {
+        case .queued:
+            transfers.remove(at: idx)
+        case .inProgress:
+            _ = rshellSftpCancel(transferId: transferId.uuidString)
+            // The Task's failure path flips status to `.cancelled`.
+        case .completed, .failed, .cancelled:
+            break
+        }
     }
 
     // MARK: - Per-connection run loop
@@ -131,12 +150,15 @@ final class TransferQueueStore: ObservableObject {
     }
 
     private func runTransfer(_ transfer: Transfer) async {
+        let transferId = transfer.id.uuidString
+
         let result: Result<UInt64, Error> = await Task.detached {
             do {
                 let bytes: UInt64
                 switch transfer.kind {
                 case .download:
                     bytes = try rshellSftpDownload(
+                        transferId: transferId,
                         connectionId: transfer.connectionId,
                         remotePath: transfer.remotePath,
                         localPath: transfer.localPath,
@@ -144,6 +166,7 @@ final class TransferQueueStore: ObservableObject {
                     )
                 case .upload:
                     bytes = try rshellSftpUpload(
+                        transferId: transferId,
                         connectionId: transfer.connectionId,
                         localPath: transfer.localPath,
                         remotePath: transfer.remotePath
@@ -173,6 +196,16 @@ final class TransferQueueStore: ObservableObject {
             if transfer.kind == .download {
                 let url = URL(fileURLWithPath: transfer.localPath)
                 NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        case .failure(let error as SftpError):
+            switch error {
+            case .Cancelled:
+                transfers[idx].status = .cancelled
+                logger.info("Transfer cancelled: \(transfer.remotePath, privacy: .public)")
+            default:
+                transfers[idx].status = .failed
+                transfers[idx].error = error.localizedDescription
+                logger.error("Transfer failed for \(transfer.remotePath, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         case .failure(let error):
             transfers[idx].status = .failed
@@ -212,7 +245,7 @@ final class TransferQueueStore: ObservableObject {
 
 struct Transfer: Identifiable {
     enum Kind { case download, upload }
-    enum Status { case queued, inProgress, completed, failed }
+    enum Status { case queued, inProgress, completed, failed, cancelled }
 
     let id: UUID
     let connectionId: String

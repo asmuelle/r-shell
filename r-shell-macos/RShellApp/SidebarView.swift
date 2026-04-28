@@ -11,6 +11,16 @@ struct SidebarView: View {
     @State private var showNewConnection = false
     @State private var showImport = false
     @State private var search = ""
+    /// When non-nil, presents the edit sheet for the wrapped profile.
+    /// Driving via `.sheet(item:)` rather than a Bool + separate state
+    /// gives SwiftUI an identity-stable handle so flipping between
+    /// profiles in the context menu doesn't reuse the previous form.
+    @State private var editingProfile: EditTarget?
+
+    private struct EditTarget: Identifiable {
+        let profile: ConnectionProfile
+        var id: String { profile.id }
+    }
 
     enum NavSection: String, CaseIterable, Identifiable {
         case terminals
@@ -108,6 +118,9 @@ struct SidebarView: View {
         .sheet(isPresented: $showNewConnection) {
             ConnectionEditView(storeManager: storeManager, existingProfile: nil)
         }
+        .sheet(item: $editingProfile) { target in
+            ConnectionEditView(storeManager: storeManager, existingProfile: target.profile)
+        }
         .fileImporter(
             isPresented: $showImport,
             allowedContentTypes: [.json],
@@ -198,7 +211,9 @@ struct SidebarView: View {
             selectedSection = .monitor
         }
         Divider()
-        Button("Edit…") {}
+        Button("Edit…") {
+            editingProfile = EditTarget(profile: conn)
+        }
         Button("Duplicate") {
             var copy = conn
             copy.id = UUID().uuidString

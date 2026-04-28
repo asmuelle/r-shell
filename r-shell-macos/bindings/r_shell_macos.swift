@@ -1251,6 +1251,12 @@ public enum SftpError {
     
     case NotConnected(connectionId: String
     )
+    /**
+     * User-initiated cancellation via `rshell_sftp_cancel`. Distinct
+     * from `Other` so the UI can mark the transfer cancelled rather
+     * than failed and skip the error toast.
+     */
+    case Cancelled
     case Other(detail: String
     )
 }
@@ -1272,7 +1278,8 @@ public struct FfiConverterTypeSftpError: FfiConverterRustBuffer {
         case 1: return .NotConnected(
             connectionId: try FfiConverterString.read(from: &buf)
             )
-        case 2: return .Other(
+        case 2: return .Cancelled
+        case 3: return .Other(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -1292,8 +1299,12 @@ public struct FfiConverterTypeSftpError: FfiConverterRustBuffer {
             FfiConverterString.write(connectionId, into: &buf)
             
         
-        case let .Other(detail):
+        case .Cancelled:
             writeInt(&buf, Int32(2))
+        
+        
+        case let .Other(detail):
+            writeInt(&buf, Int32(3))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -1662,6 +1673,20 @@ public func rshellSetEventCallback(callback: FfiEventCallback) {try! rustCall() 
 }
 }
 /**
+ * Cancel an in-flight transfer by its Swift-side UUID. Returns true
+ * if a transfer was found and cancelled, false if the id wasn't
+ * registered (already finished, never started, or unknown). The
+ * running transfer's loop notices on its next chunk boundary and
+ * returns `SftpError::Cancelled`.
+ */
+public func rshellSftpCancel(transferId: String) -> Bool {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_cancel(
+        FfiConverterString.lower(transferId),$0
+    )
+})
+}
+/**
  * Create a directory on the remote. Fails if the parent doesn't
  * exist or the name is already taken.
  */
@@ -1700,10 +1725,17 @@ public func rshellSftpDeleteFile(connectionId: String, path: String)throws  {try
  * `TransferQueueStore`) matches events back to the in-flight transfer
  * by `path`. `expected_size` lets the consumer compute a percentage;
  * pass `0` if unknown.
+ *
+ * `transfer_id` is the caller's stable handle (Swift uses the
+ * per-transfer UUID). It's registered in a cancellation registry on
+ * entry and removed on exit; `rshell_sftp_cancel(transfer_id)` walks
+ * the registry to flip the token, and the chunk loop notices on the
+ * next iteration.
  */
-public func rshellSftpDownload(connectionId: String, remotePath: String, localPath: String, expectedSize: UInt64)throws  -> UInt64 {
+public func rshellSftpDownload(transferId: String, connectionId: String, remotePath: String, localPath: String, expectedSize: UInt64)throws  -> UInt64 {
     return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
     uniffi_r_shell_macos_fn_func_rshell_sftp_download(
+        FfiConverterString.lower(transferId),
         FfiConverterString.lower(connectionId),
         FfiConverterString.lower(remotePath),
         FfiConverterString.lower(localPath),
@@ -1732,12 +1764,14 @@ public func rshellSftpRename(connectionId: String, oldPath: String, newPath: Str
 }
 /**
  * Stream a local file to a remote path. See `rshell_sftp_download` for
- * the progress-event contract. The local file is `stat`'d once before
- * the transfer so progress events carry a meaningful total.
+ * the progress-event contract and the cancellation registry. The
+ * local file is `stat`'d once before the transfer so progress events
+ * carry a meaningful total.
  */
-public func rshellSftpUpload(connectionId: String, localPath: String, remotePath: String)throws  -> UInt64 {
+public func rshellSftpUpload(transferId: String, connectionId: String, localPath: String, remotePath: String)throws  -> UInt64 {
     return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
     uniffi_r_shell_macos_fn_func_rshell_sftp_upload(
+        FfiConverterString.lower(transferId),
         FfiConverterString.lower(connectionId),
         FfiConverterString.lower(localPath),
         FfiConverterString.lower(remotePath),$0
@@ -1805,6 +1839,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_set_event_callback() != 25155) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_cancel() != 33240) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_create_dir() != 42046) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1814,7 +1851,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_delete_file() != 46597) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_download() != 19143) {
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_download() != 8155) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir() != 57015) {
@@ -1823,7 +1860,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_rename() != 3589) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_upload() != 50008) {
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_upload() != 1763) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_method_ffieventcallback_on_event() != 59523) {

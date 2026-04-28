@@ -13,6 +13,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("R-Shell macOS app launching")
         BridgeManager.shared.initialize()
         logger.info("Rust bridge initialized — app ready")
+
+        // Persist the main window's frame across launches via AppKit's
+        // built-in autosave. SwiftUI's WindowGroup doesn't expose a
+        // direct frameAutosaveName binding, so we set it on the
+        // first window once SwiftUI has materialised it. Defer to the
+        // next runloop turn — at this point in the launch sequence
+        // SwiftUI hasn't necessarily attached the window yet.
+        DispatchQueue.main.async {
+            for window in NSApp.windows {
+                // Only persist the user's main app window — settings
+                // panels and find-bar children open their own and
+                // shouldn't share an autosave entry with the workspace.
+                if window.contentViewController != nil
+                    && window.styleMask.contains(.titled)
+                    && window.frameAutosaveName.isEmpty
+                {
+                    window.setFrameAutosaveName("RShellMainWindow")
+                }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

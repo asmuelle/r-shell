@@ -290,7 +290,9 @@ private struct TransferQueueView: View {
             VStack(spacing: 0) {
                 List {
                     ForEach(store.transfers) { transfer in
-                        TransferRow(transfer: transfer)
+                        TransferRow(transfer: transfer) {
+                            store.cancel(transferId: transfer.id)
+                        }
                     }
                 }
                 .listStyle(.plain)
@@ -298,7 +300,7 @@ private struct TransferQueueView: View {
                 // Footer with a Clear-completed button when there's
                 // anything to clear.
                 let cleanable = store.transfers.contains {
-                    $0.status == .completed || $0.status == .failed
+                    $0.status == .completed || $0.status == .failed || $0.status == .cancelled
                 }
                 if cleanable {
                     HStack {
@@ -317,6 +319,7 @@ private struct TransferQueueView: View {
 
 private struct TransferRow: View {
     let transfer: Transfer
+    let onCancel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -330,6 +333,15 @@ private struct TransferRow: View {
                     .truncationMode(.middle)
 
                 Spacer()
+
+                if transfer.status == .queued || transfer.status == .inProgress {
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(transfer.status == .queued ? "Remove from queue" : "Cancel transfer")
+                }
 
                 statusBadge
             }
@@ -377,6 +389,9 @@ private struct TransferRow: View {
             case .failed:
                 Image(systemName: "xmark.octagon.fill")
                     .foregroundStyle(.red)
+            case .cancelled:
+                Text("Cancelled")
+                    .foregroundStyle(.secondary)
             }
         }
         .font(.caption)

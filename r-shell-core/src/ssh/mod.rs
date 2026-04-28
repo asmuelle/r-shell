@@ -871,7 +871,7 @@ impl SshClient {
     }
 
     pub async fn download_file(&self, remote_path: &str, local_path: &str) -> Result<u64> {
-        self.download_file_with_progress(remote_path, local_path, |_| {})
+        self.download_file_with_progress(remote_path, local_path, |_| {}, None)
             .await
     }
 
@@ -884,11 +884,18 @@ impl SshClient {
     /// be cheap. The macOS bridge uses it to emit `TransferProgress`
     /// events on the event bus; the real work happens on the consumer
     /// thread that drains the bus, not here.
+    ///
+    /// `cancel`, when supplied, is checked between chunks. On
+    /// cancellation the partial local file is left on disk (callers can
+    /// delete it on receipt of the `TransferCancelled` error if they
+    /// want clean removal — leaving it lets a future "resume" feature
+    /// pick up where we left off).
     pub async fn download_file_with_progress(
         &self,
         remote_path: &str,
         local_path: &str,
         mut progress: impl FnMut(u64),
+        cancel: Option<&CancellationToken>,
     ) -> Result<u64> {
         let sftp = self.sftp_session().await?;
         let mut remote_file = sftp.open(remote_path).await?;
@@ -897,6 +904,11 @@ impl SshClient {
         let mut buf = vec![0u8; SFTP_CHUNK_SIZE];
         let mut total_bytes = 0u64;
         loop {
+            if let Some(token) = cancel
+                && token.is_cancelled()
+            {
+                return Err(anyhow::anyhow!("Transfer cancelled"));
+            }
             let n = remote_file.read(&mut buf).await?;
             if n == 0 {
                 break;
@@ -927,18 +939,23 @@ impl SshClient {
     }
 
     pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<u64> {
-        self.upload_file_with_progress(local_path, remote_path, |_| {})
+        self.upload_file_with_progress(local_path, remote_path, |_| {}, None)
             .await
     }
 
     /// Stream a local file to the remote, calling `progress` after every
     /// SFTP chunk. See `download_file_with_progress` for the threading
     /// constraints — the callback is on the same task as the SFTP I/O.
+    ///
+    /// `cancel` checks between chunks; on cancellation the partial
+    /// remote file is left in place (call `delete_file` afterwards if
+    /// clean removal is wanted).
     pub async fn upload_file_with_progress(
         &self,
         local_path: &str,
         remote_path: &str,
         mut progress: impl FnMut(u64),
+        cancel: Option<&CancellationToken>,
     ) -> Result<u64> {
         let sftp = self.sftp_session().await?;
         let mut local_file = tokio::fs::File::open(local_path).await?;
@@ -947,6 +964,11 @@ impl SshClient {
         let mut buf = vec![0u8; SFTP_CHUNK_SIZE];
         let mut total_bytes = 0u64;
         loop {
+            if let Some(token) = cancel
+                && token.is_cancelled()
+            {
+                return Err(anyhow::anyhow!("Transfer cancelled"));
+            }
             let n = local_file.read(&mut buf).await?;
             if n == 0 {
                 break;

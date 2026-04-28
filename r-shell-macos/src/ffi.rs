@@ -567,8 +567,63 @@ pub struct FfiFileEntry {
 pub enum SftpError {
     #[error("not connected: {connection_id}")]
     NotConnected { connection_id: String },
+    /// User-initiated cancellation via `rshell_sftp_cancel`. Distinct
+    /// from `Other` so the UI can mark the transfer cancelled rather
+    /// than failed and skip the error toast.
+    #[error("cancelled")]
+    Cancelled,
     #[error("{detail}")]
     Other { detail: String },
+}
+
+/// Per-transfer cancellation registry. A transfer registers its token
+/// keyed by the Swift-side UUID; `rshell_sftp_cancel` looks the entry
+/// up and triggers it. The download/upload loop checks the token on
+/// every chunk.
+///
+/// `OnceLock<Mutex<...>>` rather than RwLock because writes (register
+/// / deregister / cancel) are short and infrequent — no readers to
+/// optimise for.
+static TRANSFER_CANCELS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
+> = std::sync::OnceLock::new();
+
+fn transfer_registry()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>
+{
+    TRANSFER_CANCELS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Register a fresh `CancellationToken` for `transfer_id` and return
+/// it. The matching `unregister_transfer` call removes the entry on
+/// completion or failure so `rshell_sftp_cancel` can't leak past a
+/// transfer's lifetime.
+fn register_transfer(transfer_id: &str) -> tokio_util::sync::CancellationToken {
+    let token = tokio_util::sync::CancellationToken::new();
+    transfer_registry()
+        .lock()
+        .unwrap()
+        .insert(transfer_id.to_string(), token.clone());
+    token
+}
+
+fn unregister_transfer(transfer_id: &str) {
+    transfer_registry().lock().unwrap().remove(transfer_id);
+}
+
+/// Cancel an in-flight transfer by its Swift-side UUID. Returns true
+/// if a transfer was found and cancelled, false if the id wasn't
+/// registered (already finished, never started, or unknown). The
+/// running transfer's loop notices on its next chunk boundary and
+/// returns `SftpError::Cancelled`.
+#[uniffi::export]
+pub fn rshell_sftp_cancel(transfer_id: String) -> bool {
+    if let Some(token) = transfer_registry().lock().unwrap().get(&transfer_id) {
+        token.cancel();
+        true
+    } else {
+        false
+    }
 }
 
 /// Stream a remote file to a local path. Returns the byte count on
@@ -577,8 +632,15 @@ pub enum SftpError {
 /// `TransferQueueStore`) matches events back to the in-flight transfer
 /// by `path`. `expected_size` lets the consumer compute a percentage;
 /// pass `0` if unknown.
+///
+/// `transfer_id` is the caller's stable handle (Swift uses the
+/// per-transfer UUID). It's registered in a cancellation registry on
+/// entry and removed on exit; `rshell_sftp_cancel(transfer_id)` walks
+/// the registry to flip the token, and the chunk loop notices on the
+/// next iteration.
 #[uniffi::export]
 pub fn rshell_sftp_download(
+    transfer_id: String,
     connection_id: String,
     remote_path: String,
     local_path: String,
@@ -588,8 +650,10 @@ pub fn rshell_sftp_download(
     let cm = bridge.connection_manager.clone();
     let conn_id = connection_id.clone();
     let remote_for_event = remote_path.clone();
+    let token = register_transfer(&transfer_id);
+    let transfer_id_for_cleanup = transfer_id.clone();
 
-    bridge.runtime.block_on(async move {
+    let result = bridge.runtime.block_on(async move {
         let client = cm
             .get_connection(&conn_id)
             .await
@@ -601,32 +665,45 @@ pub fn rshell_sftp_download(
         let conn_id_for_progress = conn_id.clone();
         let remote_for_progress = remote_for_event.clone();
 
-        let bytes = {
+        let outcome = {
             let guard = client.read().await;
             guard
-                .download_file_with_progress(&remote_path, &local_path, |bytes| {
-                    if let Some(tx) = event_tx.as_ref() {
-                        let _ = tx.send(r_shell_core::event_bus::CoreEvent::TransferProgress {
-                            connection_id: conn_id_for_progress.clone(),
-                            path: remote_for_progress.clone(),
-                            bytes_transferred: bytes,
-                            total_bytes: expected_size,
-                        });
-                    }
-                })
+                .download_file_with_progress(
+                    &remote_path,
+                    &local_path,
+                    |bytes| {
+                        if let Some(tx) = event_tx.as_ref() {
+                            let _ = tx.send(r_shell_core::event_bus::CoreEvent::TransferProgress {
+                                connection_id: conn_id_for_progress.clone(),
+                                path: remote_for_progress.clone(),
+                                bytes_transferred: bytes,
+                                total_bytes: expected_size,
+                            });
+                        }
+                    },
+                    Some(&token),
+                )
                 .await
-                .map_err(|e| SftpError::Other { detail: e.to_string() })?
         };
 
-        Ok(bytes)
-    })
+        match outcome {
+            Ok(bytes) => Ok(bytes),
+            Err(_) if token.is_cancelled() => Err(SftpError::Cancelled),
+            Err(e) => Err(SftpError::Other { detail: e.to_string() }),
+        }
+    });
+
+    unregister_transfer(&transfer_id_for_cleanup);
+    result
 }
 
 /// Stream a local file to a remote path. See `rshell_sftp_download` for
-/// the progress-event contract. The local file is `stat`'d once before
-/// the transfer so progress events carry a meaningful total.
+/// the progress-event contract and the cancellation registry. The
+/// local file is `stat`'d once before the transfer so progress events
+/// carry a meaningful total.
 #[uniffi::export]
 pub fn rshell_sftp_upload(
+    transfer_id: String,
     connection_id: String,
     local_path: String,
     remote_path: String,
@@ -637,8 +714,10 @@ pub fn rshell_sftp_upload(
     let remote_for_event = remote_path.clone();
 
     let total_bytes = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+    let token = register_transfer(&transfer_id);
+    let transfer_id_for_cleanup = transfer_id.clone();
 
-    bridge.runtime.block_on(async move {
+    let result = bridge.runtime.block_on(async move {
         let client = cm
             .get_connection(&conn_id)
             .await
@@ -650,25 +729,36 @@ pub fn rshell_sftp_upload(
         let conn_id_for_progress = conn_id.clone();
         let remote_for_progress = remote_for_event.clone();
 
-        let bytes = {
+        let outcome = {
             let guard = client.read().await;
             guard
-                .upload_file_with_progress(&local_path, &remote_path, |bytes| {
-                    if let Some(tx) = event_tx.as_ref() {
-                        let _ = tx.send(r_shell_core::event_bus::CoreEvent::TransferProgress {
-                            connection_id: conn_id_for_progress.clone(),
-                            path: remote_for_progress.clone(),
-                            bytes_transferred: bytes,
-                            total_bytes,
-                        });
-                    }
-                })
+                .upload_file_with_progress(
+                    &local_path,
+                    &remote_path,
+                    |bytes| {
+                        if let Some(tx) = event_tx.as_ref() {
+                            let _ = tx.send(r_shell_core::event_bus::CoreEvent::TransferProgress {
+                                connection_id: conn_id_for_progress.clone(),
+                                path: remote_for_progress.clone(),
+                                bytes_transferred: bytes,
+                                total_bytes,
+                            });
+                        }
+                    },
+                    Some(&token),
+                )
                 .await
-                .map_err(|e| SftpError::Other { detail: e.to_string() })?
         };
 
-        Ok(bytes)
-    })
+        match outcome {
+            Ok(bytes) => Ok(bytes),
+            Err(_) if token.is_cancelled() => Err(SftpError::Cancelled),
+            Err(e) => Err(SftpError::Other { detail: e.to_string() }),
+        }
+    });
+
+    unregister_transfer(&transfer_id_for_cleanup);
+    result
 }
 
 /// Create a directory on the remote. Fails if the parent doesn't
