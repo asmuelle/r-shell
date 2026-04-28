@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import OSLog
 
@@ -163,6 +164,16 @@ final class TransferQueueStore: ObservableObject {
             transfers[idx].bytesTransferred = bytes
             transfers[idx].status = .completed
             logger.info("Transfer completed: \(transfer.remotePath, privacy: .public) (\(bytes) bytes)")
+
+            // Reveal the downloaded file in Finder. Mirrors how Safari
+            // and most macOS browsers behave on download completion;
+            // the user almost always wants to do something with the
+            // file next. Skip for uploads — the local source is
+            // unchanged and the user is interacting with our window.
+            if transfer.kind == .download {
+                let url = URL(fileURLWithPath: transfer.localPath)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
         case .failure(let error):
             transfers[idx].status = .failed
             transfers[idx].error = error.localizedDescription

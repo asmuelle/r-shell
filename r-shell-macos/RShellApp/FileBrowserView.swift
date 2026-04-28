@@ -28,6 +28,9 @@ struct FileBrowserView: View {
     @State private var entries: [FfiFileEntry] = []
     @State private var error: String?
     @State private var loading = false
+    /// True while a Finder drag is hovering over the listing — drives a
+    /// subtle accent-tinted overlay so the drop target is obvious.
+    @State private var isDropTargeted = false
 
     /// Sheet state for the New Folder / Rename text-input flows. Both
     /// share the same model — the action is what differs.
@@ -208,6 +211,22 @@ struct FileBrowserView: View {
                     }
                 }
                 .listStyle(.plain)
+                // Finder drag → upload. URLs come in as the user releases
+                // the drop; we filter to plain files (no directories yet
+                // — recursive upload is a future slice) and enqueue each.
+                .dropDestination(for: URL.self) { urls, _ in
+                    acceptDrop(urls: urls)
+                } isTargeted: { hovering in
+                    isDropTargeted = hovering
+                }
+                .overlay(alignment: .center) {
+                    if isDropTargeted {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.accentColor, lineWidth: 2)
+                            .padding(8)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
         }
     }
@@ -269,6 +288,32 @@ struct FileBrowserView: View {
             localPath: localURL.path,
             expectedSize: entry.size
         )
+    }
+
+    /// Handle URLs dropped from Finder onto the listing. Each plain
+    /// file is enqueued as an upload to the current directory.
+    /// Directories are skipped (recursive upload is deferred); a
+    /// folder drop with no plain-file siblings logs and no-ops.
+    private func acceptDrop(urls: [URL]) -> Bool {
+        guard let connectionId else { return false }
+        var enqueued = 0
+        for url in urls where url.isFileURL {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+                  !isDir.boolValue
+            else {
+                logger.info("Skipping non-file drop: \(url.path, privacy: .public)")
+                continue
+            }
+            let remote = absolutePath(joining: url.lastPathComponent)
+            transfers.enqueueUpload(
+                connectionId: connectionId,
+                localPath: url.path,
+                remotePath: remote
+            )
+            enqueued += 1
+        }
+        return enqueued > 0
     }
 
     private func presentUploadPicker() {
