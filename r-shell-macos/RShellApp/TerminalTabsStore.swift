@@ -25,9 +25,17 @@ final class TerminalTabsStore: ObservableObject {
 
     private let logger = Logger(subsystem: "com.r-shell", category: "terminal-tabs")
 
-    /// Open a terminal tab for a saved connection. The password (or key
-    /// passphrase) must be supplied by the caller — this store does not
-    /// reach into Keychain itself.
+    /// Open a terminal tab for a saved connection. Resolves the credential
+    /// path internally:
+    ///
+    /// - Password profiles: load from Keychain, prompt if absent, persist
+    ///   on first successful entry so the next connect is silent.
+    /// - Public-key profiles: load any saved passphrase from Keychain. If
+    ///   the connect fails (e.g., the key was passphrase-protected and
+    ///   we had nothing stored), prompt and retry once.
+    ///
+    /// `password`/`passphrase` overrides exist for tests and special-cased
+    /// callers; production UI just passes the profile.
     func openConnection(
         _ profile: ConnectionProfile,
         password: String? = nil,
@@ -41,13 +49,45 @@ final class TerminalTabsStore: ObservableObject {
         // connection manager's HashMap. The short prefix is enough for
         // uniqueness and keeps the connection_id readable in logs.
         let sessionId = String(UUID().uuidString.prefix(8))
+        let account = profile.keychainAccount
+
+        // Resolve credentials from Keychain or interactive prompt.
+        let resolvedPassword: String?
+        let resolvedPassphrase: String?
+
+        switch profile.authMethod {
+        case .password:
+            if let explicit = password {
+                resolvedPassword = explicit
+            } else if let stored = KeychainManager.shared.loadPassword(
+                kind: .sshPassword,
+                account: account
+            ) {
+                resolvedPassword = stored
+            } else {
+                resolvedPassword = KeychainManager.shared.promptPassword(
+                    account: account,
+                    message: "Enter password for \(profile.name) (\(account))"
+                )
+                if resolvedPassword == nil {
+                    logger.info("Password prompt cancelled for \(account, privacy: .public)")
+                    return
+                }
+            }
+            resolvedPassphrase = nil
+
+        case .publicKey:
+            resolvedPassword = nil
+            resolvedPassphrase = passphrase
+                ?? KeychainManager.shared.loadPassword(kind: .sshKeyPassphrase, account: account)
+        }
 
         // SSH connect.
         let connectResult = await BridgeManager.shared.connect(
             profile: profile,
-            password: password,
+            password: resolvedPassword,
             keyPath: profile.privateKeyPath,
-            passphrase: passphrase,
+            passphrase: resolvedPassphrase,
             sessionId: sessionId
         )
 
@@ -55,7 +95,45 @@ final class TerminalTabsStore: ObservableObject {
         switch connectResult {
         case .success(let id):
             connectionId = id
+            // Persist on first successful interactive entry so the next
+            // connect is silent. We only save when the credential we just
+            // used wasn't already in Keychain — otherwise we re-save what
+            // we read, which is harmless but pointless.
+            if profile.authMethod == .password,
+               let used = resolvedPassword,
+               password == nil,
+               KeychainManager.shared.loadPassword(kind: .sshPassword, account: account) == nil {
+                KeychainManager.shared.savePassword(
+                    kind: .sshPassword,
+                    account: account,
+                    secret: used
+                )
+            }
+
         case .failure(let error):
+            // If the failure looks like a missing key passphrase and we
+            // didn't have one, prompt and retry once. Heuristic-based on
+            // the error message — r-shell-core surfaces SSH errors as
+            // strings, so we match on the substring. Crude but effective
+            // until the FFI grows typed errors (Sprint 8).
+            if profile.authMethod == .publicKey,
+               resolvedPassphrase == nil,
+               passphrase == nil,
+               let prompt = KeychainManager.shared.promptPassphrase(
+                   keyPath: profile.privateKeyPath ?? account
+               )
+            {
+                logger.info("Retrying connect with prompted passphrase")
+                await openConnection(profile, password: nil, passphrase: prompt)
+                if lastError == nil, profile.authMethod == .publicKey {
+                    KeychainManager.shared.savePassword(
+                        kind: .sshKeyPassphrase,
+                        account: account,
+                        secret: prompt
+                    )
+                }
+                return
+            }
             lastError = error.localizedDescription
             logger.error("Connect failed: \(error.localizedDescription, privacy: .public)")
             return

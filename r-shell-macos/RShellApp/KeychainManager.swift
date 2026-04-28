@@ -3,11 +3,9 @@ import Foundation
 import OSLog
 import RShellMacOS
 
-/// Wraps the Rust keychain FFI functions for Swift access.
-///
-/// Once uniffi bindings are generated, these call through to the
-/// `rshell_keychain_*` exports in the Rust static library. Until then,
-/// the `@_silgen_name` declarations link the C ABI symbols directly.
+/// Wraps the Rust keychain FFI for Swift access. Uses `rshell_keychain_*`
+/// from the uniffi bindings; the actual storage is the macOS Keychain via
+/// r-shell-core's `security-framework` integration.
 @MainActor
 class KeychainManager {
     static let shared = KeychainManager()
@@ -15,34 +13,49 @@ class KeychainManager {
 
     private init() {}
 
-    var isAvailable: Bool { true }
+    var isAvailable: Bool { rshellKeychainIsSupported() }
 
     // MARK: - Save
 
+    @discardableResult
     func savePassword(kind: FfiCredentialKind, account: String, secret: String) -> Bool {
-        logger.info("keychain save: kind=\(kind.rawValue) account=\(account)")
-        // Once uniffi bindings exist: return rshell_keychain_save(kind, account, secret).success
-        return true
+        let result = rshellKeychainSave(kind: kind, account: account, secret: secret)
+        if !result.success {
+            logger.error("keychain save failed: \(result.error ?? "?", privacy: .public)")
+        }
+        return result.success
     }
 
     // MARK: - Load
 
+    /// Returns the stored secret, or `nil` if no entry exists or the
+    /// underlying call errored. Errors are logged but not surfaced — the
+    /// caller's expected fallback is a UI prompt.
     func loadPassword(kind: FfiCredentialKind, account: String) -> String? {
-        logger.debug("keychain load: kind=\(kind.rawValue) account=\(account)")
-        return nil
+        let result = rshellKeychainLoad(kind: kind, account: account)
+        if !result.success {
+            logger.error("keychain load failed: \(result.error ?? "?", privacy: .public)")
+            return nil
+        }
+        // Rust returns `success: true, value: nil` when no entry exists.
+        return result.value
     }
 
     // MARK: - Delete
 
+    @discardableResult
     func deletePassword(kind: FfiCredentialKind, account: String) -> Bool {
-        logger.info("keychain delete: kind=\(kind.rawValue) account=\(account)")
-        return true
+        let result = rshellKeychainDelete(kind: kind, account: account)
+        if !result.success {
+            logger.error("keychain delete failed: \(result.error ?? "?", privacy: .public)")
+        }
+        return result.success
     }
 
     // MARK: - List
 
     func listAccounts(kind: FfiCredentialKind) -> [String] {
-        return []
+        rshellKeychainList(kind: kind)
     }
 
     // MARK: - Prompt (native dialog wrapper)
