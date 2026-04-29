@@ -79,6 +79,8 @@ pub struct FileEntry {
     /// relying on lexical comparison of the formatted string.
     pub modified_unix: Option<i64>,
     pub permissions: Option<String>,
+    pub owner: Option<String>,
+    pub group: Option<String>,
     pub file_type: FileEntryType,
 }
 
@@ -186,6 +188,8 @@ impl StandaloneSftpClient {
             let modified = mtime_secs.map(format_unix_timestamp);
 
             let permissions = attrs.permissions.map(format_permissions);
+            let owner = attrs.uid.map(|u| u.to_string());
+            let group = attrs.gid.map(|g| g.to_string());
 
             let file_type = if attrs.is_dir() {
                 FileEntryType::Directory
@@ -201,6 +205,8 @@ impl StandaloneSftpClient {
                 modified,
                 modified_unix: mtime_secs,
                 permissions,
+                owner,
+                group,
                 file_type,
             });
         }
@@ -432,6 +438,8 @@ mod tests {
             modified: Some("2024-01-01 00:00:00".to_string()),
             modified_unix: Some(1_704_067_200),
             permissions: Some("rw-r--r--".to_string()),
+            owner: Some("501".to_string()),
+            group: Some("20".to_string()),
             file_type: FileEntryType::File,
         };
         let json = serde_json::to_string(&entry).unwrap();
@@ -448,6 +456,8 @@ mod tests {
             modified: None,
             modified_unix: None,
             permissions: Some("rwxr-xr-x".to_string()),
+            owner: None,
+            group: None,
             file_type: FileEntryType::Directory,
         };
         let json = serde_json::to_string(&entry).unwrap();
@@ -463,6 +473,8 @@ mod tests {
             modified: None,
             modified_unix: None,
             permissions: None,
+            owner: None,
+            group: None,
             file_type: FileEntryType::Symlink,
         };
         let json = serde_json::to_string(&entry).unwrap();

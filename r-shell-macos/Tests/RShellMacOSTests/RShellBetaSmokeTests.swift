@@ -46,8 +46,8 @@ final class RShellBetaSmokeTests: XCTestCase {
         let layout = WorkspaceLayout.default
         XCTAssertTrue(layout.sidebarVisible)
         XCTAssertFalse(layout.bottomVisible)
-        XCTAssertFalse(layout.inspectorVisible)
-        XCTAssertEqual(layout.sidebarWidth, 220)
+        XCTAssertTrue(layout.inspectorVisible)
+        XCTAssertEqual(layout.sidebarWidth, 240)
     }
 
     func testWorkspaceLayoutRoundTrip() {

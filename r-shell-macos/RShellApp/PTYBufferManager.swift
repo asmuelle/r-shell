@@ -58,9 +58,18 @@ class PTYBufferManager {
     }
 
     func reset() {
-        cancelTimer()
+        cancel()
         buffer.removeAll()
         workloadHints.reset()
+    }
+
+    /// Explicitly cancel the flush timer and release the dispatch source.
+    /// Must be called before the manager is deallocated — the `@MainActor`
+    /// deinit cannot touch the timer itself. `TerminalSessionManager`
+    /// calls this from `unregisterSession` during session teardown.
+    func cancel() {
+        flushTimer?.cancel()
+        flushTimer = nil
     }
 
     // MARK: - Adaptive tuning
@@ -125,8 +134,8 @@ class PTYBufferManager {
     deinit {
         // The DispatchSourceTimer is released alongside the manager. We
         // can't call the @MainActor `cancelTimer()` from a non-isolated
-        // deinit; explicit cancellation is the caller's responsibility
-        // (see WorkspaceSplitController teardown).
+        // deinit; `TerminalSessionManager.unregisterSession` calls
+        // `cancel()` before removing the session.
     }
 }
 

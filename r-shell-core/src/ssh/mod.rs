@@ -842,6 +842,8 @@ impl SshClient {
             let mtime_secs = attrs.mtime.map(|t| t as i64);
             let modified = mtime_secs.map(format_unix_timestamp);
             let permissions = attrs.permissions.map(format_permissions);
+            let owner = attrs.uid.map(|u| u.to_string());
+            let group = attrs.gid.map(|g| g.to_string());
 
             let file_type = if attrs.is_dir() {
                 FileEntryType::Directory
@@ -857,6 +859,8 @@ impl SshClient {
                 modified,
                 modified_unix: mtime_secs,
                 permissions,
+                owner,
+                group,
                 file_type,
             });
         }

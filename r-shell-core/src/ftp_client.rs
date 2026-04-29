@@ -349,6 +349,8 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
                 modified: None,
                 modified_unix: None,
                 permissions: None,
+                owner: None,
+                group: None,
                 file_type: FileEntryType::File,
             });
         }
@@ -374,6 +376,8 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
             modified: None,
             modified_unix: None,
             permissions: Some(perms_str.to_string()),
+            owner: None,
+            group: None,
             file_type,
         });
     }
@@ -398,6 +402,8 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
         modified,
         modified_unix: None,
         permissions: Some(perms_str.to_string()),
+        owner: None,
+        group: None,
         file_type,
     })
 }

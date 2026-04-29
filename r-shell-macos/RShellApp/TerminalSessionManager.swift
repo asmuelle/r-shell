@@ -67,6 +67,7 @@ final class TerminalSessionManager {
     }
 
     func unregisterSession(connectionId: String) {
+        sessions[connectionId]?.bufferManager.cancel()
         sessions[connectionId]?.bufferManager.reset()
         sessions.removeValue(forKey: connectionId)
         // Clear any stale pending payloads so we don't replay them onto a

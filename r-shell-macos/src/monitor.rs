@@ -356,24 +356,14 @@ pub mod darwin {
 
     /// `vm.swapusage` example:
     ///   `total = 4096.00M  used = 123.45M  free = 3972.55M (encrypted)`
+    /// `vm.swapusage` example:
+    ///   `total = 4096.00M  used = 123.45M  free = 3972.55M (encrypted)`
+    /// Walk token windows of three (`key = value`) so "total = NUM M" /
+    /// "used = NUM M" are matched regardless of the field delimiter
+    /// (comma or whitespace).
     pub fn parse_swapusage(s: &str) -> (u64, u64) {
         let mut total = 0u64;
         let mut used = 0u64;
-        for token in s.split_whitespace() {
-            // Split "total=4096.00M" / "used=123.45M" / etc.
-            // Numbers carry an M suffix → MiB.
-            if let Some(num_str) = token.strip_suffix('M') {
-                if let Ok(value) = num_str.parse::<f64>() {
-                    let bytes = (value * 1024.0 * 1024.0) as u64;
-                    // Crude positional read: every "= NUM M" pair after a
-                    // labelled field uses the previous label.
-                    // Safer: scan the original line for "<key> = NUM M"
-                    // — see below.
-                    let _ = bytes;
-                }
-            }
-        }
-        // Recover from the simpler regex-style scan instead.
         for chunk in s.split(',') {
             for kv_block in chunk.split_whitespace().collect::<Vec<_>>().windows(3) {
                 if kv_block.len() == 3 && kv_block[1] == "=" {

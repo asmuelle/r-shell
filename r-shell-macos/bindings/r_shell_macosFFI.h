@@ -363,6 +363,21 @@ void uniffi_r_shell_macos_fn_func_rshell_set_event_callback(uint64_t callback, R
 int8_t uniffi_r_shell_macos_fn_func_rshell_sftp_cancel(RustBuffer transfer_id, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CHGRP
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CHGRP
+void uniffi_r_shell_macos_fn_func_rshell_sftp_chgrp(RustBuffer connection_id, RustBuffer path, RustBuffer gid, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CHMOD
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CHMOD
+void uniffi_r_shell_macos_fn_func_rshell_sftp_chmod(RustBuffer connection_id, RustBuffer path, RustBuffer mode, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CHOWN
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CHOWN
+void uniffi_r_shell_macos_fn_func_rshell_sftp_chown(RustBuffer connection_id, RustBuffer path, RustBuffer uid, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CREATE_DIR
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_CREATE_DIR
 void uniffi_r_shell_macos_fn_func_rshell_sftp_create_dir(RustBuffer connection_id, RustBuffer path, RustCallStatus *_Nonnull out_status
@@ -391,6 +406,16 @@ RustBuffer uniffi_r_shell_macos_fn_func_rshell_sftp_list_dir(RustBuffer connecti
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RENAME
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RENAME
 void uniffi_r_shell_macos_fn_func_rshell_sftp_rename(RustBuffer connection_id, RustBuffer old_path, RustBuffer new_path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RESOLVE_GID
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RESOLVE_GID
+RustBuffer uniffi_r_shell_macos_fn_func_rshell_sftp_resolve_gid(RustBuffer connection_id, RustBuffer gid, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RESOLVE_UID
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_RESOLVE_UID
+RustBuffer uniffi_r_shell_macos_fn_func_rshell_sftp_resolve_uid(RustBuffer connection_id, RustBuffer uid, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
@@ -791,6 +816,24 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_cancel(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CHGRP
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CHGRP
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_chgrp(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CHMOD
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CHMOD
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_chmod(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CHOWN
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CHOWN
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_chown(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CREATE_DIR
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_CREATE_DIR
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_create_dir(void
@@ -824,6 +867,18 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_list_dir(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RENAME
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RENAME
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_rename(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RESOLVE_GID
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RESOLVE_GID
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_resolve_gid(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RESOLVE_UID
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_RESOLVE_UID
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_resolve_uid(void
     
 );
 #endif

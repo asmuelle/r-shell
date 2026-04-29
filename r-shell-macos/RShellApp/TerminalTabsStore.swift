@@ -485,6 +485,7 @@ final class TerminalTabsStore: ObservableObject {
         let tab = tabs[index]
 
         if tab.effectiveKind.supportsTerminal {
+            BridgeManager.shared.flushPendingInput(connectionId: tab.connectionId)
             BridgeManager.shared.closeTerminal(
                 connectionId: tab.connectionId,
                 generation: tab.ptyGeneration

@@ -36,19 +36,15 @@ extension View {
         background(VisualEffectView(material: material, blendingMode: blendingMode).ignoresSafeArea())
     }
 
-    /// Sidebar background with a sidebar material + a strong
-    /// vertical accent-tinted gradient that fades top→bottom, the
-    /// same look modern Finder leans into when the user has tinted
-    /// the desktop. The gradient is intentionally pronounced (top:
-    /// 22% accent, bottom: 0%) — at the previous 8% it was lost
-    /// entirely under the NSVisualEffectView vibrancy. Both layers
-    /// ignore safe area so they extend under the toolbar; otherwise
-    /// the window's solid background bleeds through at the top.
+    /// Finder-style sidebar background: translucent material + a
+    /// very subtle light-blue vertical gradient that fades top→bottom,
+    /// matching the look of the macOS Finder sidebar regardless of the
+    /// user's accent colour. Both layers ignore safe area so they
+    /// extend under the toolbar.
     ///
     /// `.blendMode(.plusLighter)` mixes the gradient *with* the
-    /// vibrant material instead of compositing on top, so the
-    /// accent reads through the desktop-aware blur instead of
-    /// covering it.
+    /// vibrant material instead of compositing on top, so the blue
+    /// tint reads through the desktop-aware blur.
     func finderSidebarBackground() -> some View {
         background {
             VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
@@ -56,8 +52,8 @@ extension View {
                 .overlay {
                     LinearGradient(
                         colors: [
-                            Color.accentColor.opacity(0.22),
-                            Color.accentColor.opacity(0.04),
+                            Color(red: 0.83, green: 0.87, blue: 0.96).opacity(0.20),
+                            Color(red: 0.90, green: 0.93, blue: 0.98).opacity(0.06),
                         ],
                         startPoint: .top,
                         endPoint: .bottom

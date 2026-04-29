@@ -15,6 +15,8 @@ public struct FileEntry: Codable, Identifiable, Hashable, Sendable {
     public var size: UInt64
     public var modified: Date?
     public var permissions: String?
+    public var owner: String?
+    public var group: String?
     public var type: FileType
     public var isExpanded: Bool = false
     public var children: [FileEntry]?
@@ -26,6 +28,8 @@ public struct FileEntry: Codable, Identifiable, Hashable, Sendable {
         size: UInt64 = 0,
         modified: Date? = nil,
         permissions: String? = nil,
+        owner: String? = nil,
+        group: String? = nil,
         type: FileType = .file,
         children: [FileEntry]? = nil
     ) {
@@ -34,6 +38,8 @@ public struct FileEntry: Codable, Identifiable, Hashable, Sendable {
         self.size = size
         self.modified = modified
         self.permissions = permissions
+        self.owner = owner
+        self.group = group
         self.type = type
         self.children = children
     }

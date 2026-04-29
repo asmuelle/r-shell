@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import OSLog
 import UniformTypeIdentifiers
+import Darwin
 
 /// Transferable wrapper for a remote (SFTP) file dragged out of
 /// `FileBrowserView`. Carries everything the receiver needs to
@@ -260,6 +261,14 @@ struct LocalFileBrowserView: View {
                     .lineLimit(1)
             }
             .width(min: 90, ideal: 130)
+
+            TableColumn("Owner", value: \.owner) { entry in
+                Text("\(entry.owner):\(entry.group)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            .width(min: 70, ideal: 100, max: 160)
         }
         .contextMenu(forSelectionType: String.self) { selectedNames in
             contextMenu(for: selectedNames, rows: rows)
@@ -405,6 +414,8 @@ struct LocalFileEntry: Identifiable, Hashable {
     let size: Int64
     let isDirectory: Bool
     let modifiedUnix: Int64
+    let owner: String
+    let group: String
     var id: String { name }
 
     var modifiedDisplay: String {
@@ -430,5 +441,14 @@ struct LocalFileEntry: Identifiable, Hashable {
         self.modifiedUnix = values.contentModificationDate.map {
             Int64($0.timeIntervalSince1970)
         } ?? 0
+
+        var st = stat()
+        if stat(url.path, &st) == 0 {
+            self.owner = String(st.st_uid)
+            self.group = String(st.st_gid)
+        } else {
+            self.owner = "—"
+            self.group = "—"
+        }
     }
 }

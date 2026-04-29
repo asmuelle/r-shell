@@ -922,6 +922,16 @@ public struct FfiFileEntry {
      * Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
      */
     public var permissions: String?
+    /**
+     * Numeric owner uid (e.g. `"501"`). Resolved to a name on demand
+     * via `rshell_sftp_resolve_uid`.
+     */
+    public var owner: String?
+    /**
+     * Numeric group gid (e.g. `"20"`). Resolved to a name on demand
+     * via `rshell_sftp_resolve_gid`.
+     */
+    public var group: String?
     public var kind: FfiFileKind
 
     // Default memberwise initializers are never public by default, so we
@@ -939,12 +949,22 @@ public struct FfiFileEntry {
          */modifiedUnix: Int64?, 
         /**
          * Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
-         */permissions: String?, kind: FfiFileKind) {
+         */permissions: String?, 
+        /**
+         * Numeric owner uid (e.g. `"501"`). Resolved to a name on demand
+         * via `rshell_sftp_resolve_uid`.
+         */owner: String?, 
+        /**
+         * Numeric group gid (e.g. `"20"`). Resolved to a name on demand
+         * via `rshell_sftp_resolve_gid`.
+         */group: String?, kind: FfiFileKind) {
         self.name = name
         self.size = size
         self.modified = modified
         self.modifiedUnix = modifiedUnix
         self.permissions = permissions
+        self.owner = owner
+        self.group = group
         self.kind = kind
     }
 }
@@ -968,6 +988,12 @@ extension FfiFileEntry: Equatable, Hashable {
         if lhs.permissions != rhs.permissions {
             return false
         }
+        if lhs.owner != rhs.owner {
+            return false
+        }
+        if lhs.group != rhs.group {
+            return false
+        }
         if lhs.kind != rhs.kind {
             return false
         }
@@ -980,6 +1006,8 @@ extension FfiFileEntry: Equatable, Hashable {
         hasher.combine(modified)
         hasher.combine(modifiedUnix)
         hasher.combine(permissions)
+        hasher.combine(owner)
+        hasher.combine(group)
         hasher.combine(kind)
     }
 }
@@ -997,6 +1025,8 @@ public struct FfiConverterTypeFfiFileEntry: FfiConverterRustBuffer {
                 modified: FfiConverterOptionString.read(from: &buf), 
                 modifiedUnix: FfiConverterOptionInt64.read(from: &buf), 
                 permissions: FfiConverterOptionString.read(from: &buf), 
+                owner: FfiConverterOptionString.read(from: &buf), 
+                group: FfiConverterOptionString.read(from: &buf), 
                 kind: FfiConverterTypeFfiFileKind.read(from: &buf)
         )
     }
@@ -1007,6 +1037,8 @@ public struct FfiConverterTypeFfiFileEntry: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.modified, into: &buf)
         FfiConverterOptionInt64.write(value.modifiedUnix, into: &buf)
         FfiConverterOptionString.write(value.permissions, into: &buf)
+        FfiConverterOptionString.write(value.owner, into: &buf)
+        FfiConverterOptionString.write(value.group, into: &buf)
         FfiConverterTypeFfiFileKind.write(value.kind, into: &buf)
     }
 }
@@ -2382,6 +2414,42 @@ public func rshellSftpCancel(transferId: String) -> Bool {
 })
 }
 /**
+ * Change file group on the remote. `gid` is a numeric gid string
+ * (e.g. `"20"`) or a group name.
+ */
+public func rshellSftpChgrp(connectionId: String, path: String, gid: String)throws  {try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_chgrp(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),
+        FfiConverterString.lower(gid),$0
+    )
+}
+}
+/**
+ * Change file permissions on the remote. `mode` is an octal string
+ * e.g. `"755"`, `"644"`, `"700"`.
+ */
+public func rshellSftpChmod(connectionId: String, path: String, mode: String)throws  {try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_chmod(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),
+        FfiConverterString.lower(mode),$0
+    )
+}
+}
+/**
+ * Change file owner on the remote. `uid` is a numeric uid string
+ * (e.g. `"501"`) or a username.
+ */
+public func rshellSftpChown(connectionId: String, path: String, uid: String)throws  {try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_chown(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),
+        FfiConverterString.lower(uid),$0
+    )
+}
+}
+/**
  * Create a directory on the remote. Fails if the parent doesn't
  * exist or the name is already taken.
  */
@@ -2456,6 +2524,30 @@ public func rshellSftpRename(connectionId: String, oldPath: String, newPath: Str
         FfiConverterString.lower(newPath),$0
     )
 }
+}
+/**
+ * Resolve a numeric gid to a group name on the remote. Returns the
+ * raw output of `id -ng <gid>` (the name) or an error.
+ */
+public func rshellSftpResolveGid(connectionId: String, gid: String)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_resolve_gid(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(gid),$0
+    )
+})
+}
+/**
+ * Resolve a numeric uid to a username on the remote. Returns the
+ * raw output of `id -nu <uid>` (the name) or an error.
+ */
+public func rshellSftpResolveUid(connectionId: String, uid: String)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeSftpError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_sftp_resolve_uid(
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(uid),$0
+    )
+})
 }
 /**
  * Stream a local file to a remote path. See `rshell_sftp_download` for
@@ -2556,6 +2648,15 @@ private var initializationResult: InitializationResult = {
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_cancel() != 33240) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_chgrp() != 28499) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_chmod() != 35667) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_chown() != 16440) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_create_dir() != 42046) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2572,6 +2673,12 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_rename() != 3589) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_resolve_gid() != 27483) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_sftp_resolve_uid() != 27921) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_upload() != 1763) {

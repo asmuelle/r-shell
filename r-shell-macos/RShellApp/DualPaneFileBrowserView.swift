@@ -59,6 +59,10 @@ struct DualPaneFileBrowserView: View {
             )
             .frame(minWidth: 280)
         }
+        .overlay {
+            TransferProgressOverlay()
+                .environmentObject(transfers)
+        }
     }
 
     /// Push a local URL onto the transfer queue as an upload to the

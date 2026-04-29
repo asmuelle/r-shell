@@ -70,6 +70,8 @@ pub async fn list_local_files(path: String) -> Result<Vec<FileEntry>, String> {
             modified,
             modified_unix: mtime_secs,
             permissions,
+            owner: None,
+            group: None,
             file_type,
         });
     }

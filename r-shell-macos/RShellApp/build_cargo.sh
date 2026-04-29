@@ -82,7 +82,15 @@ echo "   Archs: $(lipo -info "$UNIVERSAL_LIB")"
 
 BINDINGS_DIR="$SCRIPT_DIR/../bindings"
 BINDINGS_SWIFT="$BINDINGS_DIR/r_shell_macos.swift"
-HOST_DYLIB="$RUST_TARGET_DIR/aarch64-apple-darwin/$CARGO_PROFILE/libr_shell_macos.dylib"
+# Map uname -m → Rust target triple for the host machine, so bindings
+# regeneration works on both Apple Silicon and Intel.
+HOST_ARCH=$(uname -m)
+case "$HOST_ARCH" in
+    arm64) HOST_TARGET="aarch64-apple-darwin" ;;
+    x86_64) HOST_TARGET="x86_64-apple-darwin" ;;
+    *) echo "❌ Unknown host architecture: $HOST_ARCH"; exit 1 ;;
+esac
+HOST_DYLIB="$RUST_TARGET_DIR/$HOST_TARGET/$CARGO_PROFILE/libr_shell_macos.dylib"
 
 # Skip regen if the bindings file is already newer than every FFI source —
 # protects incremental builds from a needless rebuild of the bindgen tool.

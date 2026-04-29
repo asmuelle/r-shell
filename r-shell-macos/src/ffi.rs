@@ -215,10 +215,10 @@ pub enum ConnectError {
 }
 
 /// Classify an `anyhow::Error` from r-shell-core into a typed `ConnectError`.
-/// The match order matters: passphrase matches must happen before the
-/// generic "authentication failed" check, since the passphrase-required
-/// error message also contains the word "key" but isn't a remote auth
-/// rejection.
+/// The match order matters: passphrase / encrypted-key failures must be
+/// caught before the generic "authentication failed" check, since a wrong
+/// key passphrase is user-correctable (re-prompt) whereas a remote auth
+/// rejection means the credential itself is wrong.
 fn classify_connect_error(e: &anyhow::Error) -> ConnectError {
     let msg = e.to_string();
     let lower = msg.to_lowercase();
@@ -241,6 +241,29 @@ fn classify_connect_error(e: &anyhow::Error) -> ConnectError {
     } else {
         ConnectError::Other { detail: msg }
     }
+}
+
+/// Strip redundant segments from `anyhow` error chains. When an
+/// outer context and inner cause produce identical text (common
+/// with SFTP "Permission denied" → "Permission denied" chains),
+/// return a single clean message. Otherwise collapse adjacent
+/// duplicate segments joined by `": "`.
+fn sanitize_error(e: anyhow::Error) -> String {
+    let full = e.to_string();
+    let root = e.root_cause().to_string();
+    if full == format!("{}: {}", root, root) {
+        return root;
+    }
+    // Collapse adjacent identical segments.
+    let parts: Vec<&str> = full.split(": ").collect();
+    let mut deduped: Vec<&str> = Vec::new();
+    for part in parts {
+        if deduped.last() == Some(&part) {
+            continue;
+        }
+        deduped.push(part);
+    }
+    deduped.join(": ")
 }
 
 /// Establish an SSH connection. Returns the canonical connection id
@@ -570,6 +593,12 @@ pub struct FfiFileEntry {
     pub modified_unix: Option<i64>,
     /// Pre-formatted POSIX permission string (e.g. `rwxr-xr-x`).
     pub permissions: Option<String>,
+    /// Numeric owner uid (e.g. `"501"`). Resolved to a name on demand
+    /// via `rshell_sftp_resolve_uid`.
+    pub owner: Option<String>,
+    /// Numeric group gid (e.g. `"20"`). Resolved to a name on demand
+    /// via `rshell_sftp_resolve_gid`.
+    pub group: Option<String>,
     pub kind: FfiFileKind,
 }
 
@@ -699,7 +728,9 @@ pub fn rshell_sftp_download(
         match outcome {
             Ok(bytes) => Ok(bytes),
             Err(_) if token.is_cancelled() => Err(SftpError::Cancelled),
-            Err(e) => Err(SftpError::Other { detail: e.to_string() }),
+            Err(e) => Err(SftpError::Other {
+                detail: sanitize_error(e),
+            }),
         }
     });
 
@@ -763,7 +794,9 @@ pub fn rshell_sftp_upload(
         match outcome {
             Ok(bytes) => Ok(bytes),
             Err(_) if token.is_cancelled() => Err(SftpError::Cancelled),
-            Err(e) => Err(SftpError::Other { detail: e.to_string() }),
+            Err(e) => Err(SftpError::Other {
+                detail: sanitize_error(e),
+            }),
         }
     });
 
@@ -788,7 +821,7 @@ pub fn rshell_sftp_create_dir(connection_id: String, path: String) -> Result<(),
         guard
             .create_dir(&path)
             .await
-            .map_err(|e| SftpError::Other { detail: e.to_string() })
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
     })
 }
 
@@ -812,7 +845,7 @@ pub fn rshell_sftp_rename(
         guard
             .rename(&old_path, &new_path)
             .await
-            .map_err(|e| SftpError::Other { detail: e.to_string() })
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
     })
 }
 
@@ -832,7 +865,7 @@ pub fn rshell_sftp_delete_file(connection_id: String, path: String) -> Result<()
         guard
             .delete_file(&path)
             .await
-            .map_err(|e| SftpError::Other { detail: e.to_string() })
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
     })
 }
 
@@ -853,7 +886,140 @@ pub fn rshell_sftp_delete_dir(connection_id: String, path: String) -> Result<(),
         guard
             .delete_dir(&path)
             .await
-            .map_err(|e| SftpError::Other { detail: e.to_string() })
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+    })
+}
+
+/// Change file permissions on the remote. `mode` is an octal string
+/// e.g. `"755"`, `"644"`, `"700"`.
+#[uniffi::export]
+pub fn rshell_sftp_chmod(connection_id: String, path: String, mode: String) -> Result<(), SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        let cmd = format!("chmod {} {}", shell_escape::unix::escape(std::borrow::Cow::Borrowed(&mode)), shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path)));
+        let output = guard
+            .execute_command_full(&cmd)
+            .await
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?;
+        if output.exit_code == Some(0) {
+            Ok(())
+        } else {
+            Err(SftpError::Other {
+                detail: output.stderr.trim().to_string(),
+            })
+        }
+    })
+}
+
+/// Change file owner on the remote. `uid` is a numeric uid string
+/// (e.g. `"501"`) or a username.
+#[uniffi::export]
+pub fn rshell_sftp_chown(connection_id: String, path: String, uid: String) -> Result<(), SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        let cmd = format!("chown {} {}", shell_escape::unix::escape(std::borrow::Cow::Borrowed(&uid)), shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path)));
+        let output = guard
+            .execute_command_full(&cmd)
+            .await
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?;
+        if output.exit_code == Some(0) {
+            Ok(())
+        } else {
+            Err(SftpError::Other {
+                detail: output.stderr.trim().to_string(),
+            })
+        }
+    })
+}
+
+/// Change file group on the remote. `gid` is a numeric gid string
+/// (e.g. `"20"`) or a group name.
+#[uniffi::export]
+pub fn rshell_sftp_chgrp(connection_id: String, path: String, gid: String) -> Result<(), SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        let cmd = format!("chgrp {} {}", shell_escape::unix::escape(std::borrow::Cow::Borrowed(&gid)), shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path)));
+        let output = guard
+            .execute_command_full(&cmd)
+            .await
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?;
+        if output.exit_code == Some(0) {
+            Ok(())
+        } else {
+            Err(SftpError::Other {
+                detail: output.stderr.trim().to_string(),
+            })
+        }
+    })
+}
+
+/// Resolve a numeric uid to a username on the remote. Returns the
+/// raw output of `id -nu <uid>` (the name) or an error.
+#[uniffi::export]
+pub fn rshell_sftp_resolve_uid(connection_id: String, uid: String) -> Result<String, SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        let cmd = format!("id -nu {}", uid);
+        guard
+            .execute_command(&cmd)
+            .await
+            .map(|s| s.trim().to_string())
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+    })
+}
+
+/// Resolve a numeric gid to a group name on the remote. Returns the
+/// raw output of `id -ng <gid>` (the name) or an error.
+#[uniffi::export]
+pub fn rshell_sftp_resolve_gid(connection_id: String, gid: String) -> Result<String, SftpError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or(SftpError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+        let guard = client.read().await;
+        let cmd = format!("id -ng {}", gid);
+        guard
+            .execute_command(&cmd)
+            .await
+            .map(|s| s.trim().to_string())
+            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
     })
 }
 
@@ -879,7 +1045,7 @@ pub fn rshell_sftp_list_dir(
             guard
                 .list_dir(&path)
                 .await
-                .map_err(|e| SftpError::Other { detail: e.to_string() })?
+                .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?
         };
 
         Ok(entries
@@ -890,6 +1056,8 @@ pub fn rshell_sftp_list_dir(
                 modified: e.modified,
                 modified_unix: e.modified_unix,
                 permissions: e.permissions,
+                owner: e.owner,
+                group: e.group,
                 kind: match e.file_type {
                     r_shell_core::sftp_client::FileEntryType::File => FfiFileKind::File,
                     r_shell_core::sftp_client::FileEntryType::Directory => FfiFileKind::Directory,
@@ -984,7 +1152,7 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
                     guard
                         .execute_command("uname -s")
                         .await
-                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
                 };
                 let detected = monitor::classify_uname(&uname);
                 monitor::store(&connection_id, detected.clone());
@@ -999,7 +1167,7 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
                     guard
                         .execute_command(monitor::linux::STATS_COMMAND)
                         .await
-                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
                 };
                 parse_linux_stats(&output)
                     .map_err(|e| MonitorError::ParseError { detail: e })
@@ -1010,7 +1178,7 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
                     guard
                         .execute_command(monitor::darwin::STATS_COMMAND)
                         .await
-                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
                 };
                 parse_darwin_stats(&output)
                     .map_err(|e| MonitorError::ParseError { detail: e })
@@ -1193,7 +1361,7 @@ pub fn rshell_get_processes(connection_id: String) -> Result<Vec<FfiProcess>, Mo
                     guard
                         .execute_command("uname -s")
                         .await
-                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
                 };
                 let detected = monitor::classify_uname(&uname);
                 monitor::store(&connection_id, detected.clone());
@@ -1212,7 +1380,7 @@ pub fn rshell_get_processes(connection_id: String) -> Result<Vec<FfiProcess>, Mo
             guard
                 .execute_command(cmd)
                 .await
-                .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
         };
 
         let rows = match os {
@@ -1263,7 +1431,7 @@ pub fn rshell_signal_process(
             .execute_command(&cmd)
             .await
             .map(|_| ())
-            .map_err(|e| MonitorError::Other { detail: e.to_string() })
+            .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })
     })
 }
 
