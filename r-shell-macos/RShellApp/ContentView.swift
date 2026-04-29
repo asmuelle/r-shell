@@ -76,16 +76,27 @@ struct ContentView: View {
         } message: {
             Text(tabsStore.lastError ?? "")
         }
-        // Soft-failure notice (e.g. SSH→SFTP fallback). Distinct
-        // from the error alert so the user can tell "we adapted
-        // and continued" from "this didn't work at all".
-        .alert("Heads up", isPresented: Binding(
-            get: { tabsStore.lastNotice != nil },
-            set: { if !$0 { tabsStore.lastNotice = nil } }
-        )) {
-            Button("OK") { tabsStore.lastNotice = nil }
-        } message: {
-            Text(tabsStore.lastNotice ?? "")
+        // SSH→SFTP fallback prompt. Distinct from the error alert
+        // because the connect *did* succeed, just in a different
+        // shape than asked for. Offers a one-click commit to make
+        // the demotion permanent so future connects skip the shell
+        // attempt entirely.
+        .alert("Server doesn't allow shell access",
+               isPresented: Binding(
+                   get: { tabsStore.pendingFallback != nil },
+                   set: { if !$0 { tabsStore.pendingFallback = nil } }
+               ),
+               presenting: tabsStore.pendingFallback
+        ) { fallback in
+            Button("Convert profile to SFTP") {
+                connectionStore.setKind(profileId: fallback.profileId, kind: .sftp)
+                tabsStore.pendingFallback = nil
+            }
+            Button("Keep as SSH", role: .cancel) {
+                tabsStore.pendingFallback = nil
+            }
+        } message: { fallback in
+            Text(fallback.message)
         }
     }
 }

@@ -56,6 +56,18 @@ class ConnectionStoreManager: ObservableObject {
         saveOrUpdate(updated)
     }
 
+    /// Update the saved kind for a profile in place. Used by the
+    /// SSH→SFTP fallback alert when the user opts to make the
+    /// demotion permanent. Other fields stay untouched so this
+    /// can't accidentally overwrite an in-flight edit.
+    func setKind(profileId: String, kind: ConnectionKind) {
+        guard let idx = connections.firstIndex(where: { $0.id == profileId }) else { return }
+        if connections[idx].kind == kind { return }
+        connections[idx].kind = kind
+        save()
+        logger.info("Profile \(profileId, privacy: .public) kind → \(kind.rawValue, privacy: .public)")
+    }
+
     // MARK: - Folder CRUD
 
     /// Outcome of a folder mutation. The sidebar surfaces failures via

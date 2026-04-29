@@ -22,13 +22,24 @@ final class TerminalTabsStore: ObservableObject {
     @Published private(set) var tabs: [TerminalTab] = []
     @Published var activeTabId: UUID?
     @Published var lastError: String?
-    /// Non-blocking informational message — used for soft-failure
-    /// states where the connect succeeded but in a different shape
-    /// than the user requested (today: SSH-to-SFTP fallback when the
-    /// server denies the shell). Surfaced as a dismissible alert so
-    /// the user knows what happened, but doesn't gate the UI behind
-    /// a modal "the thing is broken" treatment.
-    @Published var lastNotice: String?
+    /// Set when a tab was demoted from SSH to SFTP because the
+    /// server denied the shell channel. The wrapped profile id lets
+    /// the host alert offer a one-click "convert this profile to
+    /// SFTP permanently" action — without the id, the user would
+    /// have to find the profile in the sidebar, open the editor,
+    /// flip the kind, and save, every time they reconnect.
+    @Published var pendingFallback: PendingFallback?
+
+    /// Carries the data the SSH→SFTP fallback alert needs: which
+    /// profile to convert if the user opts in, and what to display.
+    struct PendingFallback: Equatable {
+        let profileId: String
+        let profileName: String
+
+        var message: String {
+            "\"\(profileName)\" was switched to SFTP-only mode for this session because the server denied shell access. Convert the saved profile to SFTP so future connects skip the shell attempt?"
+        }
+    }
     /// Profile ids currently inside an in-flight `openConnection` call.
     /// The sidebar reads this to swap the row's icon for a spinner and
     /// guard the click so a double-tap can't fire a second connect for
@@ -352,7 +363,10 @@ final class TerminalTabsStore: ObservableObject {
                     logger.info("Server denied PTY but accepts SFTP; demoting tab to SFTP for \(connectionId, privacy: .public)")
                     kindOverride = .sftp
                     displayTitle = "\(profile.name) (SFTP)"
-                    lastNotice = "Server doesn't allow shell access. Switched \"\(profile.name)\" to SFTP-only mode."
+                    pendingFallback = PendingFallback(
+                        profileId: profile.id,
+                        profileName: profile.name
+                    )
                 } else {
                     lastError = "Server refused both shell and SFTP. Connection is unusable."
                     BridgeManager.shared.disconnect(connectionId: connectionId)
