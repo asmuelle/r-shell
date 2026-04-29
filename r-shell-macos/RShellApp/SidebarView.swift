@@ -115,7 +115,7 @@ struct SidebarView: View {
     private var connectionList: some View {
         List(selection: $selectedConnection) {
             if storeManager.connections.isEmpty && storeManager.folders.isEmpty {
-                Section("Connections") {
+                Section {
                     if search.isEmpty {
                         emptyState
                     } else {
@@ -123,33 +123,42 @@ struct SidebarView: View {
                             .foregroundColor(.secondary)
                             .font(.caption)
                     }
+                } header: {
+                    SidebarSectionHeader(title: "Connections")
                 }
             } else if isSearchActive && !hasAnyMatches {
-                Section("Connections") {
+                Section {
                     Text("No matches")
                         .foregroundColor(.secondary)
                         .font(.caption)
+                } header: {
+                    SidebarSectionHeader(title: "Connections")
                 }
             } else {
-                // Root-level (uncategorized) profiles first.
-                let rootConns = filteredConnections(in: nil)
-                if !rootConns.isEmpty {
+                Section {
+                    // Root-level (uncategorized) profiles first.
+                    let rootConns = filteredConnections(in: nil)
                     ForEach(rootConns) { conn in
                         connectionRow(conn)
                     }
-                }
 
-                // Top-level folders, recursively rendered. Drag-drop
-                // and "Move to" context menus reorganize the
-                // hierarchy without users having to edit the profile.
-                ForEach(filteredChildFolders(of: nil)) { folder in
-                    folderNode(folder)
+                    // Top-level folders, recursively rendered. Drag-drop
+                    // and "Move to" context menus reorganize the
+                    // hierarchy without users having to edit the profile.
+                    ForEach(filteredChildFolders(of: nil)) { folder in
+                        folderNode(folder)
+                    }
+                } header: {
+                    SidebarSectionHeader(title: "Connections")
                 }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .searchable(text: $search, placement: .sidebar, prompt: "Search connections")
+        // Search moves to the window toolbar (Finder-style) rather
+        // than living inside the sidebar — keeps the sidebar visually
+        // tighter and matches the platform convention.
+        .searchable(text: $search, placement: .toolbar, prompt: "Search connections")
     }
 
     /// Recursive folder + nested-content renderer. Each folder is a
@@ -495,44 +504,46 @@ struct ConnectionRow: View {
     var isConnecting: Bool = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             // Leading slot: spinner during connect, otherwise the
-            // kind / favorite glyph.
+            // kind / favorite glyph. Sized to match Finder sidebar
+            // icon density (~13pt with a 18pt fixed slot).
             ZStack {
                 if isConnecting {
                     ProgressView()
                         .controlSize(.mini)
                 } else {
                     Image(systemName: rowGlyph)
-                        .font(.system(size: 11))
+                        .font(.system(size: 13))
                         .foregroundStyle(rowGlyphTint)
+                        .symbolRenderingMode(.hierarchical)
                 }
             }
-            .frame(width: 14)
+            .frame(width: 18)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(profile.name)
-                    .font(.system(size: 12))
+            // Single-line — Finder rows are dense and rely on the
+            // selection / details panel for secondary info. The full
+            // `user@host:port` is on the row's tooltip, and the
+            // selected profile's metadata always shows in the
+            // Connection Details panel below.
+            if isConnecting {
+                Text("Connecting…")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.tint)
                     .lineLimit(1)
-                if isConnecting {
-                    // Replace the host string with a status line so
-                    // users get unambiguous feedback that the click
-                    // actually did something. `.tint` matches the
-                    // spinner so the two read as one signal.
-                    Text("Connecting…")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tint)
-                        .lineLimit(1)
-                } else {
-                    Text("\(profile.username)@\(profile.host):\(profile.port)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            } else {
+                Text(profile.name)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        // Tighter vertical density to match Finder's ~24pt row
+        // height. Two-line layouts pushed the rows closer to 36pt;
+        // a one-line layout at this padding lands ~22pt visually.
+        .padding(.vertical, 1)
         .opacity(isConnecting ? 0.7 : 1.0)
+        .help("\(profile.username)@\(profile.host):\(profile.port)")
         // Click guarding lives in the parent's `handleTap` rather
         // than `.allowsHitTesting(false)` here — disabling hit-testing
         // would also kill the right-click that opens the context
@@ -549,12 +560,39 @@ struct ConnectionRow: View {
     }
 
     private var rowGlyphTint: Color {
-        profile.favorite ? .yellow : .secondary
+        if profile.favorite { return .yellow }
+        // Match Finder's "folder = blue" cue for SFTP profiles since
+        // they're file-only; SSH profiles read as a more neutral
+        // greyed terminal glyph so the favourite + folder accents
+        // stay visually distinct.
+        switch profile.kind {
+        case .ssh: return .secondary
+        case .sftp: return .accentColor
+        }
     }
 
     private var accessibilityLabel: String {
         let base = "\(profile.name), \(profile.username)@\(profile.host):\(profile.port)"
         return isConnecting ? "\(base), connecting" : base
+    }
+}
+
+// MARK: - Section header
+
+/// Finder-style section header: 11pt uppercase, semibold, secondary
+/// color, kerned. SwiftUI's default `Section("Title")` renders mixed
+/// case in a slightly larger font that reads more like a `List`
+/// section than a sidebar one — replacing it gets the visual closer
+/// to AppKit's NSOutlineView header style without resorting to a
+/// hosted NSView.
+private struct SidebarSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.system(size: 11, weight: .semibold))
+            .kerning(0.5)
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -568,13 +606,14 @@ private struct FolderRow: View {
     let folder: ConnectionFolder
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: "folder.fill")
-                .font(.system(size: 11))
+                .font(.system(size: 13))
                 .foregroundStyle(.tint)
-                .frame(width: 14)
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 18)
             Text(folder.name)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 13))
                 .lineLimit(1)
             Spacer(minLength: 0)
         }
