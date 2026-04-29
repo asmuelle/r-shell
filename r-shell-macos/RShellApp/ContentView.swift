@@ -83,8 +83,24 @@ struct ContentView: View {
 
 private struct DetailColumn: View {
     @ObservedObject var layoutManager: LayoutManager
+    @EnvironmentObject var tabsStore: TerminalTabsStore
     @State private var bottomHeightDebounce: Task<Void, Never>?
     @State private var inspectorWidthDebounce: Task<Void, Never>?
+
+    /// SFTP-only tabs hide the System Monitor inspector — there's no
+    /// shell to drive the underlying `top` / `vm_stat` calls, and the
+    /// dual-pane file browser already uses every pixel of horizontal
+    /// space we can give it. The user's persisted
+    /// `layout.inspectorVisible` is preserved (we just override the
+    /// render), so switching back to an SSH tab brings the inspector
+    /// straight back to the size they last left it at.
+    private var inspectorShouldRender: Bool {
+        guard layoutManager.layout.inspectorVisible else { return false }
+        if let kind = tabsStore.activeTab?.profile.kind, kind == .sftp {
+            return false
+        }
+        return true
+    }
 
     var body: some View {
         HSplitView {
@@ -112,7 +128,7 @@ private struct DetailColumn: View {
             }
             .onPreferenceChange(BottomHeightKey.self, perform: persistBottomHeight)
 
-            if layoutManager.layout.inspectorVisible {
+            if inspectorShouldRender {
                 InspectorPanel()
                     .frame(
                         minWidth: LayoutConstants.minInspectorWidth,

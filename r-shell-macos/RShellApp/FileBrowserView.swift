@@ -21,6 +21,12 @@ struct FileBrowserView: View {
     let connectionId: String?
     /// Display name for the connection (shown in the title row).
     let connectionLabel: String
+    /// When non-nil, downloads land directly here without prompting
+    /// via NSSavePanel. Used by the dual-pane SFTP layout to target
+    /// the local pane's current cwd. The default `nil` keeps the
+    /// existing single-pane behaviour: `~/Downloads` + a save panel
+    /// per file.
+    var downloadDirectory: String? = nil
 
     @EnvironmentObject var transfers: TransferQueueStore
 
@@ -456,6 +462,24 @@ struct FileBrowserView: View {
 
     private func presentDownloadPicker(for entry: FfiFileEntry) {
         guard let connectionId else { return }
+        let remotePath = absolutePath(joining: entry.name)
+
+        // Dual-pane SFTP layout pre-supplies a target directory —
+        // skip the save panel and drop the file straight in. Useful
+        // for bulk transfers where one prompt per file would be
+        // hostile.
+        if let dir = downloadDirectory {
+            let localURL = URL(fileURLWithPath: dir)
+                .appendingPathComponent(entry.name)
+            transfers.enqueueDownload(
+                connectionId: connectionId,
+                remotePath: remotePath,
+                localPath: localURL.path,
+                expectedSize: entry.size
+            )
+            return
+        }
+
         let savePanel = NSSavePanel()
         savePanel.title = "Download \(entry.name)"
         savePanel.nameFieldStringValue = entry.name
@@ -467,7 +491,6 @@ struct FileBrowserView: View {
         guard savePanel.runModal() == .OK, let localURL = savePanel.url else {
             return
         }
-        let remotePath = absolutePath(joining: entry.name)
         transfers.enqueueDownload(
             connectionId: connectionId,
             remotePath: remotePath,

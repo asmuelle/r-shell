@@ -19,16 +19,34 @@ struct SidebarPanel: View {
 
 // MARK: - Main workspace (terminals + files)
 
-/// Vertical split mirroring the Tauri layout: terminal tabs on top
-/// (always resident — see `terminalsPane` for the per-tab `ZStack`
-/// rationale), file browser on the bottom. Both panes target the same
-/// active connection (the focused tab). For SFTP-only profiles the
-/// terminal pane shows a placeholder explaining that the host is
-/// SFTP-only; the file browser still works.
+/// Layout switches based on the active tab's `ConnectionKind`:
+///
+/// - `.ssh`: vertical split mirroring the Tauri layout — terminal
+///   tabs on top (always resident — see `terminalsPane` for the per-
+///   tab `ZStack` rationale), file browser on the bottom. Both panes
+///   target the same active connection.
+/// - `.sftp`: Midnight-Commander dual-pane file browser (remote left,
+///   local right). The terminal section and the System Monitor
+///   inspector both go away — neither makes sense without a shell —
+///   and the bottom panel still hosts transfers as usual.
+///
+/// When there's no active tab, falls back to the SSH layout so the
+/// "Connect to a host" placeholder is what the user sees.
 struct MainPanel: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
 
     var body: some View {
+        if let active = tabsStore.activeTab, active.profile.kind == .sftp {
+            DualPaneFileBrowserView(
+                connectionId: active.connectionId,
+                connectionLabel: active.profile.name
+            )
+        } else {
+            sshLayout
+        }
+    }
+
+    private var sshLayout: some View {
         VSplitView {
             terminalsPane
                 .frame(minHeight: 200, idealHeight: 380)
