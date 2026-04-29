@@ -1,33 +1,39 @@
 import SwiftUI
 import RShellMacOS
 
-/// Native macOS workspace.
+/// Native macOS workspace — mirrors the Tauri 4-region layout.
 ///
-///   ┌──────────┬──────────────────────┬────────────┐
-///   │          │   Main (terminals)   │            │
-///   │ Sidebar  ├──────────────────────│ Inspector  │
-///   │ (vibr.)  │   Bottom (logs)      │ (vibrancy) │
-///   └──────────┴──────────────────────┴────────────┘
+///   ┌────────────────┬───────────────────┬────────────┐
+///   │ Connections    │ Terminal tabs     │            │
+///   │ (manager)      │ (always-visible)  │            │
+///   ├────────────────│                   │  System    │
+///   │ Connection     ├───────────────────┤  Monitor   │
+///   │ Details        │ File browser      │  (always)  │
+///   │                │ (always-visible)  │            │
+///   ├────────────────┴───────────────────┤            │
+///   │ Bottom: transfers / logs           │            │
+///   └────────────────────────────────────┴────────────┘
 ///
 /// Layout is a two-column `NavigationSplitView` (sidebar | detail). The
-/// detail column owns the main / bottom / inspector layout via nested
-/// `HSplitView` + `VSplitView`. This is what lets the three panels
-/// collapse independently — the three-column `NavigationSplitView` form
-/// can only express `(all / doubleColumn / detailOnly)`, which doesn't
-/// allow "sidebar visible, inspector hidden" as a distinct state.
+/// detail column nests `HSplitView` + `VSplitView` so the three regions
+/// (terminal-pane / file-pane / bottom / inspector) collapse and resize
+/// independently. The three-column `NavigationSplitView` form can only
+/// express `(all / doubleColumn / detailOnly)`, which doesn't allow
+/// "sidebar visible, inspector hidden" — so the inspector lives inside
+/// the detail column.
 ///
 /// `LayoutManager` is the source of truth for which panels are visible
 /// and at what size. The system-driven sidebar collapse (toolbar button,
 /// trackpad swipe, View menu) round-trips through `sidebarVisibility`.
-/// The bottom-panel divider is observed via a `GeometryReader` preference
-/// and persisted through a 250 ms debounced write.
+/// The bottom-panel and inspector dividers are observed via
+/// `GeometryReader` preferences and persisted through a 250 ms debounced
+/// write.
 struct ContentView: View {
     @EnvironmentObject var layoutManager: LayoutManager
     @StateObject private var connectionStore = ConnectionStoreManager.shared
     @StateObject private var tabsStore = TerminalTabsStore()
     @StateObject private var transfersStore = TransferQueueStore()
     @State private var selectedConnection: ConnectionProfile?
-    @State private var selectedSection: SidebarView.NavSection = .terminals
 
     /// Two-way bridge between the system column-visibility enum and the
     /// persisted `layout.sidebarVisible` flag.
@@ -45,7 +51,6 @@ struct ContentView: View {
             SidebarView(
                 storeManager: connectionStore,
                 selectedConnection: $selectedConnection,
-                selectedSection: $selectedSection,
                 onConnect: { profile in
                     Task { await tabsStore.openConnection(profile) }
                 }
@@ -57,7 +62,7 @@ struct ContentView: View {
                 max: LayoutConstants.maxSidebarWidth
             )
         } detail: {
-            DetailColumn(layoutManager: layoutManager, selectedSection: $selectedSection)
+            DetailColumn(layoutManager: layoutManager)
         }
         .navigationSplitViewStyle(.balanced)
         .environmentObject(tabsStore)
@@ -78,15 +83,14 @@ struct ContentView: View {
 
 private struct DetailColumn: View {
     @ObservedObject var layoutManager: LayoutManager
-    @Binding var selectedSection: SidebarView.NavSection
     @State private var bottomHeightDebounce: Task<Void, Never>?
     @State private var inspectorWidthDebounce: Task<Void, Never>?
 
     var body: some View {
         HSplitView {
             VSplitView {
-                MainPanel(selectedSection: $selectedSection)
-                    .frame(minWidth: 320, minHeight: 200)
+                MainPanel()
+                    .frame(minWidth: 320, minHeight: 320)
 
                 if layoutManager.layout.bottomVisible {
                     BottomPanel()

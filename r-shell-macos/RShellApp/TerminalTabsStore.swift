@@ -280,17 +280,27 @@ final class TerminalTabsStore: ObservableObject {
         }
 
         // PTY start — generation lets us guard against stale closes.
-        guard let generation = await BridgeManager.shared.openTerminal(
-            connectionId: connectionId
-        ) else {
-            lastError = "Failed to start terminal session"
-            BridgeManager.shared.disconnect(connectionId: connectionId)
-            return
+        // SFTP-only profiles skip this entirely: the file browser uses
+        // the SSH transport directly, no shell channel needed.
+        let generation: UInt64
+        if profile.kind.supportsTerminal {
+            guard let g = await BridgeManager.shared.openTerminal(
+                connectionId: connectionId
+            ) else {
+                lastError = "Failed to start terminal session"
+                BridgeManager.shared.disconnect(connectionId: connectionId)
+                return
+            }
+            generation = g
+        } else {
+            generation = 0
         }
 
-        // Append + select. The session is registered when `TerminalView`
-        // is materialised (so SwiftTerm's `feed(byteArray:)` is wired
-        // before any output arrives).
+        // Append + select. For SSH tabs, the session is registered when
+        // `TerminalView` is materialised (so SwiftTerm's
+        // `feed(byteArray:)` is wired before any output arrives). SFTP
+        // tabs render a placeholder in the terminal pane — the file
+        // panel below the split is the actual interaction surface.
         let tab = TerminalTab(
             id: UUID(),
             profile: profile,
@@ -361,20 +371,23 @@ final class TerminalTabsStore: ObservableObject {
                 return
             }
 
-            // Bring up a fresh PTY for the same connection_id.
-            guard let generation = await BridgeManager.shared.openTerminal(
-                connectionId: tab.connectionId
-            ) else {
-                lastError = "Failed to start terminal session on reconnect"
-                tabs[idx].status = .error
-                return
-            }
+            // Bring up a fresh PTY for the same connection_id. SFTP-only
+            // tabs skip this — there's no terminal to recreate.
+            if profile.kind.supportsTerminal {
+                guard let generation = await BridgeManager.shared.openTerminal(
+                    connectionId: tab.connectionId
+                ) else {
+                    lastError = "Failed to start terminal session on reconnect"
+                    tabs[idx].status = .error
+                    return
+                }
 
-            // The SwiftTerm view's session was registered with the OLD
-            // generation. Update so the new PTY's output isn't dropped
-            // by the stale-frame filter in dispatch.
-            tabs[idx].ptyGeneration = generation
-            TerminalSessionManager.shared.updateGeneration(generation, forConnectionId: tab.connectionId)
+                // The SwiftTerm view's session was registered with the OLD
+                // generation. Update so the new PTY's output isn't dropped
+                // by the stale-frame filter in dispatch.
+                tabs[idx].ptyGeneration = generation
+                TerminalSessionManager.shared.updateGeneration(generation, forConnectionId: tab.connectionId)
+            }
             tabs[idx].status = .connected
 
         case .failure(let error):
@@ -384,15 +397,18 @@ final class TerminalTabsStore: ObservableObject {
         }
     }
 
-    /// Close a tab, tearing down the PTY and disconnecting the SSH session.
+    /// Close a tab, tearing down the PTY (when present) and disconnecting
+    /// the SSH transport.
     func closeTab(_ tabId: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let tab = tabs[index]
 
-        BridgeManager.shared.closeTerminal(
-            connectionId: tab.connectionId,
-            generation: tab.ptyGeneration
-        )
+        if tab.profile.kind.supportsTerminal {
+            BridgeManager.shared.closeTerminal(
+                connectionId: tab.connectionId,
+                generation: tab.ptyGeneration
+            )
+        }
         BridgeManager.shared.disconnect(connectionId: tab.connectionId)
 
         tabs.remove(at: index)

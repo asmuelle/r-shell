@@ -38,13 +38,19 @@ public struct WorkspaceLayout: Codable, Sendable {
         self.inspectorWidth = inspectorWidth
     }
 
+    /// First-launch defaults: mirror the Tauri layout — sidebar +
+    /// inspector both visible (System Monitor is the right column),
+    /// bottom panel collapsed by default since most users won't have
+    /// transfers in flight on launch. Widths are slightly wider than
+    /// before to fit the connection-details panel and the monitor's
+    /// per-mount disk rows without clipping.
     public static let `default` = WorkspaceLayout(
         sidebarVisible: true,
         bottomVisible: false,
-        inspectorVisible: false,
-        sidebarWidth: 220,
+        inspectorVisible: true,
+        sidebarWidth: 240,
         bottomHeight: 200,
-        inspectorWidth: 260
+        inspectorWidth: 320
     )
 }
 

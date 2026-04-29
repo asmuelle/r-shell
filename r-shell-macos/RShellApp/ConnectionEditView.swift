@@ -64,6 +64,7 @@ struct ConnectionEditView: View {
     @State private var host: String = ""
     @State private var port: String = "22"
     @State private var username: String = ""
+    @State private var kind: ConnectionKind = .ssh
     @State private var authMethod: AuthMethod = .password
     @State private var password: String = ""
     @State private var privateKeyPath: String = ""
@@ -78,6 +79,15 @@ struct ConnectionEditView: View {
     var isEditing: Bool { existingProfile != nil }
     var title: String { isEditing ? "Edit Connection" : "New Connection" }
 
+    private var kindCaption: String {
+        switch kind {
+        case .ssh:
+            return "Full SSH session: terminal, file browser, and host monitor."
+        case .sftp:
+            return "File transfer only — for hosts that allow SFTP but not a login shell (chroot, scponly, hosting accounts)."
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(title)
@@ -89,6 +99,22 @@ struct ConnectionEditView: View {
                     HStack {
                         Text("Name:").frame(width: 80, alignment: .trailing)
                         TextField("My Server", text: $name)
+                    }
+                    HStack(alignment: .top) {
+                        Text("Type:").frame(width: 80, alignment: .trailing)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Picker("", selection: $kind) {
+                                ForEach(ConnectionKind.allCases, id: \.self) { k in
+                                    Text(k.displayName).tag(k)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            Text(kindCaption)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     HStack {
                         Text("Host:").frame(width: 80, alignment: .trailing)
@@ -175,6 +201,7 @@ struct ConnectionEditView: View {
                 host = p.host
                 port = String(p.port)
                 username = p.username
+                kind = p.kind
                 authMethod = p.authMethod
                 privateKeyPath = p.privateKeyPath ?? ""
                 folderPath = p.folderPath ?? ""
@@ -193,6 +220,7 @@ struct ConnectionEditView: View {
             port: UInt16(port) ?? 22,
             username: username.trimmingCharacters(in: .whitespaces),
             authMethod: authMethod,
+            kind: kind,
             folderPath: folderPath.trimmingCharacters(in: .whitespaces).isEmpty ? nil : folderPath,
             privateKeyPath: authMethod == .publicKey ? privateKeyPath : nil,
             lastConnected: existingProfile?.lastConnected,

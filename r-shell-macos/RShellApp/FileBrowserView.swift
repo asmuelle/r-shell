@@ -422,7 +422,7 @@ struct FileBrowserView: View {
             Image(systemName: "network.slash")
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("Open a terminal session, then switch to Files to browse.")
+            Text("Connect to a host from the sidebar to browse remote files.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

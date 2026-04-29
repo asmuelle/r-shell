@@ -95,6 +95,19 @@ class ImportManager {
             default: auth = .password
             }
 
+            // Tauri exports use `protocol: "SSH" | "SFTP" | "FTP" | …`.
+            // Map SFTP to `.sftp`; everything else (including unknowns
+            // and missing fields) falls through to `.ssh` so the import
+            // is non-destructive when the field is absent. FTP is not
+            // supported on macOS yet — bring it across as `.sftp` so it
+            // at least lands in the file-only path rather than silently
+            // becoming a broken terminal target.
+            let kind: ConnectionKind
+            switch entry.protocol?.lowercased() {
+            case "sftp", "ftp": kind = .sftp
+            default: kind = .ssh
+            }
+
             let profile = ConnectionProfile(
                 id: entry.id ?? UUID().uuidString,
                 name: entry.name ?? entry.host ?? "Unknown",
@@ -102,6 +115,7 @@ class ImportManager {
                 port: entry.port ?? 22,
                 username: entry.username ?? "root",
                 authMethod: auth,
+                kind: kind,
                 folderPath: entry.folder,
                 privateKeyPath: entry.privateKeyPath,
                 createdAt: parseDate(entry.createdAt) ?? Date(),

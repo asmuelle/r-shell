@@ -1,11 +1,13 @@
 import SwiftUI
 import RShellMacOS
 
-/// Sidebar showing navigation items and saved connections grouped by folder.
+/// Sidebar showing the Connection Manager (top, scrollable) and a
+/// Connection Details panel (bottom, fixed) for the currently-selected
+/// profile. Mirrors the Tauri layout's left column. Connection Details
+/// is empty when nothing is selected.
 struct SidebarView: View {
     @ObservedObject var storeManager: ConnectionStoreManager
     @Binding var selectedConnection: ConnectionProfile?
-    @Binding var selectedSection: NavSection
     var onConnect: ((ConnectionProfile) -> Void)?
 
     @State private var showNewConnection = false
@@ -22,88 +24,12 @@ struct SidebarView: View {
         var id: String { profile.id }
     }
 
-    enum NavSection: String, CaseIterable, Identifiable {
-        case terminals
-        case files
-        case monitor
-
-        var id: String { rawValue }
-        var label: String {
-            switch self {
-            case .terminals: return "Terminals"
-            case .files: return "Files"
-            case .monitor: return "Monitor"
-            }
-        }
-        var icon: String {
-            switch self {
-            case .terminals: return "terminal"
-            case .files: return "folder"
-            case .monitor: return "chart.bar.xaxis"
-            }
-        }
-    }
-
     var body: some View {
-        List(selection: $selectedConnection) {
-            Section("Navigate") {
-                ForEach(NavSection.allCases) { section in
-                    Label(section.label, systemImage: section.icon)
-                        .font(.system(size: 12))
-                        .foregroundColor(selectedSection == section ? .accentColor : .primary)
-                        .contentShape(Rectangle())
-                        .onTapGesture { selectedSection = section }
-                }
-            }
-
-            if filteredRootConnections.isEmpty && filteredFolders.isEmpty {
-                Section("Connections") {
-                    if search.isEmpty && storeManager.connections.isEmpty {
-                        // First-time onboarding — the toolbar `+` is easy
-                        // to miss, so surface a real CTA with both
-                        // entry points spelled out.
-                        emptyState
-                    } else {
-                        Text(search.isEmpty ? "No saved connections" : "No matches")
-                            .foregroundColor(.secondary)
-                            .font(.caption)
-                    }
-                }
-            } else {
-                if !filteredRootConnections.isEmpty {
-                    Section("Connections") {
-                        ForEach(filteredRootConnections) { conn in
-                            ConnectionRow(profile: conn)
-                                .tag(conn as ConnectionProfile?)
-                                .onTapGesture {
-                                    selectedSection = .terminals
-                                    selectedConnection = conn
-                                    onConnect?(conn)
-                                }
-                                .contextMenu { connectionContextMenu(conn) }
-                        }
-                    }
-                }
-
-                ForEach(filteredFolders) { folder in
-                    Section(folder.name) {
-                        ForEach(filteredConnections(in: folder.path)) { conn in
-                            ConnectionRow(profile: conn)
-                                .tag(conn as ConnectionProfile?)
-                                .onTapGesture {
-                                    selectedSection = .terminals
-                                    selectedConnection = conn
-                                    onConnect?(conn)
-                                }
-                                .contextMenu { connectionContextMenu(conn) }
-                        }
-                    }
-                }
-            }
+        VSplitView {
+            connectionList
+            ConnectionDetailsPanel(profile: selectedConnection)
+                .frame(minHeight: 140, idealHeight: 200, maxHeight: 320)
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-        .searchable(text: $search, placement: .sidebar, prompt: "Search connections")
         .frame(minWidth: LayoutConstants.minSidebarWidth)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -130,6 +56,56 @@ struct SidebarView: View {
                 _ = storeManager.importFromTauriJSON(url: url)
             }
         }
+    }
+
+    // MARK: - Connection list
+
+    @ViewBuilder
+    private var connectionList: some View {
+        List(selection: $selectedConnection) {
+            if filteredRootConnections.isEmpty && filteredFolders.isEmpty {
+                Section("Connections") {
+                    if search.isEmpty && storeManager.connections.isEmpty {
+                        emptyState
+                    } else {
+                        Text(search.isEmpty ? "No saved connections" : "No matches")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
+                }
+            } else {
+                if !filteredRootConnections.isEmpty {
+                    Section("Connections") {
+                        ForEach(filteredRootConnections) { conn in
+                            ConnectionRow(profile: conn)
+                                .tag(conn as ConnectionProfile?)
+                                .onTapGesture {
+                                    selectedConnection = conn
+                                    onConnect?(conn)
+                                }
+                                .contextMenu { connectionContextMenu(conn) }
+                        }
+                    }
+                }
+
+                ForEach(filteredFolders) { folder in
+                    Section(folder.name) {
+                        ForEach(filteredConnections(in: folder.path)) { conn in
+                            ConnectionRow(profile: conn)
+                                .tag(conn as ConnectionProfile?)
+                                .onTapGesture {
+                                    selectedConnection = conn
+                                    onConnect?(conn)
+                                }
+                                .contextMenu { connectionContextMenu(conn) }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .searchable(text: $search, placement: .sidebar, prompt: "Search connections")
     }
 
     // MARK: - Empty state
@@ -201,14 +177,9 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func connectionContextMenu(_ conn: ConnectionProfile) -> some View {
-        Button("Connect Terminal") {
+        Button(conn.kind.supportsTerminal ? "Connect" : "Connect (SFTP)") {
             selectedConnection = conn
-            selectedSection = .terminals
             onConnect?(conn)
-        }
-        Button("Open Monitor") {
-            selectedConnection = conn
-            selectedSection = .monitor
         }
         Divider()
         Button("Edit…") {
@@ -225,6 +196,83 @@ struct SidebarView: View {
     }
 }
 
+// MARK: - Connection details panel
+
+/// Bottom half of the sidebar — shows static metadata for the selected
+/// profile. Mirrors the Tauri "Connection Details" card. Empty state
+/// renders a hint instead of an empty form.
+private struct ConnectionDetailsPanel: View {
+    let profile: ConnectionProfile?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Connection Details")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            Divider()
+
+            if let profile {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        detailRow("Name", profile.name)
+                        detailRow("Host", profile.host)
+                        detailRow("Port", "\(profile.port)")
+                        detailRow("User", profile.username)
+                        detailRow("Protocol", profile.kind.displayName)
+                        detailRow("Auth", profile.authMethod.displayName)
+                        if let last = profile.lastConnected {
+                            detailRow(
+                                "Last Connected",
+                                last.formatted(.relative(presentation: .named))
+                            )
+                        }
+                        if !profile.tags.isEmpty {
+                            detailRow("Tags", profile.tags.joined(separator: ", "))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 18, weight: .light))
+                        .foregroundStyle(.tertiary)
+                    Text("Select a connection to see details.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(12)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+            Text(value)
+                .font(.caption.monospacedDigit())
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 // MARK: - Row
 
 /// Single connection row in the sidebar list. Two lines: name on top,
@@ -235,9 +283,11 @@ struct ConnectionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: profile.favorite ? "star.fill" : "network")
+            // Glyph encodes both kind (terminal vs folder) and the
+            // favorite flag (star wins when set so it stays glanceable).
+            Image(systemName: rowGlyph)
                 .font(.system(size: 11))
-                .foregroundStyle(profile.favorite ? .yellow : .secondary)
+                .foregroundStyle(rowGlyphTint)
                 .frame(width: 14)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -251,5 +301,17 @@ struct ConnectionRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var rowGlyph: String {
+        if profile.favorite { return "star.fill" }
+        switch profile.kind {
+        case .ssh: return "terminal"
+        case .sftp: return "folder.badge.gearshape"
+        }
+    }
+
+    private var rowGlyphTint: Color {
+        profile.favorite ? .yellow : .secondary
     }
 }

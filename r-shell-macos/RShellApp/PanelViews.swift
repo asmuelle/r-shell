@@ -6,46 +6,37 @@ import RShellMacOS
 struct SidebarPanel: View {
     @ObservedObject var storeManager: ConnectionStoreManager
     @Binding var selectedConnection: ConnectionProfile?
-    @Binding var selectedSection: SidebarView.NavSection
     var onConnect: ((ConnectionProfile) -> Void)?
 
     var body: some View {
         SidebarView(
             storeManager: storeManager,
             selectedConnection: $selectedConnection,
-            selectedSection: $selectedSection,
             onConnect: onConnect
         )
     }
 }
 
-// MARK: - Main workspace (terminals)
+// MARK: - Main workspace (terminals + files)
 
-/// `MainPanel` consumes the shared `TerminalTabsStore` so the sidebar's
-/// "connect" action populates tabs here. The store owns the FFI lifecycle
-/// (SSH connect → PTY start → register session); `MainPanel` only renders.
-///
-/// Switches between the terminal stack and the SFTP file browser based
-/// on the sidebar's `selectedSection`. Tabs (terminals) are always
-/// resident — switching to Files just hides them.
+/// Vertical split mirroring the Tauri layout: terminal tabs on top
+/// (always resident — see `terminalsPane` for the per-tab `ZStack`
+/// rationale), file browser on the bottom. Both panes target the same
+/// active connection (the focused tab). For SFTP-only profiles the
+/// terminal pane shows a placeholder explaining that the host is
+/// SFTP-only; the file browser still works.
 struct MainPanel: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
-    @Binding var selectedSection: SidebarView.NavSection
 
     var body: some View {
-        switch selectedSection {
-        case .terminals:
+        VSplitView {
             terminalsPane
-        case .files:
+                .frame(minHeight: 200, idealHeight: 380)
             FileBrowserView(
                 connectionId: tabsStore.activeTab?.connectionId,
                 connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
             )
-        case .monitor:
-            SystemMonitorView(
-                connectionId: tabsStore.activeTab?.connectionId,
-                connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
-            )
+            .frame(minHeight: 180, idealHeight: 260)
         }
     }
 
@@ -98,26 +89,33 @@ struct MainPanel: View {
                     ForEach(tabsStore.tabs) { tab in
                         let isActive = tab.id == tabsStore.activeTabId
                         ZStack {
-                            TerminalView(
-                                connectionId: tab.connectionId,
-                                ptyGeneration: tab.ptyGeneration,
-                                themeOverride: tab.themeOverride,
-                                isActive: isActive,
-                                terminalTitle: .constant(tab.title),
-                                searchVisible: .constant(false),
-                                onSearchQueryChanged: nil,
-                                onSearchNext: nil,
-                                onSearchPrevious: nil
-                            )
+                            if tab.profile.kind.supportsTerminal {
+                                TerminalView(
+                                    connectionId: tab.connectionId,
+                                    ptyGeneration: tab.ptyGeneration,
+                                    themeOverride: tab.themeOverride,
+                                    isActive: isActive,
+                                    terminalTitle: .constant(tab.title),
+                                    searchVisible: .constant(false),
+                                    onSearchQueryChanged: nil,
+                                    onSearchNext: nil,
+                                    onSearchPrevious: nil
+                                )
 
-                            // Reconnect affordance — covers disconnected
-                            // and errored tabs. The SwiftTerm view stays
-                            // alive underneath so its scrollback isn't
-                            // wiped; reconnect rebuilds only the PTY.
-                            if tab.status == .disconnected || tab.status == .error {
-                                ReconnectOverlay(tab: tab) {
-                                    Task { await tabsStore.reconnect(tabId: tab.id) }
+                                // Reconnect affordance — covers disconnected
+                                // and errored tabs. The SwiftTerm view stays
+                                // alive underneath so its scrollback isn't
+                                // wiped; reconnect rebuilds only the PTY.
+                                if tab.status == .disconnected || tab.status == .error {
+                                    ReconnectOverlay(tab: tab) {
+                                        Task { await tabsStore.reconnect(tabId: tab.id) }
+                                    }
                                 }
+                            } else {
+                                // SFTP-only profile: no PTY, no SwiftTerm.
+                                // The file panel below the split is the
+                                // actual interaction surface.
+                                SftpOnlyPlaceholder(tab: tab)
                             }
                         }
                         .opacity(isActive ? 1 : 0)
@@ -169,6 +167,33 @@ struct TerminalTab: Identifiable {
     /// Defaults to `.connected` since we only build a tab after a
     /// successful `rshellConnect`.
     var status: TerminalConnectionStatus = .connected
+}
+
+// MARK: - SFTP-only placeholder
+
+/// Shown in the terminals pane when the active tab is an SFTP-only
+/// profile. The file panel underneath is the real interaction
+/// surface; this view exists only to fill the slot where a terminal
+/// would normally live.
+private struct SftpOnlyPlaceholder: View {
+    let tab: TerminalTab
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "folder.badge.gearshape")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(.tint)
+            Text(tab.profile.name)
+                .font(.headline)
+            Text("SFTP-only connection — no shell available.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text("Use the Files panel below to browse and transfer.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 }
 
 // MARK: - Reconnect overlay
@@ -395,25 +420,18 @@ private struct TransferRow: View {
 
 // MARK: - Inspector
 
+/// Right-hand panel — System Monitor for the active tab. Mirrors the
+/// Tauri layout's right column. Updates automatically when the user
+/// switches tabs because `SystemMonitorView`'s `.task(id:)` is keyed on
+/// `connectionId`.
 struct InspectorPanel: View {
-    var body: some View {
-        Form {
-            Section("Connection") {
-                LabeledContent("Host", value: "—")
-                LabeledContent("Port", value: "—")
-                LabeledContent("User", value: "—")
-                LabeledContent("Status", value: "Disconnected")
-            }
+    @EnvironmentObject var tabsStore: TerminalTabsStore
 
-            Section {
-                Label("Host keys are verified via TOFU (Trust On First Use).",
-                      systemImage: "lock.shield")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+    var body: some View {
+        SystemMonitorView(
+            connectionId: tabsStore.activeTab?.connectionId,
+            connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+        )
         .frame(minWidth: LayoutConstants.minInspectorWidth)
     }
 }

@@ -14,6 +14,41 @@ public enum AuthMethod: String, Codable, Sendable, CaseIterable {
     }
 }
 
+// MARK: - Connection kind
+
+/// What this profile is used for. Both kinds share the underlying
+/// SSH transport (russh) — `.sftp` simply skips the PTY-start step
+/// and routes the profile straight to the file browser. This matters
+/// for accounts where the server allows SFTP but not a login shell
+/// (chroot jails, `scponly` users, hosting providers that publish
+/// SFTP-only credentials). On those hosts, opening a terminal would
+/// fail with a non-zero exec status — declaring the profile as
+/// `.sftp` removes that footgun.
+public enum ConnectionKind: String, Codable, Sendable, CaseIterable {
+    /// Full SSH session: terminal tab + file browser + system monitor.
+    case ssh
+    /// File transfer only: connects but never starts a PTY. The
+    /// sidebar routes the click straight to the Files view.
+    case sftp
+
+    public var displayName: String {
+        switch self {
+        case .ssh: return "SSH (Terminal + Files)"
+        case .sftp: return "SFTP only (Files)"
+        }
+    }
+
+    /// Whether profiles of this kind can host an interactive shell.
+    /// Terminal tabs, the live PTY, and the system-monitor view all
+    /// gate on this.
+    public var supportsTerminal: Bool {
+        switch self {
+        case .ssh: return true
+        case .sftp: return false
+        }
+    }
+}
+
 // MARK: - Connection profile
 
 public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
@@ -23,6 +58,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var port: UInt16
     public var username: String
     public var authMethod: AuthMethod
+    public var kind: ConnectionKind
     public var folderPath: String?
 
     // Non-credential auth details (key paths are safe to store, passwords go to Keychain)
@@ -42,6 +78,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         port: UInt16 = 22,
         username: String,
         authMethod: AuthMethod = .password,
+        kind: ConnectionKind = .ssh,
         folderPath: String? = nil,
         privateKeyPath: String? = nil,
         createdAt: Date = Date(),
@@ -57,6 +94,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         self.port = port
         self.username = username
         self.authMethod = authMethod
+        self.kind = kind
         self.folderPath = folderPath
         self.privateKeyPath = privateKeyPath
         self.createdAt = createdAt
@@ -69,6 +107,32 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
 
     /// Keychain account string derived from this profile.
     public var keychainAccount: String { "\(username)@\(host):\(port)" }
+
+    // Decode with `kind` defaulting to `.ssh` so older saved stores
+    // (no `kind` field) round-trip cleanly.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, host, port, username, authMethod, kind, folderPath
+        case privateKeyPath, createdAt, lastConnected, favorite, tags, color, notes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.host = try c.decode(String.self, forKey: .host)
+        self.port = try c.decode(UInt16.self, forKey: .port)
+        self.username = try c.decode(String.self, forKey: .username)
+        self.authMethod = try c.decode(AuthMethod.self, forKey: .authMethod)
+        self.kind = try c.decodeIfPresent(ConnectionKind.self, forKey: .kind) ?? .ssh
+        self.folderPath = try c.decodeIfPresent(String.self, forKey: .folderPath)
+        self.privateKeyPath = try c.decodeIfPresent(String.self, forKey: .privateKeyPath)
+        self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.lastConnected = try c.decodeIfPresent(Date.self, forKey: .lastConnected)
+        self.favorite = try c.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
+        self.tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        self.color = try c.decodeIfPresent(String.self, forKey: .color)
+        self.notes = try c.decodeIfPresent(String.self, forKey: .notes)
+    }
 }
 
 // MARK: - Connection folder
