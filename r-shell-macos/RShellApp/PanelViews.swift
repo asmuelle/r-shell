@@ -232,6 +232,7 @@ private struct ReconnectOverlay: View {
 
 struct BottomPanel: View {
     @EnvironmentObject var transfers: TransferQueueStore
+    @EnvironmentObject var tabsStore: TerminalTabsStore
     @State private var selectedSegment = 0
 
     var body: some View {
@@ -251,6 +252,7 @@ struct BottomPanel: View {
                 } else {
                     Text("Transfers").tag(3)
                 }
+                Text("Processes").tag(4)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -265,6 +267,11 @@ struct BottomPanel: View {
                 case 1: emptyState("No logs", systemImage: "doc.text")
                 case 2: emptyState("No problems detected", systemImage: "checkmark.seal")
                 case 3: TransferQueueView(store: transfers)
+                case 4:
+                    ProcessListView(
+                        connectionId: tabsStore.activeTab?.connectionId,
+                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+                    )
                 default: EmptyView()
                 }
             }

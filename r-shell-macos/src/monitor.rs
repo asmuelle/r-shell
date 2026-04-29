@@ -68,6 +68,23 @@ pub struct DiskMount {
     pub used: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Process data
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct ProcessRow {
+    pub pid: u32,
+    pub user: String,
+    pub cpu_percent: f64,
+    pub memory_percent: f64,
+    /// `comm` from `ps` — the executable's basename, no args.
+    pub command: String,
+    /// Full command line including arguments. Useful when the command
+    /// is something like `python` and the args carry the script name.
+    pub args: String,
+}
+
 /// Pseudo-filesystems we always want to hide. `tmpfs`, `devtmpfs`,
 /// `overlay`, `squashfs` etc. clutter the list and aren't meaningful
 /// "disk usage" surfaces. macOS adds its own internal mounts.
@@ -235,6 +252,22 @@ pub mod linux {
     pub fn parse_loadavg(s: &str) -> Result<f64, String> {
         let token = s.split_whitespace().next().ok_or("empty loadavg")?;
         token.parse().map_err(|e: std::num::ParseFloatError| e.to_string())
+    }
+
+    /// `ps` invocation that prints a stable, parseable shape for every
+    /// running process. `--no-headers` is GNU-ps only; we use it on
+    /// Linux. Field order matches `parse_processes` below.
+    pub const PROCESSES_COMMAND: &str =
+        "ps -eo pid,user:32,pcpu,pmem,comm,args --no-headers --sort=-pcpu";
+
+    /// Parse `ps` output where each line is:
+    ///   PID USER %CPU %MEM COMM ARGS...
+    /// USER is right-padded to 32 chars by the `user:32` format spec
+    /// so values containing spaces stay in one column.
+    pub fn parse_processes(s: &str) -> Vec<super::ProcessRow> {
+        s.lines()
+            .filter_map(|line| super::parse_process_line(line))
+            .collect()
     }
 }
 
@@ -428,6 +461,49 @@ pub mod darwin {
             })
             .collect()
     }
+
+    /// macOS `ps` lacks `--no-headers`; we strip the header outside.
+    /// Field order is identical to Linux so the same parser handles
+    /// the body. `-r` sorts by CPU usage so the busiest processes
+    /// surface first.
+    pub const PROCESSES_COMMAND: &str =
+        "ps -axo pid,user,pcpu,pmem,comm,args -r | tail -n +2";
+
+    pub fn parse_processes(s: &str) -> Vec<super::ProcessRow> {
+        s.lines()
+            .filter_map(|line| super::parse_process_line(line))
+            .collect()
+    }
+}
+
+// Shared `ps` row parser: PID USER %CPU %MEM COMM ARGS...
+//
+// Walks fields once with a small state machine — splitting on
+// whitespace only works through field 5 (`comm` is one token); the
+// rest of the line is `args`, which can carry spaces. Keeping this in
+// one place lets Linux and macOS share it; the only divergence is
+// header handling and the `--no-headers` / `--sort=` flags, which
+// each `PROCESSES_COMMAND` constant owns.
+fn parse_process_line(line: &str) -> Option<ProcessRow> {
+    let line = line.trim_start();
+    if line.is_empty() {
+        return None;
+    }
+    let mut iter = line.split_whitespace();
+    let pid: u32 = iter.next()?.parse().ok()?;
+    let user = iter.next()?.to_string();
+    let cpu: f64 = iter.next()?.parse().ok()?;
+    let mem: f64 = iter.next()?.parse().ok()?;
+    let command = iter.next()?.to_string();
+    let args = iter.collect::<Vec<_>>().join(" ");
+    Some(ProcessRow {
+        pid,
+        user,
+        cpu_percent: cpu,
+        memory_percent: mem,
+        command,
+        args,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +589,38 @@ mod tests {
             darwin::parse_swapusage("total = 4096.00M  used = 123.45M  free = 3972.55M");
         assert_eq!(total, (4096.00 * 1024.0 * 1024.0) as u64);
         assert_eq!(used, (123.45 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
+    fn parses_process_line() {
+        // Linux `ps -eo pid,user:32,pcpu,pmem,comm,args` body row.
+        let row = parse_process_line(
+            "  1234 alice                            12.5  3.2 python /opt/app/server.py --port 8080",
+        )
+        .unwrap();
+        assert_eq!(row.pid, 1234);
+        assert_eq!(row.user, "alice");
+        assert!((row.cpu_percent - 12.5).abs() < 0.01);
+        assert!((row.memory_percent - 3.2).abs() < 0.01);
+        assert_eq!(row.command, "python");
+        assert!(row.args.contains("server.py"));
+    }
+
+    #[test]
+    fn parse_process_skips_blank_lines() {
+        assert!(parse_process_line("").is_none());
+        assert!(parse_process_line("   ").is_none());
+    }
+
+    #[test]
+    fn linux_processes_parses_multiple_rows() {
+        let out = "  1 root  0.1 0.5 systemd /sbin/init\n\
+                   42 alice 50.0 12.3 cargo cargo build --release\n";
+        let rows = linux::parse_processes(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].pid, 1);
+        assert_eq!(rows[1].pid, 42);
+        assert!((rows[1].cpu_percent - 50.0).abs() < 0.01);
     }
 
     #[test]

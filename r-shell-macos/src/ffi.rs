@@ -1131,6 +1131,142 @@ fn parse_darwin_stats(output: &str) -> Result<FfiSystemStats, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Process list + signalling — same OS routing as the system-stats path.
+// ---------------------------------------------------------------------------
+
+#[derive(uniffi::Record, Clone)]
+pub struct FfiProcess {
+    pub pid: u32,
+    pub user: String,
+    pub cpu_percent: f64,
+    pub memory_percent: f64,
+    /// Executable basename (matches `ps comm`).
+    pub command: String,
+    /// Full command line (matches `ps args`). Empty when the OS
+    /// didn't report any.
+    pub args: String,
+}
+
+/// POSIX signal number. Limited to the two cases the UI actually
+/// surfaces today; widening this means the signal-routing match in
+/// `rshell_signal_process` can stay exhaustive (no wildcard arm)
+/// instead of accepting arbitrary integers from Swift.
+#[derive(uniffi::Enum, Clone, Copy)]
+pub enum FfiSignal {
+    /// SIGTERM — request graceful shutdown.
+    Term,
+    /// SIGKILL — non-catchable, non-ignorable termination.
+    Kill,
+}
+
+impl FfiSignal {
+    fn as_kill_arg(self) -> &'static str {
+        match self {
+            FfiSignal::Term => "TERM",
+            FfiSignal::Kill => "KILL",
+        }
+    }
+}
+
+/// List running processes on the connected host. Same OS-detect
+/// path as `rshell_get_system_stats` — first call runs `uname -s`,
+/// later calls reuse the cached value.
+#[uniffi::export]
+pub fn rshell_get_processes(connection_id: String) -> Result<Vec<FfiProcess>, MonitorError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or_else(|| MonitorError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+
+        let os = match monitor::cached(&connection_id) {
+            Some(os) => os,
+            None => {
+                let uname = {
+                    let guard = client.read().await;
+                    guard
+                        .execute_command("uname -s")
+                        .await
+                        .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+                };
+                let detected = monitor::classify_uname(&uname);
+                monitor::store(&connection_id, detected.clone());
+                detected
+            }
+        };
+
+        let cmd = match os {
+            OsKind::Linux => monitor::linux::PROCESSES_COMMAND,
+            OsKind::Darwin => monitor::darwin::PROCESSES_COMMAND,
+            OsKind::Other(name) => return Err(MonitorError::Unsupported { os: name }),
+        };
+
+        let output = {
+            let guard = client.read().await;
+            guard
+                .execute_command(cmd)
+                .await
+                .map_err(|e| MonitorError::Other { detail: e.to_string() })?
+        };
+
+        let rows = match os {
+            OsKind::Linux => monitor::linux::parse_processes(&output),
+            OsKind::Darwin => monitor::darwin::parse_processes(&output),
+            OsKind::Other(_) => unreachable!(),
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|p| FfiProcess {
+                pid: p.pid,
+                user: p.user,
+                cpu_percent: p.cpu_percent,
+                memory_percent: p.memory_percent,
+                command: p.command,
+                args: p.args,
+            })
+            .collect())
+    })
+}
+
+/// Send a signal to a remote process. Runs `kill -SIGNAME PID` on
+/// the host. Privilege errors (`Operation not permitted`) propagate
+/// through `MonitorError::Other` with the remote's stderr line.
+#[uniffi::export]
+pub fn rshell_signal_process(
+    connection_id: String,
+    pid: u32,
+    signal: FfiSignal,
+) -> Result<(), MonitorError> {
+    let bridge = MacOsBridge::global();
+    let cm = bridge.connection_manager.clone();
+
+    bridge.runtime.block_on(async move {
+        let client = cm
+            .get_connection(&connection_id)
+            .await
+            .ok_or_else(|| MonitorError::NotConnected {
+                connection_id: connection_id.clone(),
+            })?;
+
+        // `kill` accepts the signal as both number and name. Names
+        // are portable across BSD/Linux and read better in logs.
+        let cmd = format!("kill -{} {}", signal.as_kill_arg(), pid);
+        let guard = client.read().await;
+        guard
+            .execute_command(&cmd)
+            .await
+            .map(|_| ())
+            .map_err(|e| MonitorError::Other { detail: e.to_string() })
+    })
+}
+
 #[cfg(test)]
 mod system_stats_tests {
     use super::*;

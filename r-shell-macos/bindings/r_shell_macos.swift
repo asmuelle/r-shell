@@ -1027,6 +1027,118 @@ public func FfiConverterTypeFfiFileEntry_lower(_ value: FfiFileEntry) -> RustBuf
 }
 
 
+public struct FfiProcess {
+    public var pid: UInt32
+    public var user: String
+    public var cpuPercent: Double
+    public var memoryPercent: Double
+    /**
+     * Executable basename (matches `ps comm`).
+     */
+    public var command: String
+    /**
+     * Full command line (matches `ps args`). Empty when the OS
+     * didn't report any.
+     */
+    public var args: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(pid: UInt32, user: String, cpuPercent: Double, memoryPercent: Double, 
+        /**
+         * Executable basename (matches `ps comm`).
+         */command: String, 
+        /**
+         * Full command line (matches `ps args`). Empty when the OS
+         * didn't report any.
+         */args: String) {
+        self.pid = pid
+        self.user = user
+        self.cpuPercent = cpuPercent
+        self.memoryPercent = memoryPercent
+        self.command = command
+        self.args = args
+    }
+}
+
+
+
+extension FfiProcess: Equatable, Hashable {
+    public static func ==(lhs: FfiProcess, rhs: FfiProcess) -> Bool {
+        if lhs.pid != rhs.pid {
+            return false
+        }
+        if lhs.user != rhs.user {
+            return false
+        }
+        if lhs.cpuPercent != rhs.cpuPercent {
+            return false
+        }
+        if lhs.memoryPercent != rhs.memoryPercent {
+            return false
+        }
+        if lhs.command != rhs.command {
+            return false
+        }
+        if lhs.args != rhs.args {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(pid)
+        hasher.combine(user)
+        hasher.combine(cpuPercent)
+        hasher.combine(memoryPercent)
+        hasher.combine(command)
+        hasher.combine(args)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiProcess: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiProcess {
+        return
+            try FfiProcess(
+                pid: FfiConverterUInt32.read(from: &buf), 
+                user: FfiConverterString.read(from: &buf), 
+                cpuPercent: FfiConverterDouble.read(from: &buf), 
+                memoryPercent: FfiConverterDouble.read(from: &buf), 
+                command: FfiConverterString.read(from: &buf), 
+                args: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiProcess, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.pid, into: &buf)
+        FfiConverterString.write(value.user, into: &buf)
+        FfiConverterDouble.write(value.cpuPercent, into: &buf)
+        FfiConverterDouble.write(value.memoryPercent, into: &buf)
+        FfiConverterString.write(value.command, into: &buf)
+        FfiConverterString.write(value.args, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiProcess_lift(_ buf: RustBuffer) throws -> FfiProcess {
+    return try FfiConverterTypeFfiProcess.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiProcess_lower(_ value: FfiProcess) -> RustBuffer {
+    return FfiConverterTypeFfiProcess.lower(value)
+}
+
+
 /**
  * Universal result struct for FFI operations.
  *
@@ -1559,6 +1671,82 @@ extension FfiFileKind: Equatable, Hashable {}
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * POSIX signal number. Limited to the two cases the UI actually
+ * surfaces today; widening this means the signal-routing match in
+ * `rshell_signal_process` can stay exhaustive (no wildcard arm)
+ * instead of accepting arbitrary integers from Swift.
+ */
+
+public enum FfiSignal {
+    
+    /**
+     * SIGTERM — request graceful shutdown.
+     */
+    case term
+    /**
+     * SIGKILL — non-catchable, non-ignorable termination.
+     */
+    case kill
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiSignal: FfiConverterRustBuffer {
+    typealias SwiftType = FfiSignal
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiSignal {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .term
+        
+        case 2: return .kill
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiSignal, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .term:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .kill:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSignal_lift(_ buf: RustBuffer) throws -> FfiSignal {
+    return try FfiConverterTypeFfiSignal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSignal_lower(_ value: FfiSignal) -> RustBuffer {
+    return FfiConverterTypeFfiSignal.lower(value)
+}
+
+
+
+extension FfiSignal: Equatable, Hashable {}
+
+
+
 
 public enum MonitorError {
 
@@ -1964,6 +2152,31 @@ fileprivate struct FfiConverterSequenceTypeFfiFileEntry: FfiConverterRustBuffer 
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFfiProcess: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiProcess]
+
+    public static func write(_ value: [FfiProcess], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiProcess.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiProcess] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiProcess]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiProcess.read(from: &buf))
+        }
+        return seq
+    }
+}
 /**
  * Establish an SSH connection. Returns the canonical connection id
  * (`"user@host:port"` or `"user@host:port#sessionId"`) on success;
@@ -2010,6 +2223,18 @@ public func rshellForgetHostKey(host: String, port: UInt16) -> FfiResult {
     uniffi_r_shell_macos_fn_func_rshell_forget_host_key(
         FfiConverterString.lower(host),
         FfiConverterUInt16.lower(port),$0
+    )
+})
+}
+/**
+ * List running processes on the connected host. Same OS-detect
+ * path as `rshell_get_system_stats` — first call runs `uname -s`,
+ * later calls reuse the cached value.
+ */
+public func rshellGetProcesses(connectionId: String)throws  -> [FfiProcess] {
+    return try  FfiConverterSequenceTypeFfiProcess.lift(try rustCallWithError(FfiConverterTypeMonitorError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_get_processes(
+        FfiConverterString.lower(connectionId),$0
     )
 })
 }
@@ -2248,6 +2473,19 @@ public func rshellSftpUpload(transferId: String, connectionId: String, localPath
     )
 })
 }
+/**
+ * Send a signal to a remote process. Runs `kill -SIGNAME PID` on
+ * the host. Privilege errors (`Operation not permitted`) propagate
+ * through `MonitorError::Other` with the remote's stderr line.
+ */
+public func rshellSignalProcess(connectionId: String, pid: UInt32, signal: FfiSignal)throws  {try rustCallWithError(FfiConverterTypeMonitorError.lift) {
+    uniffi_r_shell_macos_fn_func_rshell_signal_process(
+        FfiConverterString.lower(connectionId),
+        FfiConverterUInt32.lower(pid),
+        FfiConverterTypeFfiSignal.lower(signal),$0
+    )
+}
+}
 
 private enum InitializationResult {
     case ok
@@ -2274,6 +2512,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_forget_host_key() != 53327) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_get_processes() != 8383) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_get_system_stats() != 1537) {
@@ -2334,6 +2575,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_func_rshell_sftp_upload() != 1763) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_r_shell_macos_checksum_func_rshell_signal_process() != 40577) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_r_shell_macos_checksum_method_ffieventcallback_on_event() != 59523) {

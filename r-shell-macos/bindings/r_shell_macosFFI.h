@@ -291,6 +291,11 @@ RustBuffer uniffi_r_shell_macos_fn_func_rshell_execute_command(RustBuffer connec
 RustBuffer uniffi_r_shell_macos_fn_func_rshell_forget_host_key(RustBuffer host, uint16_t port, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_GET_PROCESSES
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_GET_PROCESSES
+RustBuffer uniffi_r_shell_macos_fn_func_rshell_get_processes(RustBuffer connection_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_GET_SYSTEM_STATS
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_GET_SYSTEM_STATS
 RustBuffer uniffi_r_shell_macos_fn_func_rshell_get_system_stats(RustBuffer connection_id, RustCallStatus *_Nonnull out_status
@@ -391,6 +396,11 @@ void uniffi_r_shell_macos_fn_func_rshell_sftp_rename(RustBuffer connection_id, R
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SFTP_UPLOAD
 uint64_t uniffi_r_shell_macos_fn_func_rshell_sftp_upload(RustBuffer transfer_id, RustBuffer connection_id, RustBuffer local_path, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SIGNAL_PROCESS
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_FN_FUNC_RSHELL_SIGNAL_PROCESS
+void uniffi_r_shell_macos_fn_func_rshell_signal_process(RustBuffer connection_id, uint32_t pid, RustBuffer signal, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_R_SHELL_MACOS_RUSTBUFFER_ALLOC
@@ -697,6 +707,12 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_forget_host_key(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_GET_PROCESSES
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_GET_PROCESSES
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_get_processes(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_GET_SYSTEM_STATS
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_GET_SYSTEM_STATS
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_get_system_stats(void
@@ -814,6 +830,12 @@ uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_rename(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_UPLOAD
 #define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SFTP_UPLOAD
 uint16_t uniffi_r_shell_macos_checksum_func_rshell_sftp_upload(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SIGNAL_PROCESS
+#define UNIFFI_FFIDEF_UNIFFI_R_SHELL_MACOS_CHECKSUM_FUNC_RSHELL_SIGNAL_PROCESS
+uint16_t uniffi_r_shell_macos_checksum_func_rshell_signal_process(void
     
 );
 #endif
