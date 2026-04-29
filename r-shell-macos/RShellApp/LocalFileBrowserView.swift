@@ -27,6 +27,23 @@ extension UTType {
     static let rshellRemoteFile = UTType(exportedAs: "com.r-shell.remote-file")
 }
 
+/// Folder reparent payload. Carries just the folder id; the receiver
+/// looks up the live folder + does the move via
+/// `ConnectionStoreManager.moveFolder`. Custom UTType for the same
+/// reason `ProfileMove` has its own — keeps the drag from being
+/// silently accepted by Finder or other system surfaces.
+struct FolderMove: Codable, Transferable {
+    let folderId: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .rshellFolderMove)
+    }
+}
+
+extension UTType {
+    static let rshellFolderMove = UTType(exportedAs: "com.r-shell.folder-move")
+}
+
 extension View {
     /// Apply `.draggable` only when a payload is supplied. Lets call
     /// sites express "directories aren't draggable" as the absence

@@ -55,7 +55,13 @@ struct ContentView: View {
                     Task { await tabsStore.openConnection(profile) }
                 }
             )
-            .materialBackground(.sidebar)
+            .finderSidebarBackground()
+            // Round the trailing edge so the sidebar reads as a
+            // "card" rather than a flush-cut column. Leading edge
+            // stays sharp because the window's own corner radius
+            // already handles that side; rounding here would create
+            // a visible gap at the window edge.
+            .clipShape(SidebarShape())
             .navigationSplitViewColumnWidth(
                 min: LayoutConstants.minSidebarWidth,
                 ideal: layoutManager.layout.sidebarWidth,
@@ -229,5 +235,28 @@ private struct InspectorWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+// MARK: - Sidebar shape
+
+/// Sidebar clip shape — rounded only on the trailing edge so the
+/// sidebar reads as a "card" tucked under the window's titlebar
+/// without a visible gap on the leading side. `UnevenRoundedRectangle`
+/// is the right tool: it lets us round two corners and leave the
+/// other two square in a single shape, no path math required.
+private struct SidebarShape: Shape {
+    var cornerRadius: CGFloat = 10
+
+    func path(in rect: CGRect) -> Path {
+        UnevenRoundedRectangle(
+            cornerRadii: .init(
+                topLeading: 0,
+                bottomLeading: 0,
+                bottomTrailing: cornerRadius,
+                topTrailing: cornerRadius
+            )
+        )
+        .path(in: rect)
     }
 }

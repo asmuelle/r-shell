@@ -149,7 +149,30 @@ struct SidebarView: View {
                         folderNode(folder)
                     }
                 } header: {
+                    // The header doubles as the "drop here to move
+                    // to root" target — for both profiles and
+                    // folders. Without this, moving a connection or
+                    // folder back to root would mean editing the
+                    // profile / opening the context menu. Two
+                    // dropDestinations stack for the two payload
+                    // types since SwiftUI matches on type.
                     SidebarSectionHeader(title: "Connections")
+                        .dropDestination(for: ProfileMove.self) { drops, _ in
+                            for drop in drops {
+                                storeManager.moveProfile(id: drop.profileId, to: nil)
+                            }
+                            return !drops.isEmpty
+                        }
+                        .dropDestination(for: FolderMove.self) { drops, _ in
+                            for drop in drops {
+                                do {
+                                    try storeManager.moveFolder(id: drop.folderId, to: nil)
+                                } catch {
+                                    folderError = error.localizedDescription
+                                }
+                            }
+                            return !drops.isEmpty
+                        }
                 }
             }
         }
@@ -167,9 +190,15 @@ struct SidebarView: View {
     /// child folders recurse — the `AnyView` wrapper is required
     /// because Swift's opaque-result-type rules forbid a function
     /// from returning `some View` defined in terms of itself.
-    /// `.dropDestination` accepts a connection id from another row
-    /// and reparents the profile, giving the user a fast drag-to-move
-    /// flow without leaving the sidebar.
+    ///
+    /// Folder rows are themselves `.draggable` so users can
+    /// reparent a whole sub-tree by dragging it onto another folder.
+    /// Two `.dropDestination` modifiers stack — one for connections
+    /// and one for nested folders — because SwiftUI requires a
+    /// distinct destination per accepted Transferable type. The
+    /// store's `moveFolder` rejects cycles, so dropping "Work" onto
+    /// "Work/Production" raises a `FolderError.duplicate` which
+    /// surfaces via the existing `folderError` alert.
     private func folderNode(_ folder: ConnectionFolder) -> AnyView {
         AnyView(
             DisclosureGroup(
@@ -187,10 +216,21 @@ struct SidebarView: View {
             } label: {
                 FolderRow(folder: folder)
                     .contextMenu { folderContextMenu(folder) }
+                    .draggable(FolderMove(folderId: folder.id))
             }
             .dropDestination(for: ProfileMove.self) { drops, _ in
                 for drop in drops {
                     storeManager.moveProfile(id: drop.profileId, to: folder.path)
+                }
+                return !drops.isEmpty
+            }
+            .dropDestination(for: FolderMove.self) { drops, _ in
+                for drop in drops {
+                    do {
+                        try storeManager.moveFolder(id: drop.folderId, to: folder.path)
+                    } catch {
+                        folderError = error.localizedDescription
+                    }
                 }
                 return !drops.isEmpty
             }
