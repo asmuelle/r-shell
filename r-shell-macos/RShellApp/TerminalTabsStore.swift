@@ -125,6 +125,21 @@ final class TerminalTabsStore: ObservableObject {
         logger.info("Opening connection \(profile.name, privacy: .public)")
         lastError = nil
 
+        // One tab per profile. A repeat click on an already-open
+        // profile activates the existing tab instead of opening a
+        // second SSH session — that matches the typical user mental
+        // model ("the foo server tab") and avoids accidentally
+        // burning two PTYs / two SFTP subsystems on a misclick. We
+        // only short-circuit on the *outermost* call so the auth-
+        // retry recursion (which re-enters with a fresh password /
+        // passphrase) doesn't bail out the moment a tab is appended.
+        if password == nil && passphrase == nil,
+           let existing = tabs.first(where: { $0.profile.id == profile.id }) {
+            activeTabId = existing.id
+            logger.info("Reusing existing tab for \(profile.name, privacy: .public)")
+            return
+        }
+
         // Mark this profile as in-flight only on the outermost call.
         // Auth-retry recursion calls this method again with `password`
         // / `passphrase` arguments — the flag is already set in that
