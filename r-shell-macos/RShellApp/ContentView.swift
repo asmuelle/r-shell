@@ -76,6 +76,17 @@ struct ContentView: View {
         } message: {
             Text(tabsStore.lastError ?? "")
         }
+        // Soft-failure notice (e.g. SSH→SFTP fallback). Distinct
+        // from the error alert so the user can tell "we adapted
+        // and continued" from "this didn't work at all".
+        .alert("Heads up", isPresented: Binding(
+            get: { tabsStore.lastNotice != nil },
+            set: { if !$0 { tabsStore.lastNotice = nil } }
+        )) {
+            Button("OK") { tabsStore.lastNotice = nil }
+        } message: {
+            Text(tabsStore.lastNotice ?? "")
+        }
     }
 }
 
@@ -96,7 +107,7 @@ private struct DetailColumn: View {
     /// straight back to the size they last left it at.
     private var inspectorShouldRender: Bool {
         guard layoutManager.layout.inspectorVisible else { return false }
-        if let kind = tabsStore.activeTab?.profile.kind, kind == .sftp {
+        if let kind = tabsStore.activeTab?.effectiveKind, kind == .sftp {
             return false
         }
         return true

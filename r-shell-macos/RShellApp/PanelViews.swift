@@ -36,7 +36,7 @@ struct MainPanel: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
 
     var body: some View {
-        if let active = tabsStore.activeTab, active.profile.kind == .sftp {
+        if let active = tabsStore.activeTab, active.effectiveKind == .sftp {
             DualPaneFileBrowserView(
                 connectionId: active.connectionId,
                 connectionLabel: active.profile.name
@@ -107,7 +107,7 @@ struct MainPanel: View {
                     ForEach(tabsStore.tabs) { tab in
                         let isActive = tab.id == tabsStore.activeTabId
                         ZStack {
-                            if tab.profile.kind.supportsTerminal {
+                            if tab.effectiveKind.supportsTerminal {
                                 TerminalView(
                                     connectionId: tab.connectionId,
                                     ptyGeneration: tab.ptyGeneration,
@@ -185,6 +185,22 @@ struct TerminalTab: Identifiable {
     /// Defaults to `.connected` since we only build a tab after a
     /// successful `rshellConnect`.
     var status: TerminalConnectionStatus = .connected
+    /// Per-tab kind override. Set when `openConnection` falls back
+    /// from SSH to SFTP because the server denied the shell channel
+    /// (scponly, ForceCommand internal-sftp). The user's saved
+    /// `profile.kind` is left untouched — flipping it would silently
+    /// rewrite their settings — but the tab renders as SFTP for the
+    /// rest of its lifetime. `effectiveKind` is the value the rest
+    /// of the UI should consult; nothing should read `profile.kind`
+    /// directly to decide layout.
+    var kindOverride: ConnectionKind?
+
+    /// Effective connection kind for this tab. Prefers an explicit
+    /// override (set on shell-denied fallback) over the saved
+    /// profile setting.
+    var effectiveKind: ConnectionKind {
+        kindOverride ?? profile.kind
+    }
 }
 
 // MARK: - SFTP-only placeholder

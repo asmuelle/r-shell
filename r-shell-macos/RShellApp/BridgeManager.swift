@@ -131,6 +131,40 @@ final class BridgeManager {
         }
     }
 
+    /// Probe whether SFTP is available on an already-connected
+    /// session by issuing a one-shot `list_dir(".")`. Used to decide
+    /// whether to fall back to SFTP-mode after a denied PTY: if the
+    /// shell is blocked but SFTP works (scponly, ForceCommand
+    /// internal-sftp, hosting-account restrictions), the connection
+    /// is still useful for file transfer.
+    ///
+    /// Returns `true` if the listing succeeded, `false` for any
+    /// error (subsystem refused, permission denied, network drop).
+    /// We don't try to interpret the error — at this point we've
+    /// already established the SSH transport works, so anything
+    /// that breaks here is genuinely a "this session is unusable"
+    /// signal.
+    func canUseSftp(connectionId: String) async -> Bool {
+        await withCheckedContinuation { cont in
+            dispatchQueue.async { [weak self] in
+                guard let self else {
+                    cont.resume(returning: false)
+                    return
+                }
+                do {
+                    _ = try rshellSftpListDir(
+                        connectionId: connectionId,
+                        path: "."
+                    )
+                    cont.resume(returning: true)
+                } catch {
+                    self.logger.info("SFTP probe failed: \(error.localizedDescription, privacy: .public)")
+                    cont.resume(returning: false)
+                }
+            }
+        }
+    }
+
     // MARK: - PTY
 
     /// Start a PTY session. Returns the `generation` counter so the caller

@@ -22,6 +22,13 @@ final class TerminalTabsStore: ObservableObject {
     @Published private(set) var tabs: [TerminalTab] = []
     @Published var activeTabId: UUID?
     @Published var lastError: String?
+    /// Non-blocking informational message — used for soft-failure
+    /// states where the connect succeeded but in a different shape
+    /// than the user requested (today: SSH-to-SFTP fallback when the
+    /// server denies the shell). Surfaced as a dismissible alert so
+    /// the user knows what happened, but doesn't gate the UI behind
+    /// a modal "the thing is broken" treatment.
+    @Published var lastNotice: String?
     /// Profile ids currently inside an in-flight `openConnection` call.
     /// The sidebar reads this to swap the row's icon for a spinner and
     /// guard the click so a double-tap can't fire a second connect for
@@ -321,33 +328,53 @@ final class TerminalTabsStore: ObservableObject {
         // PTY start — generation lets us guard against stale closes.
         // SFTP-only profiles skip this entirely: the file browser uses
         // the SSH transport directly, no shell channel needed.
-        let generation: UInt64
+        var generation: UInt64 = 0
+        var kindOverride: ConnectionKind? = nil
+        var displayTitle = profile.name
+
         if profile.kind.supportsTerminal {
-            guard let g = await BridgeManager.shared.openTerminal(
+            if let g = await BridgeManager.shared.openTerminal(
                 connectionId: connectionId
-            ) else {
-                lastError = "Failed to start terminal session"
-                BridgeManager.shared.disconnect(connectionId: connectionId)
-                return
+            ) {
+                generation = g
+            } else {
+                // PTY failed. The most common reason on a server that
+                // *did* accept the SSH connect is shell restriction
+                // (scponly, ForceCommand internal-sftp, hosting
+                // accounts that publish SFTP-only credentials). Probe
+                // SFTP — if it works, keep the session alive and
+                // demote this tab to SFTP-mode for its lifetime. The
+                // saved `profile.kind` is left as `.ssh` so the next
+                // click still tries the shell first; users that want
+                // to commit the change permanently can edit the
+                // profile.
+                if await BridgeManager.shared.canUseSftp(connectionId: connectionId) {
+                    logger.info("Server denied PTY but accepts SFTP; demoting tab to SFTP for \(connectionId, privacy: .public)")
+                    kindOverride = .sftp
+                    displayTitle = "\(profile.name) (SFTP)"
+                    lastNotice = "Server doesn't allow shell access. Switched \"\(profile.name)\" to SFTP-only mode."
+                } else {
+                    lastError = "Server refused both shell and SFTP. Connection is unusable."
+                    BridgeManager.shared.disconnect(connectionId: connectionId)
+                    return
+                }
             }
-            generation = g
-        } else {
-            generation = 0
         }
 
         // Append + select. For SSH tabs, the session is registered when
         // `TerminalView` is materialised (so SwiftTerm's
         // `feed(byteArray:)` is wired before any output arrives). SFTP
-        // tabs render a placeholder in the terminal pane — the file
-        // panel below the split is the actual interaction surface.
+        // tabs (including those demoted from a denied PTY) render the
+        // dual-pane file browser instead.
         let tab = TerminalTab(
             id: UUID(),
             profile: profile,
             sessionId: sessionId,
             connectionId: connectionId,
             ptyGeneration: generation,
-            title: profile.name,
-            order: tabs.count
+            title: displayTitle,
+            order: tabs.count,
+            kindOverride: kindOverride
         )
         tabs.append(tab)
         activeTabId = tab.id
@@ -411,8 +438,9 @@ final class TerminalTabsStore: ObservableObject {
             }
 
             // Bring up a fresh PTY for the same connection_id. SFTP-only
-            // tabs skip this — there's no terminal to recreate.
-            if profile.kind.supportsTerminal {
+            // tabs (or SSH tabs that fell back to SFTP earlier) skip
+            // this — there's no terminal to recreate.
+            if tab.effectiveKind.supportsTerminal {
                 guard let generation = await BridgeManager.shared.openTerminal(
                     connectionId: tab.connectionId
                 ) else {
@@ -442,7 +470,7 @@ final class TerminalTabsStore: ObservableObject {
         guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let tab = tabs[index]
 
-        if tab.profile.kind.supportsTerminal {
+        if tab.effectiveKind.supportsTerminal {
             BridgeManager.shared.closeTerminal(
                 connectionId: tab.connectionId,
                 generation: tab.ptyGeneration
