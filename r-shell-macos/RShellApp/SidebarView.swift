@@ -27,6 +27,10 @@ struct SidebarView: View {
     /// Folder mutation prompts (create / rename) and last error.
     @State private var folderPrompt: FolderPrompt?
     @State private var folderError: String?
+    /// `true` while a drag is hovering the "move to root" drop row.
+    /// Drives the row's tinted accent so users see the target light
+    /// up the same way folder rows do during a drop hover.
+    @State private var rootDropTargeted = false
 
     private struct EditTarget: Identifiable {
         let profile: ConnectionProfile
@@ -148,31 +152,21 @@ struct SidebarView: View {
                     ForEach(filteredChildFolders(of: nil)) { folder in
                         folderNode(folder)
                     }
+
+                    // "Drop here to move to root" target — only
+                    // visible when there's at least one folder, since
+                    // dropping at root doesn't make sense without
+                    // somewhere to drop *out of*. Lives at the bottom
+                    // of the section as a faint "Move to top level"
+                    // hint that activates as a real row when a drag
+                    // hovers it. Section *headers* don't reliably
+                    // accept drops in SwiftUI's sidebar List, so the
+                    // drop target needs to be a body row.
+                    if !storeManager.folders.isEmpty {
+                        rootDropRow
+                    }
                 } header: {
-                    // The header doubles as the "drop here to move
-                    // to root" target — for both profiles and
-                    // folders. Without this, moving a connection or
-                    // folder back to root would mean editing the
-                    // profile / opening the context menu. Two
-                    // dropDestinations stack for the two payload
-                    // types since SwiftUI matches on type.
                     SidebarSectionHeader(title: "Connections")
-                        .dropDestination(for: ProfileMove.self) { drops, _ in
-                            for drop in drops {
-                                storeManager.moveProfile(id: drop.profileId, to: nil)
-                            }
-                            return !drops.isEmpty
-                        }
-                        .dropDestination(for: FolderMove.self) { drops, _ in
-                            for drop in drops {
-                                do {
-                                    try storeManager.moveFolder(id: drop.folderId, to: nil)
-                                } catch {
-                                    folderError = error.localizedDescription
-                                }
-                            }
-                            return !drops.isEmpty
-                        }
                 }
             }
         }
@@ -235,6 +229,52 @@ struct SidebarView: View {
                 return !drops.isEmpty
             }
         )
+    }
+
+    /// Faint "drop here to move to root" affordance. Tinted accent
+    /// while a drag hovers, otherwise reads as a quiet hint at the
+    /// bottom of the connections section. Accepts both `ProfileMove`
+    /// and `FolderMove` payloads — symmetrical with what folder
+    /// nodes accept, just routed to `nil` parent.
+    @ViewBuilder
+    private var rootDropRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up.to.line")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(width: 18)
+            Text("Move to top level")
+                .font(.system(size: 11))
+                .foregroundStyle(rootDropTargeted
+                    ? AnyShapeStyle(Color.accentColor)
+                    : AnyShapeStyle(HierarchicalShapeStyle.tertiary))
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.accentColor.opacity(rootDropTargeted ? 0.18 : 0))
+        )
+        .dropDestination(for: ProfileMove.self) { drops, _ in
+            for drop in drops {
+                storeManager.moveProfile(id: drop.profileId, to: nil)
+            }
+            return !drops.isEmpty
+        } isTargeted: { hovering in
+            rootDropTargeted = hovering
+        }
+        .dropDestination(for: FolderMove.self) { drops, _ in
+            for drop in drops {
+                do {
+                    try storeManager.moveFolder(id: drop.folderId, to: nil)
+                } catch {
+                    folderError = error.localizedDescription
+                }
+            }
+            return !drops.isEmpty
+        } isTargeted: { hovering in
+            rootDropTargeted = hovering
+        }
     }
 
     /// Wraps a connection row with the tap / context-menu / drag
@@ -664,23 +704,36 @@ private struct FolderRow: View {
 // MARK: - Drag-drop transfer model
 
 /// Wrapper that lets a `ConnectionProfile` ride a Swift drag session.
-/// We can't use the `ConnectionProfile` itself because uniffi-imported
+/// We can't use `ConnectionProfile` itself because uniffi-imported
 /// codable structs have nested optionals that the Transferable system
 /// chokes on; carrying just the id is enough — the receiver looks up
 /// the live profile in the store.
+///
+/// Transfer is via a tagged-string `ProxyRepresentation` rather than
+/// a custom UTType. UTType-based codable drags need the type
+/// declared in Info.plist's UTExportedTypeDeclarations, which we
+/// don't ship — without that, the drag silently fails to register
+/// on macOS even though the code compiles. The "rshell-profile:"
+/// prefix in the proxy string keeps the drop destination from
+/// accidentally accepting plain text drags from elsewhere.
 struct ProfileMove: Codable, Transferable {
     let profileId: String
 
-    static var transferRepresentation: some TransferRepresentation {
-        // Custom UTType keeps these drags from accidentally being
-        // accepted by Finder, the system pasteboard, or any other
-        // sidebar that might surface in the future.
-        CodableRepresentation(contentType: .rshellConnectionMove)
-    }
-}
+    private static let prefix = "rshell-profile:"
 
-extension UTType {
-    static let rshellConnectionMove = UTType(exportedAs: "com.r-shell.connection-move")
+    static var transferRepresentation: some TransferRepresentation {
+        ProxyRepresentation(
+            exporting: { Self.prefix + $0.profileId },
+            importing: { string in
+                guard string.hasPrefix(Self.prefix) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return ProfileMove(
+                    profileId: String(string.dropFirst(Self.prefix.count))
+                )
+            }
+        )
+    }
 }
 
 // MARK: - Folder name sheet

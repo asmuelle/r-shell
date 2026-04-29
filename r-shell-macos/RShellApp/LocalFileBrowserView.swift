@@ -29,19 +29,28 @@ extension UTType {
 
 /// Folder reparent payload. Carries just the folder id; the receiver
 /// looks up the live folder + does the move via
-/// `ConnectionStoreManager.moveFolder`. Custom UTType for the same
-/// reason `ProfileMove` has its own — keeps the drag from being
-/// silently accepted by Finder or other system surfaces.
+/// `ConnectionStoreManager.moveFolder`. Same `ProxyRepresentation`
+/// pattern as `ProfileMove` — UTType-based codable drags need the
+/// type declared in Info.plist's UTExportedTypeDeclarations to
+/// register on macOS, which we don't ship.
 struct FolderMove: Codable, Transferable {
     let folderId: String
 
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .rshellFolderMove)
-    }
-}
+    private static let prefix = "rshell-folder:"
 
-extension UTType {
-    static let rshellFolderMove = UTType(exportedAs: "com.r-shell.folder-move")
+    static var transferRepresentation: some TransferRepresentation {
+        ProxyRepresentation(
+            exporting: { Self.prefix + $0.folderId },
+            importing: { string in
+                guard string.hasPrefix(Self.prefix) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return FolderMove(
+                    folderId: String(string.dropFirst(Self.prefix.count))
+                )
+            }
+        )
+    }
 }
 
 extension View {
