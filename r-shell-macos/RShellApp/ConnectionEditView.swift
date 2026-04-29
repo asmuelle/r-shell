@@ -166,7 +166,21 @@ struct ConnectionEditView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Folder:").frame(width: 80, alignment: .trailing)
-                        TextField("Work/Production", text: $folderPath)
+                        Picker("", selection: $folderPath) {
+                            Text("(Root)").tag("")
+                            // List every existing folder path so the
+                            // user can drop the profile in directly
+                            // without having to type. Folder creation
+                            // still happens from the sidebar — the
+                            // editor only assigns into existing ones
+                            // to keep this dialog simple.
+                            ForEach(storeManager.allFolderPaths(), id: \.self) { path in
+                                Text(path).tag(path)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        Spacer()
                     }
                     HStack {
                         Toggle("Favorite", isOn: $favorite)

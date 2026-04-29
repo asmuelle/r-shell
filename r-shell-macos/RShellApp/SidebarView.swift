@@ -1,5 +1,6 @@
 import SwiftUI
 import RShellMacOS
+import UniformTypeIdentifiers
 
 /// Sidebar showing the Connection Manager (top, scrollable) and a
 /// Connection Details panel (bottom, fixed) for the currently-selected
@@ -19,10 +20,36 @@ struct SidebarView: View {
     /// gives SwiftUI an identity-stable handle so flipping between
     /// profiles in the context menu doesn't reuse the previous form.
     @State private var editingProfile: EditTarget?
+    /// Disclosure state per folder path. Defaults to `true` so the
+    /// hierarchy reads as fully open on first launch — the user
+    /// collapses what they don't need.
+    @State private var expandedFolders: [String: Bool] = [:]
+    /// Folder mutation prompts (create / rename) and last error.
+    @State private var folderPrompt: FolderPrompt?
+    @State private var folderError: String?
 
     private struct EditTarget: Identifiable {
         let profile: ConnectionProfile
         var id: String { profile.id }
+    }
+
+    /// Encapsulates the four folder-naming prompts (new top-level, new
+    /// subfolder, rename) so a single sheet can drive all three.
+    private struct FolderPrompt: Identifiable {
+        enum Kind { case createTopLevel, createSubfolder(parent: String), rename(folderId: String, current: String) }
+        let id = UUID()
+        let kind: Kind
+        var title: String {
+            switch kind {
+            case .createTopLevel: return "New Folder"
+            case .createSubfolder: return "New Subfolder"
+            case .rename: return "Rename Folder"
+            }
+        }
+        var initialName: String {
+            if case .rename(_, let current) = kind { return current }
+            return ""
+        }
     }
 
     var body: some View {
@@ -36,6 +63,10 @@ struct SidebarView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("New Connection") { showNewConnection = true }
+                    Button("New Folder") {
+                        folderPrompt = FolderPrompt(kind: .createTopLevel)
+                    }
+                    Divider()
                     Button("Import from Tauri…") { showImport = true }
                 } label: {
                     Image(systemName: "plus")
@@ -47,6 +78,25 @@ struct SidebarView: View {
         }
         .sheet(item: $editingProfile) { target in
             ConnectionEditView(storeManager: storeManager, existingProfile: target.profile)
+        }
+        .sheet(item: $folderPrompt) { prompt in
+            FolderNameSheet(
+                title: prompt.title,
+                initialName: prompt.initialName
+            ) { newName in
+                applyFolderPrompt(prompt, name: newName)
+            }
+        }
+        .alert(
+            "Folder error",
+            isPresented: Binding(
+                get: { folderError != nil },
+                set: { if !$0 { folderError = nil } }
+            )
+        ) {
+            Button("OK") { folderError = nil }
+        } message: {
+            Text(folderError ?? "")
         }
         .fileImporter(
             isPresented: $showImport,
@@ -64,49 +114,93 @@ struct SidebarView: View {
     @ViewBuilder
     private var connectionList: some View {
         List(selection: $selectedConnection) {
-            if filteredRootConnections.isEmpty && filteredFolders.isEmpty {
+            if storeManager.connections.isEmpty && storeManager.folders.isEmpty {
                 Section("Connections") {
-                    if search.isEmpty && storeManager.connections.isEmpty {
+                    if search.isEmpty {
                         emptyState
                     } else {
-                        Text(search.isEmpty ? "No saved connections" : "No matches")
+                        Text("No matches")
                             .foregroundColor(.secondary)
                             .font(.caption)
                     }
                 }
+            } else if isSearchActive && !hasAnyMatches {
+                Section("Connections") {
+                    Text("No matches")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+                }
             } else {
-                if !filteredRootConnections.isEmpty {
-                    Section("Connections") {
-                        ForEach(filteredRootConnections) { conn in
-                            ConnectionRow(
-                                profile: conn,
-                                isConnecting: isConnecting(conn)
-                            )
-                            .tag(conn as ConnectionProfile?)
-                            .onTapGesture { handleTap(conn) }
-                            .contextMenu { connectionContextMenu(conn) }
-                        }
+                // Root-level (uncategorized) profiles first.
+                let rootConns = filteredConnections(in: nil)
+                if !rootConns.isEmpty {
+                    ForEach(rootConns) { conn in
+                        connectionRow(conn)
                     }
                 }
 
-                ForEach(filteredFolders) { folder in
-                    Section(folder.name) {
-                        ForEach(filteredConnections(in: folder.path)) { conn in
-                            ConnectionRow(
-                                profile: conn,
-                                isConnecting: isConnecting(conn)
-                            )
-                            .tag(conn as ConnectionProfile?)
-                            .onTapGesture { handleTap(conn) }
-                            .contextMenu { connectionContextMenu(conn) }
-                        }
-                    }
+                // Top-level folders, recursively rendered. Drag-drop
+                // and "Move to" context menus reorganize the
+                // hierarchy without users having to edit the profile.
+                ForEach(filteredChildFolders(of: nil)) { folder in
+                    folderNode(folder)
                 }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .searchable(text: $search, placement: .sidebar, prompt: "Search connections")
+    }
+
+    /// Recursive folder + nested-content renderer. Each folder is a
+    /// `DisclosureGroup` keyed on its path so expansion state survives
+    /// reorderings. Profiles inside the folder render as plain rows;
+    /// child folders recurse — the `AnyView` wrapper is required
+    /// because Swift's opaque-result-type rules forbid a function
+    /// from returning `some View` defined in terms of itself.
+    /// `.dropDestination` accepts a connection id from another row
+    /// and reparents the profile, giving the user a fast drag-to-move
+    /// flow without leaving the sidebar.
+    private func folderNode(_ folder: ConnectionFolder) -> AnyView {
+        AnyView(
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { expandedFolders[folder.path] ?? true },
+                    set: { expandedFolders[folder.path] = $0 }
+                )
+            ) {
+                ForEach(filteredConnections(in: folder.path)) { conn in
+                    connectionRow(conn)
+                }
+                ForEach(filteredChildFolders(of: folder.path)) { sub in
+                    folderNode(sub)
+                }
+            } label: {
+                FolderRow(folder: folder)
+                    .contextMenu { folderContextMenu(folder) }
+            }
+            .dropDestination(for: ProfileMove.self) { drops, _ in
+                for drop in drops {
+                    storeManager.moveProfile(id: drop.profileId, to: folder.path)
+                }
+                return !drops.isEmpty
+            }
+        )
+    }
+
+    /// Wraps a connection row with the tap / context-menu / drag
+    /// behaviour. Pulled out so root-level and folder-nested rows
+    /// share a single definition.
+    @ViewBuilder
+    private func connectionRow(_ conn: ConnectionProfile) -> some View {
+        ConnectionRow(
+            profile: conn,
+            isConnecting: isConnecting(conn)
+        )
+        .tag(conn as ConnectionProfile?)
+        .onTapGesture { handleTap(conn) }
+        .contextMenu { connectionContextMenu(conn) }
+        .draggable(ProfileMove(profileId: conn.id))
     }
 
     // MARK: - Empty state
@@ -149,29 +243,54 @@ struct SidebarView: View {
 
     // MARK: - Filtering
 
+    private var isSearchActive: Bool {
+        !search.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     private func matches(_ conn: ConnectionProfile) -> Bool {
-        guard !search.isEmpty else { return true }
+        guard isSearchActive else { return true }
         let needle = search.lowercased()
         return conn.name.lowercased().contains(needle)
             || conn.host.lowercased().contains(needle)
+            || conn.username.lowercased().contains(needle)
     }
 
-    private var rootConnections: [ConnectionProfile] {
-        storeManager.connections.filter { $0.folderPath == nil || $0.folderPath?.isEmpty == true }
+    /// Profiles directly inside `folderPath` (or root when `nil`),
+    /// already filtered by the active search needle. The "directly"
+    /// part is important — descendant profiles render under their
+    /// own folder node, so duplicating them at every ancestor would
+    /// double-count.
+    private func filteredConnections(in folderPath: String?) -> [ConnectionProfile] {
+        storeManager.connections(inFolder: folderPath)
+            .filter(matches)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private var filteredRootConnections: [ConnectionProfile] {
-        rootConnections.filter(matches)
-    }
-
-    private var filteredFolders: [ConnectionFolder] {
-        storeManager.folders.filter { folder in
-            !filteredConnections(in: folder.path).isEmpty
+    /// Folders directly under `parent`, kept only when they (or any
+    /// descendant) host at least one matching connection during a
+    /// search. Without this, an active filter would still render
+    /// empty parent folders just because the path exists.
+    private func filteredChildFolders(of parent: String?) -> [ConnectionFolder] {
+        storeManager.childFolders(of: parent).filter { folder in
+            !isSearchActive || folderHasMatch(folder)
         }
     }
 
-    private func filteredConnections(in path: String) -> [ConnectionProfile] {
-        storeManager.connections(inFolder: path).filter(matches)
+    /// Recursive existence check: does this folder, or any folder
+    /// nested below it, contain a connection that matches the active
+    /// search needle? Used by `filteredChildFolders` to prune empty
+    /// branches during search.
+    private func folderHasMatch(_ folder: ConnectionFolder) -> Bool {
+        if !filteredConnections(in: folder.path).isEmpty { return true }
+        for child in storeManager.childFolders(of: folder.path) {
+            if folderHasMatch(child) { return true }
+        }
+        return false
+    }
+
+    private var hasAnyMatches: Bool {
+        !filteredConnections(in: nil).isEmpty
+            || storeManager.childFolders(of: nil).contains(where: folderHasMatch)
     }
 
     // MARK: - Context menu
@@ -192,8 +311,75 @@ struct SidebarView: View {
             copy.name = "\(conn.name) (copy)"
             storeManager.saveOrUpdate(copy)
         }
+        moveToMenu(for: conn)
         Divider()
         Button("Delete", role: .destructive) { storeManager.delete(conn) }
+    }
+
+    /// "Move to" submenu listing every folder plus a "(Root)" entry.
+    /// Disabling the option that points at the profile's current
+    /// folder makes the current location glanceable without a
+    /// separate checkmark column.
+    @ViewBuilder
+    private func moveToMenu(for conn: ConnectionProfile) -> some View {
+        Menu("Move to") {
+            Button("(Root)") {
+                storeManager.moveProfile(id: conn.id, to: nil)
+            }
+            .disabled(conn.folderPath == nil)
+
+            let paths = storeManager.allFolderPaths()
+            if !paths.isEmpty { Divider() }
+            ForEach(paths, id: \.self) { path in
+                Button(path) {
+                    storeManager.moveProfile(id: conn.id, to: path)
+                }
+                .disabled(conn.folderPath == path)
+            }
+            Divider()
+            Button("New Folder…") {
+                folderPrompt = FolderPrompt(kind: .createTopLevel)
+                // The user creates the folder, then they Move-to it
+                // explicitly — keeping this flow simple beats trying
+                // to chain "create + move" through the prompt sheet.
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func folderContextMenu(_ folder: ConnectionFolder) -> some View {
+        Button("New Subfolder") {
+            folderPrompt = FolderPrompt(kind: .createSubfolder(parent: folder.path))
+        }
+        Button("Rename…") {
+            folderPrompt = FolderPrompt(kind: .rename(folderId: folder.id, current: folder.name))
+        }
+        Divider()
+        Button("Delete", role: .destructive) {
+            do {
+                try storeManager.deleteFolder(id: folder.id)
+            } catch {
+                folderError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Translate a `FolderPrompt` into the matching store mutation.
+    /// Surfaces validation errors via the shared alert binding.
+    private func applyFolderPrompt(_ prompt: FolderPrompt, name: String) {
+        do {
+            switch prompt.kind {
+            case .createTopLevel:
+                try storeManager.createFolder(name: name, in: nil)
+            case .createSubfolder(let parent):
+                try storeManager.createFolder(name: name, in: parent)
+                expandedFolders[parent] = true  // open the parent so the new child is visible
+            case .rename(let folderId, _):
+                try storeManager.renameFolder(id: folderId, to: name)
+            }
+        } catch {
+            folderError = error.localizedDescription
+        }
     }
 
     // MARK: - Click + connecting state
@@ -369,5 +555,92 @@ struct ConnectionRow: View {
     private var accessibilityLabel: String {
         let base = "\(profile.name), \(profile.username)@\(profile.host):\(profile.port)"
         return isConnecting ? "\(base), connecting" : base
+    }
+}
+
+// MARK: - Folder row
+
+/// Single folder header in the recursive sidebar. Distinct from
+/// `ConnectionRow` because folders carry no live state (no connect
+/// spinner, no host string), and using a separate view makes the
+/// visual treatment easy to evolve without touching connection rows.
+private struct FolderRow: View {
+    let folder: ConnectionFolder
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.tint)
+                .frame(width: 14)
+            Text(folder.name)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
+    }
+}
+
+// MARK: - Drag-drop transfer model
+
+/// Wrapper that lets a `ConnectionProfile` ride a Swift drag session.
+/// We can't use the `ConnectionProfile` itself because uniffi-imported
+/// codable structs have nested optionals that the Transferable system
+/// chokes on; carrying just the id is enough — the receiver looks up
+/// the live profile in the store.
+struct ProfileMove: Codable, Transferable {
+    let profileId: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        // Custom UTType keeps these drags from accidentally being
+        // accepted by Finder, the system pasteboard, or any other
+        // sidebar that might surface in the future.
+        CodableRepresentation(contentType: .rshellConnectionMove)
+    }
+}
+
+extension UTType {
+    static let rshellConnectionMove = UTType(exportedAs: "com.r-shell.connection-move")
+}
+
+// MARK: - Folder name sheet
+
+/// Tiny modal used for creating and renaming folders. Returns the
+/// trimmed name through `onSubmit`; the caller decides whether to
+/// route it to `createFolder` or `renameFolder`.
+private struct FolderNameSheet: View {
+    let title: String
+    let initialName: String
+    let onSubmit: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title)
+                .font(.headline)
+            TextField("Folder name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(submit)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { submit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 320)
+        .onAppear { name = initialName }
+    }
+
+    private func submit() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        onSubmit(trimmed)
+        dismiss()
     }
 }
