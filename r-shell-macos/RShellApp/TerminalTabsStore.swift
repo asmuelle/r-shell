@@ -22,6 +22,13 @@ final class TerminalTabsStore: ObservableObject {
     @Published private(set) var tabs: [TerminalTab] = []
     @Published var activeTabId: UUID?
     @Published var lastError: String?
+    /// Profile ids currently inside an in-flight `openConnection` call.
+    /// The sidebar reads this to swap the row's icon for a spinner and
+    /// guard the click so a double-tap can't fire a second connect for
+    /// the same profile while the first is still in handshake / PTY
+    /// start. Pure UI signal — the actual concurrency is driven by the
+    /// `await` chain in `openConnection`.
+    @Published private(set) var connectingProfileIds: Set<String> = []
 
     private let logger = Logger(subsystem: "com.r-shell", category: "terminal-tabs")
     private var observers: [NSObjectProtocol] = []
@@ -117,6 +124,23 @@ final class TerminalTabsStore: ObservableObject {
     ) async {
         logger.info("Opening connection \(profile.name, privacy: .public)")
         lastError = nil
+
+        // Mark this profile as in-flight only on the outermost call.
+        // Auth-retry recursion calls this method again with `password`
+        // / `passphrase` arguments — the flag is already set in that
+        // case, and removing it from inside the recursion would let
+        // the spinner blink off mid-flow. `defer` runs even when the
+        // function returns from inside a nested switch, so the flag
+        // is always cleared on the way out.
+        let isOutermost = !connectingProfileIds.contains(profile.id)
+        if isOutermost {
+            connectingProfileIds.insert(profile.id)
+        }
+        defer {
+            if isOutermost {
+                connectingProfileIds.remove(profile.id)
+            }
+        }
 
         // Each tab gets its own SSH session — without a session id, opening
         // the same profile twice would replace the first PTY in the Rust

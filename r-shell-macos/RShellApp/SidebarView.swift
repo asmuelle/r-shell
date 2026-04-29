@@ -7,6 +7,7 @@ import RShellMacOS
 /// is empty when nothing is selected.
 struct SidebarView: View {
     @ObservedObject var storeManager: ConnectionStoreManager
+    @EnvironmentObject var tabsStore: TerminalTabsStore
     @Binding var selectedConnection: ConnectionProfile?
     var onConnect: ((ConnectionProfile) -> Void)?
 
@@ -77,13 +78,13 @@ struct SidebarView: View {
                 if !filteredRootConnections.isEmpty {
                     Section("Connections") {
                         ForEach(filteredRootConnections) { conn in
-                            ConnectionRow(profile: conn)
-                                .tag(conn as ConnectionProfile?)
-                                .onTapGesture {
-                                    selectedConnection = conn
-                                    onConnect?(conn)
-                                }
-                                .contextMenu { connectionContextMenu(conn) }
+                            ConnectionRow(
+                                profile: conn,
+                                isConnecting: isConnecting(conn)
+                            )
+                            .tag(conn as ConnectionProfile?)
+                            .onTapGesture { handleTap(conn) }
+                            .contextMenu { connectionContextMenu(conn) }
                         }
                     }
                 }
@@ -91,13 +92,13 @@ struct SidebarView: View {
                 ForEach(filteredFolders) { folder in
                     Section(folder.name) {
                         ForEach(filteredConnections(in: folder.path)) { conn in
-                            ConnectionRow(profile: conn)
-                                .tag(conn as ConnectionProfile?)
-                                .onTapGesture {
-                                    selectedConnection = conn
-                                    onConnect?(conn)
-                                }
-                                .contextMenu { connectionContextMenu(conn) }
+                            ConnectionRow(
+                                profile: conn,
+                                isConnecting: isConnecting(conn)
+                            )
+                            .tag(conn as ConnectionProfile?)
+                            .onTapGesture { handleTap(conn) }
+                            .contextMenu { connectionContextMenu(conn) }
                         }
                     }
                 }
@@ -178,9 +179,9 @@ struct SidebarView: View {
     @ViewBuilder
     private func connectionContextMenu(_ conn: ConnectionProfile) -> some View {
         Button(conn.kind.supportsTerminal ? "Connect" : "Connect (SFTP)") {
-            selectedConnection = conn
-            onConnect?(conn)
+            handleTap(conn)
         }
+        .disabled(isConnecting(conn))
         Divider()
         Button("Edit…") {
             editingProfile = EditTarget(profile: conn)
@@ -193,6 +194,27 @@ struct SidebarView: View {
         }
         Divider()
         Button("Delete", role: .destructive) { storeManager.delete(conn) }
+    }
+
+    // MARK: - Click + connecting state
+
+    /// Whether `openConnection` is currently in flight for this
+    /// profile. Driven by `TerminalTabsStore.connectingProfileIds`,
+    /// which the store toggles around the entire connect → PTY-start
+    /// sequence (auth retries included).
+    private func isConnecting(_ conn: ConnectionProfile) -> Bool {
+        tabsStore.connectingProfileIds.contains(conn.id)
+    }
+
+    /// Single tap entry point for both row clicks and the context-menu
+    /// Connect button. Early-returns when the profile is already
+    /// in-flight so a rapid double-tap (or a Return-key press while
+    /// the tap's connect is still negotiating) can't queue a second
+    /// session.
+    private func handleTap(_ conn: ConnectionProfile) {
+        guard !isConnecting(conn) else { return }
+        selectedConnection = conn
+        onConnect?(conn)
     }
 }
 
@@ -280,27 +302,56 @@ private struct ConnectionDetailsPanel: View {
 /// profile is marked favorite.
 struct ConnectionRow: View {
     let profile: ConnectionProfile
+    /// `true` while `TerminalTabsStore.openConnection` is in flight
+    /// for this profile. Replaces the leading glyph with a spinner,
+    /// dims the row, and (via the parent's tap guard) blocks further
+    /// clicks until the connect either succeeds or fails.
+    var isConnecting: Bool = false
 
     var body: some View {
         HStack(spacing: 8) {
-            // Glyph encodes both kind (terminal vs folder) and the
-            // favorite flag (star wins when set so it stays glanceable).
-            Image(systemName: rowGlyph)
-                .font(.system(size: 11))
-                .foregroundStyle(rowGlyphTint)
-                .frame(width: 14)
+            // Leading slot: spinner during connect, otherwise the
+            // kind / favorite glyph.
+            ZStack {
+                if isConnecting {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: rowGlyph)
+                        .font(.system(size: 11))
+                        .foregroundStyle(rowGlyphTint)
+                }
+            }
+            .frame(width: 14)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(profile.name)
                     .font(.system(size: 12))
                     .lineLimit(1)
-                Text("\(profile.username)@\(profile.host):\(profile.port)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if isConnecting {
+                    // Replace the host string with a status line so
+                    // users get unambiguous feedback that the click
+                    // actually did something. `.tint` matches the
+                    // spinner so the two read as one signal.
+                    Text("Connecting…")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tint)
+                        .lineLimit(1)
+                } else {
+                    Text("\(profile.username)@\(profile.host):\(profile.port)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.vertical, 2)
+        .opacity(isConnecting ? 0.7 : 1.0)
+        // Click guarding lives in the parent's `handleTap` rather
+        // than `.allowsHitTesting(false)` here — disabling hit-testing
+        // would also kill the right-click that opens the context
+        // menu, which is still useful (Edit, Delete) during connect.
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var rowGlyph: String {
@@ -313,5 +364,10 @@ struct ConnectionRow: View {
 
     private var rowGlyphTint: Color {
         profile.favorite ? .yellow : .secondary
+    }
+
+    private var accessibilityLabel: String {
+        let base = "\(profile.name), \(profile.username)@\(profile.host):\(profile.port)"
+        return isConnecting ? "\(base), connecting" : base
     }
 }
