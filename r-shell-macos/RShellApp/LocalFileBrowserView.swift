@@ -3,6 +3,45 @@ import SwiftUI
 import OSLog
 import UniformTypeIdentifiers
 
+/// Transferable wrapper for a remote (SFTP) file dragged out of
+/// `FileBrowserView`. Carries everything the receiver needs to
+/// schedule a download via `TransferQueueStore` without re-stating
+/// the SFTP listing — `connectionId` resolves the session, and
+/// `remotePath` is the absolute remote path so the receiver doesn't
+/// need to know about the remote pane's cwd.
+///
+/// Custom UTType so the drag can't accidentally be accepted by
+/// Finder, the system pasteboard, or any other sidebar drop target.
+struct RemoteFileDrag: Codable, Transferable {
+    let connectionId: String
+    let remotePath: String
+    let name: String
+    let size: UInt64
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .rshellRemoteFile)
+    }
+}
+
+extension UTType {
+    static let rshellRemoteFile = UTType(exportedAs: "com.r-shell.remote-file")
+}
+
+extension View {
+    /// Apply `.draggable` only when a payload is supplied. Lets call
+    /// sites express "directories aren't draggable" as the absence
+    /// of a payload (`nil`) rather than wrapping the modifier chain
+    /// in a `Group { if … }` that breaks `some View` inference.
+    @ViewBuilder
+    func draggableIfPresent<T: Transferable>(_ payload: T?) -> some View {
+        if let payload {
+            self.draggable(payload)
+        } else {
+            self
+        }
+    }
+}
+
 /// Single-pane local file browser, used as the right side of the
 /// Midnight-Commander layout for SFTP-only profiles.
 ///
@@ -20,6 +59,12 @@ import UniformTypeIdentifiers
 struct LocalFileBrowserView: View {
     @Binding var path: String
     let onUploadToRemote: ((URL) -> Void)?
+    /// Triggered when a `RemoteFileDrag` is dropped on this pane.
+    /// The host wires this to a download into the local pane's
+    /// current cwd. Optional so the single-pane case (when this
+    /// view ever gets reused outside the dual-pane host) doesn't
+    /// have to plumb a closure it can't satisfy.
+    let onDownloadFromRemote: ((RemoteFileDrag) -> Void)?
 
     @State private var entries: [LocalFileEntry] = []
     @State private var selection: Set<String> = []
@@ -27,6 +72,10 @@ struct LocalFileBrowserView: View {
         KeyPathComparator(\.name)
     ]
     @State private var error: String?
+    /// `true` while a remote-file drag is hovering over the pane —
+    /// drives the same accent-tinted overlay the remote pane uses
+    /// for Finder drops.
+    @State private var isDropTargeted = false
 
     private let logger = Logger(subsystem: "com.r-shell", category: "local-file-browser")
 
@@ -161,6 +210,11 @@ struct LocalFileBrowserView: View {
                     Text(entry.name)
                         .lineLimit(1)
                 }
+                // Per-row draggable so the remote pane's existing
+                // `URL` drop destination accepts our files unchanged.
+                // Directories also drag — the remote pane already
+                // walks them recursively in `acceptDrop`.
+                .draggable(entry.url)
             }
 
             TableColumn("Size", value: \.size) { entry in
@@ -188,6 +242,26 @@ struct LocalFileBrowserView: View {
             if selected.count == 1, let name = selected.first,
                let row = rows.first(where: { $0.name == name }) {
                 openRow(row)
+            }
+        }
+        // Drop target for remote files. The receiver hands back the
+        // `RemoteFileDrag` payload; the host turns it into a queued
+        // download into this pane's current cwd. Hover state drives
+        // the same accent border the remote pane uses for Finder
+        // drops, so the cross-pane direction reads consistently.
+        .dropDestination(for: RemoteFileDrag.self) { drops, _ in
+            guard let onDownloadFromRemote else { return false }
+            for drop in drops { onDownloadFromRemote(drop) }
+            return !drops.isEmpty
+        } isTargeted: { hovering in
+            isDropTargeted = hovering
+        }
+        .overlay(alignment: .center) {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(4)
+                    .allowsHitTesting(false)
             }
         }
     }

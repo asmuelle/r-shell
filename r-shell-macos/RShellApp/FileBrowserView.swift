@@ -27,6 +27,13 @@ struct FileBrowserView: View {
     /// existing single-pane behaviour: `~/Downloads` + a save panel
     /// per file.
     var downloadDirectory: String? = nil
+    /// Fires whenever the user navigates to a new remote path. The
+    /// dual-pane host uses this to mirror the cwd into the local
+    /// pane's "Upload to Remote" target — without it, uploads
+    /// triggered from the local pane would always land at the SFTP
+    /// root regardless of where the user had drilled to on the
+    /// remote side.
+    var onPathChange: ((String) -> Void)? = nil
 
     @EnvironmentObject var transfers: TransferQueueStore
 
@@ -79,6 +86,7 @@ struct FileBrowserView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: connectionId) { _ in
             path = "."
+            onPathChange?(".")
             refresh()
         }
         .onAppear { refresh() }
@@ -247,6 +255,15 @@ struct FileBrowserView: View {
                         navigate(into: row.entry.name)
                     }
                 }
+                // Drag a remote row out as a `RemoteFileDrag` payload.
+                // The local pane's drop destination consumes it and
+                // queues a download into its cwd. Directories are
+                // intentionally not draggable — recursive remote
+                // download isn't wired yet (it'd need a directory
+                // walker symmetric to the upload-side one), and a
+                // file-typed drag onto Finder of a half-implemented
+                // dir would be the worst kind of confusing.
+                .draggableIfPresent(remoteDragPayload(for: row))
             }
 
             TableColumn("Size", value: \.size) { row in
@@ -455,7 +472,23 @@ struct FileBrowserView: View {
 
     private func navigate(to newPath: String) {
         path = newPath
+        onPathChange?(newPath)
         refresh()
+    }
+
+    /// Build a `RemoteFileDrag` payload for a row, or `nil` if the
+    /// row isn't draggable (currently: directories, or a missing
+    /// connection id). Pulled out so the call site stays readable
+    /// and the directory exclusion is in one place.
+    private func remoteDragPayload(for row: FileRow) -> RemoteFileDrag? {
+        guard let connectionId else { return nil }
+        guard row.entry.kind == .file else { return nil }
+        return RemoteFileDrag(
+            connectionId: connectionId,
+            remotePath: absolutePath(joining: row.entry.name),
+            name: row.entry.name,
+            size: row.entry.size
+        )
     }
 
     // MARK: - Transfers
