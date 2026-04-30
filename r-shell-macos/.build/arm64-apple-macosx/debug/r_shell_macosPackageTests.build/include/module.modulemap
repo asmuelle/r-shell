@@ -1,0 +1,3 @@
+module r_shell_macosPackageTests {
+    header "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/include/r-shell-macosPackageTests-Swift.h"
+}

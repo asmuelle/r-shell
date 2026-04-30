@@ -1,0 +1,3 @@
+module RShellMacOS {
+    header "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/include/RShellMacOS-Swift.h"
+}

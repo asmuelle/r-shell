@@ -19,130 +19,110 @@ struct SidebarPanel: View {
 
 // MARK: - Main workspace (terminals + files)
 
-/// Layout switches based on the active tab's `ConnectionKind`:
+/// Connection-level tab bar. Each tab represents a connected workspace,
+/// not just a terminal surface: terminal, files, and monitor all follow
+/// the selected tab together.
+struct ConnectionTabBar: View {
+    @EnvironmentObject var tabsStore: TerminalTabsStore
+
+    var body: some View {
+        TabBarView(
+            tabs: tabsStore.tabs.map {
+                WorkspaceTab(
+                    id: $0.id,
+                    title: $0.title,
+                    connectionId: $0.connectionId,
+                    order: $0.order
+                )
+            },
+            activeTabId: Binding(
+                get: { tabsStore.activeTabId },
+                set: { id in if let id { tabsStore.setActive(id) } }
+            ),
+            onClose: { tab in tabsStore.closeTab(tab.id) },
+            onNewTab: {},
+            onSetTheme: { tab, themeId in
+                tabsStore.setTheme(themeId, forTabId: tab.id)
+            },
+            themeOverrides: Dictionary(
+                uniqueKeysWithValues: tabsStore.tabs.compactMap { tab in
+                    tab.themeOverride.map { (tab.id, $0) }
+                }
+            ),
+            statuses: Dictionary(
+                uniqueKeysWithValues: tabsStore.tabs.map { ($0.id, $0.status) }
+            )
+        )
+    }
+}
+
+/// Layout switches based on each tab's `ConnectionKind`:
 ///
 /// - `.ssh`: vertical split mirroring the Tauri layout — terminal
-///   tabs on top (always resident — see `terminalsPane` for the per-
-///   tab `ZStack` rationale), file browser on the bottom. Both panes
-///   target the same active connection.
+///   on top, file browser on the bottom. Both panes target the tab's
+///   connection and stay mounted while inactive.
 /// - `.sftp`: Midnight-Commander dual-pane file browser (remote left,
-///   local right). The terminal section and the System Monitor
-///   inspector both go away — neither makes sense without a shell —
-///   and the bottom panel still hosts transfers as usual.
+///   local right). The terminal section goes away.
 ///
-/// When there's no active tab, falls back to the SSH layout so the
-/// "Connect to a host" placeholder is what the user sees.
+/// When there's no tab, shows the "Connect to a host" placeholder.
 struct MainPanel: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
 
     var body: some View {
-        if let active = tabsStore.activeTab, active.effectiveKind == .sftp {
-            DualPaneFileBrowserView(
-                connectionId: active.connectionId,
-                connectionLabel: active.profile.name
-            )
+        if tabsStore.tabs.isEmpty {
+            placeholder
         } else {
-            sshLayout
-        }
-    }
-
-    private var sshLayout: some View {
-        VSplitView {
-            terminalsPane
-                .frame(minHeight: 200, idealHeight: 380)
-            FileBrowserView(
-                connectionId: tabsStore.activeTab?.connectionId,
-                connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
-            )
-            .frame(minHeight: 180, idealHeight: 260)
-        }
-    }
-
-    @ViewBuilder
-    private var terminalsPane: some View {
-        VStack(spacing: 0) {
-            TabBarView(
-                tabs: tabsStore.tabs.map {
-                    WorkspaceTab(
-                        id: $0.id,
-                        title: $0.title,
-                        connectionId: $0.connectionId,
-                        order: $0.order
-                    )
-                },
-                activeTabId: Binding(
-                    get: { tabsStore.activeTabId },
-                    set: { id in if let id { tabsStore.setActive(id) } }
-                ),
-                onClose: { tab in tabsStore.closeTab(tab.id) },
-                onNewTab: {},
-                onSetTheme: { tab, themeId in
-                    tabsStore.setTheme(themeId, forTabId: tab.id)
-                },
-                themeOverrides: Dictionary(
-                    uniqueKeysWithValues: tabsStore.tabs.compactMap { tab in
-                        tab.themeOverride.map { (tab.id, $0) }
-                    }
-                ),
-                statuses: Dictionary(
-                    uniqueKeysWithValues: tabsStore.tabs.map { ($0.id, $0.status) }
-                )
-            )
-
-            Divider()
-
-            if tabsStore.tabs.isEmpty {
-                placeholder
-            } else {
-                // Render every open terminal once, stacked. Switching tabs
-                // toggles `.opacity` and `allowsHitTesting`; the SwiftTerm
-                // NSView for inactive tabs stays mounted, preserving its
-                // scrollback, selection, cursor position, and any in-flight
-                // PTY output that arrives while the tab is hidden.
-                //
-                // SwiftUI keeps each subview's identity stable via the tab
-                // UUID, so `dismantleNSView` only fires when a tab is
-                // actually closed (not on every switch).
-                ZStack {
-                    ForEach(tabsStore.tabs) { tab in
-                        let isActive = tab.id == tabsStore.activeTabId
-                        ZStack {
-                            if tab.effectiveKind.supportsTerminal {
-                                TerminalView(
-                                    connectionId: tab.connectionId,
-                                    ptyGeneration: tab.ptyGeneration,
-                                    themeOverride: tab.themeOverride,
-                                    isActive: isActive,
-                                    terminalTitle: .constant(tab.title),
-                                    searchVisible: .constant(false),
-                                    onSearchQueryChanged: nil,
-                                    onSearchNext: nil,
-                                    onSearchPrevious: nil
-                                )
-
-                                // Reconnect affordance — covers disconnected
-                                // and errored tabs. The SwiftTerm view stays
-                                // alive underneath so its scrollback isn't
-                                // wiped; reconnect rebuilds only the PTY.
-                                if tab.status == .disconnected || tab.status == .error {
-                                    ReconnectOverlay(tab: tab) {
-                                        Task { await tabsStore.reconnect(tabId: tab.id) }
-                                    }
+            // Render every open connection workspace once, stacked. Switching
+            // tabs toggles visibility and hit testing; inactive workspaces
+            // stay mounted so terminal scrollback, file-browser paths, and
+            // dual-pane local/remote state survive tab switches.
+            ZStack {
+                ForEach(tabsStore.tabs) { tab in
+                    let isActive = tab.id == tabsStore.activeTabId
+                    connectionWorkspace(for: tab, isActive: isActive)
+                        .overlay {
+                            if tab.status == .disconnected || tab.status == .error {
+                                ReconnectOverlay(tab: tab) {
+                                    Task { await tabsStore.reconnect(tabId: tab.id) }
                                 }
-                            } else {
-                                // SFTP-only profile: no PTY, no SwiftTerm.
-                                // The file panel below the split is the
-                                // actual interaction surface.
-                                SftpOnlyPlaceholder(tab: tab)
                             }
                         }
                         .opacity(isActive ? 1 : 0)
                         .allowsHitTesting(isActive)
-                        // Stable per-tab identity — tab.id is generated
-                        // once when the tab is created and never reused.
                         .id(tab.id)
-                    }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func connectionWorkspace(for tab: TerminalTab, isActive: Bool) -> some View {
+        if tab.effectiveKind == .sftp {
+            DualPaneFileBrowserView(
+                connectionId: tab.connectionId,
+                connectionLabel: tab.profile.name
+            )
+        } else {
+            VSplitView {
+                TerminalView(
+                    connectionId: tab.connectionId,
+                    ptyGeneration: tab.ptyGeneration,
+                    themeOverride: tab.themeOverride,
+                    isActive: isActive,
+                    terminalTitle: .constant(tab.title),
+                    searchVisible: .constant(false),
+                    onSearchQueryChanged: nil,
+                    onSearchNext: nil,
+                    onSearchPrevious: nil
+                )
+                .frame(minHeight: 200, idealHeight: 380)
+
+                FileBrowserView(
+                    connectionId: tab.connectionId,
+                    connectionLabel: tab.profile.name,
+                    canEditPermissions: true
+                )
+                .frame(minHeight: 180, idealHeight: 260)
             }
         }
     }
@@ -152,7 +132,7 @@ struct MainPanel: View {
             Image(systemName: "terminal")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(.secondary)
-            Text("Select a connection from the sidebar to open a terminal")
+            Text("Select a connection from the sidebar to open a workspace")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -200,33 +180,6 @@ struct TerminalTab: Identifiable {
     /// profile setting.
     var effectiveKind: ConnectionKind {
         kindOverride ?? profile.kind
-    }
-}
-
-// MARK: - SFTP-only placeholder
-
-/// Shown in the terminals pane when the active tab is an SFTP-only
-/// profile. The file panel underneath is the real interaction
-/// surface; this view exists only to fill the slot where a terminal
-/// would normally live.
-private struct SftpOnlyPlaceholder: View {
-    let tab: TerminalTab
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "folder.badge.gearshape")
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(.tint)
-            Text(tab.profile.name)
-                .font(.headline)
-            Text("SFTP-only connection — no shell available.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Text("Use the Files panel below to browse and transfer.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -287,6 +240,10 @@ struct BottomPanel: View {
                     Text("Transfers").tag(3)
                 }
                 Text("Processes").tag(4)
+                Text("systemd").tag(5)
+                Text("Docker").tag(6)
+                Text("PostgreSQL").tag(7)
+                Text("UFW").tag(8)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -305,6 +262,27 @@ struct BottomPanel: View {
                     ProcessListView(
                         connectionId: tabsStore.activeTab?.connectionId,
                         connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+                    )
+                case 5:
+                    SystemdMonitorView(
+                        connectionId: tabsStore.activeTab?.connectionId,
+                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+                    )
+                case 6:
+                    DockerMonitorView(
+                        connectionId: tabsStore.activeTab?.connectionId,
+                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+                    )
+                case 7:
+                    PostgresMonitorView(
+                        connectionId: tabsStore.activeTab?.connectionId,
+                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
+                    )
+                case 8:
+                    UFWMonitorView(
+                        connectionId: tabsStore.activeTab?.connectionId,
+                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection",
+                        sshPort: tabsStore.activeTab?.profile.port
                     )
                 default: EmptyView()
                 }
@@ -469,10 +447,24 @@ struct InspectorPanel: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
 
     var body: some View {
-        SystemMonitorView(
-            connectionId: tabsStore.activeTab?.connectionId,
-            connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
-        )
-        .frame(minWidth: LayoutConstants.minInspectorWidth)
+        if tabsStore.tabs.isEmpty {
+            SystemMonitorView(connectionId: nil, connectionLabel: "No connection")
+                .frame(minWidth: LayoutConstants.minInspectorWidth)
+        } else {
+            ZStack {
+                ForEach(tabsStore.tabs) { tab in
+                    let isActive = tab.id == tabsStore.activeTabId
+                    SystemMonitorView(
+                        connectionId: tab.connectionId,
+                        connectionLabel: tab.profile.name,
+                        isActive: isActive
+                    )
+                    .opacity(isActive ? 1 : 0)
+                    .allowsHitTesting(isActive)
+                    .id(tab.id)
+                }
+            }
+            .frame(minWidth: LayoutConstants.minInspectorWidth)
+        }
     }
 }

@@ -91,7 +91,11 @@ fn start_event_listener(callback: Box<dyn FfiEventCallback>) {
                 Ok(core_event) => {
                     use r_shell_core::event_bus::{ConnectionStatus, CoreEvent};
                     let (ty, connection_id, payload) = match core_event {
-                        CoreEvent::PtyOutput { connection_id, generation, data } => (
+                        CoreEvent::PtyOutput {
+                            connection_id,
+                            generation,
+                            data,
+                        } => (
                             "pty_output".into(),
                             connection_id,
                             // `{"generation": N, "bytes": [...]}` so the
@@ -101,9 +105,13 @@ fn start_event_listener(callback: Box<dyn FfiEventCallback>) {
                             serde_json::json!({
                                 "generation": generation,
                                 "bytes": data,
-                            }).to_string(),
+                            })
+                            .to_string(),
                         ),
-                        CoreEvent::ConnectionStatus { connection_id, status } => {
+                        CoreEvent::ConnectionStatus {
+                            connection_id,
+                            status,
+                        } => {
                             let status_str = match status {
                                 ConnectionStatus::Connected => "connected",
                                 ConnectionStatus::Disconnected => "disconnected",
@@ -266,6 +274,37 @@ fn sanitize_error(e: anyhow::Error) -> String {
     deduped.join(": ")
 }
 
+fn command_failure_detail(output: &r_shell_core::ssh::CommandOutput, fallback: &str) -> String {
+    let detail = output.combined().trim().to_string();
+    if detail.is_empty() {
+        fallback.to_string()
+    } else {
+        detail
+    }
+}
+
+fn validate_numeric_remote_id(kind: &str, value: &str) -> Result<String, SftpError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Err(SftpError::Other {
+            detail: format!("{kind} must be a numeric id"),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_octal_mode(mode: &str) -> Result<String, SftpError> {
+    let trimmed = mode.trim();
+    if !(trimmed.len() == 3 || trimmed.len() == 4)
+        || !trimmed.chars().all(|c| matches!(c, '0'..='7'))
+    {
+        return Err(SftpError::Other {
+            detail: "mode must be a 3- or 4-digit octal value".into(),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
 /// Establish an SSH connection. Returns the canonical connection id
 /// (`"user@host:port"` or `"user@host:port#sessionId"`) on success;
 /// throws a typed `ConnectError` on failure.
@@ -346,7 +385,11 @@ pub fn rshell_disconnect(connection_id: String) -> FfiResult {
     crate::monitor::evict(&connection_id);
 
     result
-        .map(|_| FfiResult { success: true, error: None, value: None })
+        .map(|_| FfiResult {
+            success: true,
+            error: None,
+            value: None,
+        })
         .unwrap_or_else(|e| FfiResult {
             success: false,
             error: Some(e.to_string()),
@@ -369,9 +412,10 @@ pub fn rshell_pty_start(connection_id: String, cols: u32, rows: u32) -> FfiResul
     let cm = bridge.connection_manager.clone();
     let conn_id_for_start = connection_id.clone();
 
-    let result = bridge
-        .runtime
-        .block_on(async move { cm.start_pty_connection(&conn_id_for_start, cols, rows).await });
+    let result = bridge.runtime.block_on(async move {
+        cm.start_pty_connection(&conn_id_for_start, cols, rows)
+            .await
+    });
 
     match result {
         Ok(generation) => {
@@ -818,10 +862,9 @@ pub fn rshell_sftp_create_dir(connection_id: String, path: String) -> Result<(),
                 connection_id: connection_id.clone(),
             })?;
         let guard = client.read().await;
-        guard
-            .create_dir(&path)
-            .await
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+        guard.create_dir(&path).await.map_err(|e| SftpError::Other {
+            detail: sanitize_error(e),
+        })
     })
 }
 
@@ -845,7 +888,9 @@ pub fn rshell_sftp_rename(
         guard
             .rename(&old_path, &new_path)
             .await
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+            .map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })
     })
 }
 
@@ -865,7 +910,9 @@ pub fn rshell_sftp_delete_file(connection_id: String, path: String) -> Result<()
         guard
             .delete_file(&path)
             .await
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+            .map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })
     })
 }
 
@@ -883,20 +930,24 @@ pub fn rshell_sftp_delete_dir(connection_id: String, path: String) -> Result<(),
                 connection_id: connection_id.clone(),
             })?;
         let guard = client.read().await;
-        guard
-            .delete_dir(&path)
-            .await
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+        guard.delete_dir(&path).await.map_err(|e| SftpError::Other {
+            detail: sanitize_error(e),
+        })
     })
 }
 
 /// Change file permissions on the remote. `mode` is an octal string
 /// e.g. `"755"`, `"644"`, `"700"`.
 #[uniffi::export]
-pub fn rshell_sftp_chmod(connection_id: String, path: String, mode: String) -> Result<(), SftpError> {
+pub fn rshell_sftp_chmod(
+    connection_id: String,
+    path: String,
+    mode: String,
+) -> Result<(), SftpError> {
     let bridge = MacOsBridge::global();
     let cm = bridge.connection_manager.clone();
     bridge.runtime.block_on(async move {
+        let mode = validate_octal_mode(&mode)?;
         let client = cm
             .get_connection(&connection_id)
             .await
@@ -904,16 +955,22 @@ pub fn rshell_sftp_chmod(connection_id: String, path: String, mode: String) -> R
                 connection_id: connection_id.clone(),
             })?;
         let guard = client.read().await;
-        let cmd = format!("chmod {} {}", shell_escape::unix::escape(std::borrow::Cow::Borrowed(&mode)), shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path)));
+        let cmd = format!(
+            "chmod {} {}",
+            shell_escape::unix::escape(std::borrow::Cow::Borrowed(&mode)),
+            shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path))
+        );
         let output = guard
             .execute_command_full(&cmd)
             .await
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?;
+            .map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })?;
         if output.exit_code == Some(0) {
             Ok(())
         } else {
             Err(SftpError::Other {
-                detail: output.stderr.trim().to_string(),
+                detail: command_failure_detail(&output, "chmod failed"),
             })
         }
     })
@@ -922,7 +979,11 @@ pub fn rshell_sftp_chmod(connection_id: String, path: String, mode: String) -> R
 /// Change file owner on the remote. `uid` is a numeric uid string
 /// (e.g. `"501"`) or a username.
 #[uniffi::export]
-pub fn rshell_sftp_chown(connection_id: String, path: String, uid: String) -> Result<(), SftpError> {
+pub fn rshell_sftp_chown(
+    connection_id: String,
+    path: String,
+    uid: String,
+) -> Result<(), SftpError> {
     let bridge = MacOsBridge::global();
     let cm = bridge.connection_manager.clone();
     bridge.runtime.block_on(async move {
@@ -933,16 +994,22 @@ pub fn rshell_sftp_chown(connection_id: String, path: String, uid: String) -> Re
                 connection_id: connection_id.clone(),
             })?;
         let guard = client.read().await;
-        let cmd = format!("chown {} {}", shell_escape::unix::escape(std::borrow::Cow::Borrowed(&uid)), shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path)));
+        let cmd = format!(
+            "chown {} {}",
+            shell_escape::unix::escape(std::borrow::Cow::Borrowed(&uid)),
+            shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path))
+        );
         let output = guard
             .execute_command_full(&cmd)
             .await
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?;
+            .map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })?;
         if output.exit_code == Some(0) {
             Ok(())
         } else {
             Err(SftpError::Other {
-                detail: output.stderr.trim().to_string(),
+                detail: command_failure_detail(&output, "chown failed"),
             })
         }
     })
@@ -951,7 +1018,11 @@ pub fn rshell_sftp_chown(connection_id: String, path: String, uid: String) -> Re
 /// Change file group on the remote. `gid` is a numeric gid string
 /// (e.g. `"20"`) or a group name.
 #[uniffi::export]
-pub fn rshell_sftp_chgrp(connection_id: String, path: String, gid: String) -> Result<(), SftpError> {
+pub fn rshell_sftp_chgrp(
+    connection_id: String,
+    path: String,
+    gid: String,
+) -> Result<(), SftpError> {
     let bridge = MacOsBridge::global();
     let cm = bridge.connection_manager.clone();
     bridge.runtime.block_on(async move {
@@ -962,16 +1033,22 @@ pub fn rshell_sftp_chgrp(connection_id: String, path: String, gid: String) -> Re
                 connection_id: connection_id.clone(),
             })?;
         let guard = client.read().await;
-        let cmd = format!("chgrp {} {}", shell_escape::unix::escape(std::borrow::Cow::Borrowed(&gid)), shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path)));
+        let cmd = format!(
+            "chgrp {} {}",
+            shell_escape::unix::escape(std::borrow::Cow::Borrowed(&gid)),
+            shell_escape::unix::escape(std::borrow::Cow::Borrowed(&path))
+        );
         let output = guard
             .execute_command_full(&cmd)
             .await
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?;
+            .map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })?;
         if output.exit_code == Some(0) {
             Ok(())
         } else {
             Err(SftpError::Other {
-                detail: output.stderr.trim().to_string(),
+                detail: command_failure_detail(&output, "chgrp failed"),
             })
         }
     })
@@ -991,12 +1068,21 @@ pub fn rshell_sftp_resolve_uid(connection_id: String, uid: String) -> Result<Str
                 connection_id: connection_id.clone(),
             })?;
         let guard = client.read().await;
+        let uid = validate_numeric_remote_id("uid", &uid)?;
         let cmd = format!("id -nu {}", uid);
-        guard
-            .execute_command(&cmd)
+        let output = guard
+            .execute_command_full(&cmd)
             .await
-            .map(|s| s.trim().to_string())
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+            .map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })?;
+        if output.is_success() {
+            Ok(output.stdout.trim().to_string())
+        } else {
+            Err(SftpError::Other {
+                detail: command_failure_detail(&output, "uid lookup failed"),
+            })
+        }
     })
 }
 
@@ -1014,12 +1100,21 @@ pub fn rshell_sftp_resolve_gid(connection_id: String, gid: String) -> Result<Str
                 connection_id: connection_id.clone(),
             })?;
         let guard = client.read().await;
+        let gid = validate_numeric_remote_id("gid", &gid)?;
         let cmd = format!("id -ng {}", gid);
-        guard
-            .execute_command(&cmd)
+        let output = guard
+            .execute_command_full(&cmd)
             .await
-            .map(|s| s.trim().to_string())
-            .map_err(|e| SftpError::Other { detail: sanitize_error(e) })
+            .map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })?;
+        if output.is_success() {
+            Ok(output.stdout.trim().to_string())
+        } else {
+            Err(SftpError::Other {
+                detail: command_failure_detail(&output, "gid lookup failed"),
+            })
+        }
     })
 }
 
@@ -1042,10 +1137,9 @@ pub fn rshell_sftp_list_dir(
 
         let entries = {
             let guard = client.read().await;
-            guard
-                .list_dir(&path)
-                .await
-                .map_err(|e| SftpError::Other { detail: sanitize_error(e) })?
+            guard.list_dir(&path).await.map_err(|e| SftpError::Other {
+                detail: sanitize_error(e),
+            })?
         };
 
         Ok(entries
@@ -1137,12 +1231,12 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
     let cm = bridge.connection_manager.clone();
 
     bridge.runtime.block_on(async move {
-        let client = cm
-            .get_connection(&connection_id)
-            .await
-            .ok_or_else(|| MonitorError::NotConnected {
-                connection_id: connection_id.clone(),
-            })?;
+        let client =
+            cm.get_connection(&connection_id)
+                .await
+                .ok_or_else(|| MonitorError::NotConnected {
+                    connection_id: connection_id.clone(),
+                })?;
 
         let os = match monitor::cached(&connection_id) {
             Some(os) => os,
@@ -1152,7 +1246,9 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
                     guard
                         .execute_command("uname -s")
                         .await
-                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
+                        .map_err(|e| MonitorError::Other {
+                            detail: sanitize_error(e),
+                        })?
                 };
                 let detected = monitor::classify_uname(&uname);
                 monitor::store(&connection_id, detected.clone());
@@ -1167,10 +1263,11 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
                     guard
                         .execute_command(monitor::linux::STATS_COMMAND)
                         .await
-                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
+                        .map_err(|e| MonitorError::Other {
+                            detail: sanitize_error(e),
+                        })?
                 };
-                parse_linux_stats(&output)
-                    .map_err(|e| MonitorError::ParseError { detail: e })
+                parse_linux_stats(&output).map_err(|e| MonitorError::ParseError { detail: e })
             }
             OsKind::Darwin => {
                 let output = {
@@ -1178,10 +1275,11 @@ pub fn rshell_get_system_stats(connection_id: String) -> Result<FfiSystemStats, 
                     guard
                         .execute_command(monitor::darwin::STATS_COMMAND)
                         .await
-                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
+                        .map_err(|e| MonitorError::Other {
+                            detail: sanitize_error(e),
+                        })?
                 };
-                parse_darwin_stats(&output)
-                    .map_err(|e| MonitorError::ParseError { detail: e })
+                parse_darwin_stats(&output).map_err(|e| MonitorError::ParseError { detail: e })
             }
             OsKind::Other(name) => Err(MonitorError::Unsupported { os: name }),
         }
@@ -1229,7 +1327,13 @@ fn parse_linux_stats(output: &str) -> Result<FfiSystemStats, String> {
     use monitor::linux;
     let sections = split_sections(
         output,
-        &["---SLEEP---", "---MEM---", "---DISKS---", "---UPTIME---", "---LOAD---"],
+        &[
+            "---SLEEP---",
+            "---MEM---",
+            "---DISKS---",
+            "---UPTIME---",
+            "---LOAD---",
+        ],
         &["CPU1", "CPU2", "MEM", "DISKS", "UPTIME", "LOAD"],
     );
 
@@ -1268,16 +1372,16 @@ fn parse_darwin_stats(output: &str) -> Result<FfiSystemStats, String> {
             "---BOOTTIME---",
             "---LOAD---",
         ],
-        &["CPU", "MEM", "DISKS", "PAGESIZE", "MEMSIZE", "SWAP", "BOOTTIME", "LOAD"],
+        &[
+            "CPU", "MEM", "DISKS", "PAGESIZE", "MEMSIZE", "SWAP", "BOOTTIME", "LOAD",
+        ],
     );
 
     let cpu_percent = darwin::parse_cpu_top(sections.get("CPU").ok_or("missing cpu")?)?;
     let pagesize = darwin::parse_u64(sections.get("PAGESIZE").ok_or("missing pagesize")?)?;
     let memsize = darwin::parse_u64(sections.get("MEMSIZE").ok_or("missing memsize")?)?;
-    let (_free, active, wired) = darwin::parse_vm_stat(
-        sections.get("MEM").ok_or("missing memory")?,
-        pagesize,
-    )?;
+    let (_free, active, wired) =
+        darwin::parse_vm_stat(sections.get("MEM").ok_or("missing memory")?, pagesize)?;
     let memory_used = active + wired;
     let memory_available = memsize.saturating_sub(memory_used);
     let (swap_total, swap_used) =
@@ -1346,12 +1450,12 @@ pub fn rshell_get_processes(connection_id: String) -> Result<Vec<FfiProcess>, Mo
     let cm = bridge.connection_manager.clone();
 
     bridge.runtime.block_on(async move {
-        let client = cm
-            .get_connection(&connection_id)
-            .await
-            .ok_or_else(|| MonitorError::NotConnected {
-                connection_id: connection_id.clone(),
-            })?;
+        let client =
+            cm.get_connection(&connection_id)
+                .await
+                .ok_or_else(|| MonitorError::NotConnected {
+                    connection_id: connection_id.clone(),
+                })?;
 
         let os = match monitor::cached(&connection_id) {
             Some(os) => os,
@@ -1361,7 +1465,9 @@ pub fn rshell_get_processes(connection_id: String) -> Result<Vec<FfiProcess>, Mo
                     guard
                         .execute_command("uname -s")
                         .await
-                        .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
+                        .map_err(|e| MonitorError::Other {
+                            detail: sanitize_error(e),
+                        })?
                 };
                 let detected = monitor::classify_uname(&uname);
                 monitor::store(&connection_id, detected.clone());
@@ -1380,7 +1486,9 @@ pub fn rshell_get_processes(connection_id: String) -> Result<Vec<FfiProcess>, Mo
             guard
                 .execute_command(cmd)
                 .await
-                .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })?
+                .map_err(|e| MonitorError::Other {
+                    detail: sanitize_error(e),
+                })?
         };
 
         let rows = match os {
@@ -1416,22 +1524,30 @@ pub fn rshell_signal_process(
     let cm = bridge.connection_manager.clone();
 
     bridge.runtime.block_on(async move {
-        let client = cm
-            .get_connection(&connection_id)
-            .await
-            .ok_or_else(|| MonitorError::NotConnected {
-                connection_id: connection_id.clone(),
-            })?;
+        let client =
+            cm.get_connection(&connection_id)
+                .await
+                .ok_or_else(|| MonitorError::NotConnected {
+                    connection_id: connection_id.clone(),
+                })?;
 
         // `kill` accepts the signal as both number and name. Names
         // are portable across BSD/Linux and read better in logs.
         let cmd = format!("kill -{} {}", signal.as_kill_arg(), pid);
         let guard = client.read().await;
-        guard
-            .execute_command(&cmd)
+        let output = guard
+            .execute_command_full(&cmd)
             .await
-            .map(|_| ())
-            .map_err(|e| MonitorError::Other { detail: sanitize_error(e) })
+            .map_err(|e| MonitorError::Other {
+                detail: sanitize_error(e),
+            })?;
+        if output.is_success() {
+            Ok(())
+        } else {
+            Err(MonitorError::Other {
+                detail: command_failure_detail(&output, "kill failed"),
+            })
+        }
     })
 }
 
@@ -1573,8 +1689,16 @@ pub fn rshell_keychain_is_supported() -> bool {
 pub fn rshell_keychain_save(kind: FfiCredentialKind, account: String, secret: String) -> FfiResult {
     let core_kind: r_shell_core::keychain::CredentialKind = kind.into();
     match r_shell_core::keychain::save_password(core_kind, &account, &secret) {
-        Ok(_) => FfiResult { success: true, error: None, value: None },
-        Err(e) => FfiResult { success: false, error: Some(e.to_string()), value: None },
+        Ok(_) => FfiResult {
+            success: true,
+            error: None,
+            value: None,
+        },
+        Err(e) => FfiResult {
+            success: false,
+            error: Some(e.to_string()),
+            value: None,
+        },
     }
 }
 
@@ -1592,7 +1716,11 @@ pub fn rshell_keychain_load(kind: FfiCredentialKind, account: String) -> FfiResu
             error: None,
             value: None,
         },
-        Err(e) => FfiResult { success: false, error: Some(e.to_string()), value: None },
+        Err(e) => FfiResult {
+            success: false,
+            error: Some(e.to_string()),
+            value: None,
+        },
     }
 }
 
@@ -1600,8 +1728,16 @@ pub fn rshell_keychain_load(kind: FfiCredentialKind, account: String) -> FfiResu
 pub fn rshell_keychain_delete(kind: FfiCredentialKind, account: String) -> FfiResult {
     let core_kind: r_shell_core::keychain::CredentialKind = kind.into();
     match r_shell_core::keychain::delete_password(core_kind, &account) {
-        Ok(_) => FfiResult { success: true, error: None, value: None },
-        Err(e) => FfiResult { success: false, error: Some(e.to_string()), value: None },
+        Ok(_) => FfiResult {
+            success: true,
+            error: None,
+            value: None,
+        },
+        Err(e) => FfiResult {
+            success: false,
+            error: Some(e.to_string()),
+            value: None,
+        },
     }
 }
 

@@ -117,7 +117,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var connectionList: some View {
-        List(selection: $selectedConnection) {
+        List {
             if storeManager.connections.isEmpty && storeManager.folders.isEmpty {
                 Section {
                     if search.isEmpty {
@@ -284,10 +284,11 @@ struct SidebarView: View {
     private func connectionRow(_ conn: ConnectionProfile) -> some View {
         ConnectionRow(
             profile: conn,
-            isConnecting: isConnecting(conn)
+            isConnecting: isConnecting(conn),
+            isSelected: selectedConnection?.id == conn.id
         )
-        .tag(conn as ConnectionProfile?)
-        .onTapGesture { handleTap(conn) }
+        .onTapGesture(count: 2) { handleConnect(conn) }
+        .onTapGesture { selectConnection(conn) }
         .contextMenu { connectionContextMenu(conn) }
         .draggable(ProfileMove(profileId: conn.id))
     }
@@ -387,7 +388,7 @@ struct SidebarView: View {
     @ViewBuilder
     private func connectionContextMenu(_ conn: ConnectionProfile) -> some View {
         Button(conn.kind.supportsTerminal ? "Connect" : "Connect (SFTP)") {
-            handleTap(conn)
+            handleConnect(conn)
         }
         .disabled(isConnecting(conn))
         Divider()
@@ -481,12 +482,16 @@ struct SidebarView: View {
         tabsStore.connectingProfileIds.contains(conn.id)
     }
 
-    /// Single tap entry point for both row clicks and the context-menu
-    /// Connect button. Early-returns when the profile is already
-    /// in-flight so a rapid double-tap (or a Return-key press while
-    /// the tap's connect is still negotiating) can't queue a second
-    /// session.
-    private func handleTap(_ conn: ConnectionProfile) {
+    /// Select a profile for the details panel. Opening a connection is
+    /// intentionally reserved for double-click or the context menu.
+    private func selectConnection(_ conn: ConnectionProfile) {
+        selectedConnection = conn
+    }
+
+    /// Double-click / context-menu Connect entry point. Early-returns
+    /// when the profile is already in-flight so a rapid double-click
+    /// can't queue a second session.
+    private func handleConnect(_ conn: ConnectionProfile) {
         guard !isConnecting(conn) else { return }
         selectedConnection = conn
         onConnect?(conn)
@@ -582,6 +587,10 @@ struct ConnectionRow: View {
     /// dims the row, and (via the parent's tap guard) blocks further
     /// clicks until the connect either succeeds or fails.
     var isConnecting: Bool = false
+    /// Sidebar selection is custom-styled instead of using the native
+    /// List selection highlight so a selected connection reads as blue
+    /// text on a soft gray rounded background.
+    var isSelected: Bool = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -614,6 +623,7 @@ struct ConnectionRow: View {
             } else {
                 Text(profile.name)
                     .font(.system(size: 13))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -621,10 +631,18 @@ struct ConnectionRow: View {
         // Tighter vertical density to match Finder's ~24pt row
         // height. Two-line layouts pushed the rows closer to 36pt;
         // a one-line layout at this padding lands ~22pt visually.
-        .padding(.vertical, 1)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected
+                    ? Color(NSColor.unemphasizedSelectedContentBackgroundColor)
+                    : Color.clear)
+        )
         .opacity(isConnecting ? 0.7 : 1.0)
         .help("\(profile.username)@\(profile.host):\(profile.port)")
-        // Click guarding lives in the parent's `handleTap` rather
+        // Connect guarding lives in the parent's `handleConnect` rather
         // than `.allowsHitTesting(false)` here — disabling hit-testing
         // would also kill the right-click that opens the context
         // menu, which is still useful (Edit, Delete) during connect.

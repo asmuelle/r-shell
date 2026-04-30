@@ -483,6 +483,7 @@ final class TerminalTabsStore: ObservableObject {
     func closeTab(_ tabId: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         let tab = tabs[index]
+        let wasActive = activeTabId == tabId
 
         if tab.effectiveKind.supportsTerminal {
             BridgeManager.shared.flushPendingInput(connectionId: tab.connectionId)
@@ -494,16 +495,40 @@ final class TerminalTabsStore: ObservableObject {
         BridgeManager.shared.disconnect(connectionId: tab.connectionId)
 
         tabs.remove(at: index)
-
-        // Promote the next-rightward tab if we just closed the active one.
-        if activeTabId == tabId {
-            activeTabId = tabs.last?.id
+        for i in tabs.indices {
+            tabs[i].order = i
         }
+
+        // Promote the next-rightward tab if possible; otherwise fall back
+        // to the previous tab. This matches browser / Finder tab behavior
+        // and keeps Cmd-W from jumping to an unrelated tail tab.
+        if wasActive {
+            if tabs.indices.contains(index) {
+                activeTabId = tabs[index].id
+            } else {
+                activeTabId = tabs.last?.id
+            }
+        }
+    }
+
+    func closeActiveTab() {
+        guard let activeTabId else { return }
+        closeTab(activeTabId)
     }
 
     func setActive(_ tabId: UUID) {
         guard tabs.contains(where: { $0.id == tabId }) else { return }
         activeTabId = tabId
+    }
+
+    func selectAdjacentTab(forward: Bool) {
+        guard tabs.count > 1 else { return }
+        let sorted = tabs.sorted { $0.order < $1.order }
+        let currentIndex = sorted.firstIndex { $0.id == activeTabId } ?? 0
+        let nextIndex = forward
+            ? (currentIndex + 1) % sorted.count
+            : (currentIndex - 1 + sorted.count) % sorted.count
+        activeTabId = sorted[nextIndex].id
     }
 
     /// Set or clear the per-tab theme override. `nil` falls back to the

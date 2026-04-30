@@ -1,0 +1,752 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.xctest/Contents/MacOS/r-shell-macosPackageTests",
+      "packagePath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos",
+      "productName" : "r-shell-macosPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.RShellMacOS-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/sources",
+      "importPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/ConnectionStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FeatureFlags.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FileModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/LayoutModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/MonitoringModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/RShellMacOS.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RShellMacOS",
+      "moduleOutputPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/RShellMacOS.swiftmodule",
+      "objects" : [
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore.swift.o",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags.swift.o",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels.swift.o",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels.swift.o",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels.swift.o",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx11.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/include/RShellMacOS-Swift.h",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "r_shell_macos"
+      ],
+      "outputFileMapPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/RShellMacOS.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/ConnectionStore.swift",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FeatureFlags.swift",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FileModels.swift",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/LayoutModels.swift",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/MonitoringModels.swift",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/RShellMacOS.swift"
+      ],
+      "tempsPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.RShellMacOSTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/sources",
+      "importPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellBetaSmokeTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellMacOSBridgeTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/RShellMacOS.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RShellMacOSTests",
+      "moduleOutputPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/RShellMacOSTests.swiftmodule",
+      "objects" : [
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests.swift.o",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "r_shell_macos"
+      ],
+      "outputFileMapPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/RShellMacOSTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellBetaSmokeTests.swift",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellMacOSBridgeTests.swift"
+      ],
+      "tempsPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.r-shell-macosPackageTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/sources",
+      "importPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/RShellMacOSTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "r_shell_macosPackageTests",
+      "moduleOutputPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/r_shell_macosPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx11.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/include/r-shell-macosPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "r_shell_macos"
+      ],
+      "outputFileMapPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules/r_shell_macosPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "RShellMacOS" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RShellMacOS",
+      "-package-name",
+      "r_shell_macos",
+      "-c",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/ConnectionStore.swift",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FeatureFlags.swift",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FileModels.swift",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/LayoutModels.swift",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/MonitoringModels.swift",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/RShellMacOS.swift",
+      "-I",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx11.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/include/RShellMacOS-Swift.h",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "r_shell_macos",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "RShellMacOSTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RShellMacOSTests",
+      "-package-name",
+      "r_shell_macos",
+      "-c",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellBetaSmokeTests.swift",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellMacOSBridgeTests.swift",
+      "-I",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "r_shell_macos",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "r_shell_macosPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "r_shell_macosPackageTests",
+      "-package-name",
+      "r_shell_macos",
+      "-c",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx11.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/include/r-shell-macosPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "r_shell_macos",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "RShellMacOS" : [
+
+    ],
+    "RShellMacOSTests" : [
+      "RShellMacOS"
+    ],
+    "r_shell_macosPackageTests" : [
+      "RShellMacOSTests",
+      "RShellMacOS"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/ConnectionStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FeatureFlags.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FileModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/LayoutModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/MonitoringModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/RShellMacOS.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/sources"
+    },
+    "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellBetaSmokeTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellMacOSBridgeTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/sources"
+    },
+    "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/runner.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r-shell-macosPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/r_shell_macosPackageTests.build/sources"
+    },
+    "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

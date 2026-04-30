@@ -1,0 +1,47 @@
+{
+  "": {
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/master.swiftdeps"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/ConnectionStore.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/ConnectionStore.dia"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FeatureFlags.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FeatureFlags.dia"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/FileModels.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/FileModels.dia"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/LayoutModels.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/LayoutModels.dia"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/MonitoringModels.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/MonitoringModels.dia"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Sources/RShellMacOS/RShellMacOS.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOS.build/RShellMacOS.dia"
+  }
+}

@@ -44,6 +44,7 @@ struct DualPaneFileBrowserView: View {
                 connectionId: connectionId,
                 connectionLabel: connectionLabel,
                 downloadDirectory: localPath,
+                canEditPermissions: false,
                 onPathChange: { remotePath = $0 }
             )
             .frame(minWidth: 280)
@@ -66,8 +67,9 @@ struct DualPaneFileBrowserView: View {
     }
 
     /// Push a local URL onto the transfer queue as an upload to the
-    /// remote pane's current dir. Path composition mirrors the
-    /// remote pane's `acceptDrop` policy: the file basename is
+    /// remote pane's current dir. This is used by the local pane's
+    /// context-menu action; drag-and-drop uploads are handled by
+    /// dropping directly onto a remote folder row. The file basename is
     /// appended to whatever cwd the user has drilled into. `"."`
     /// (the initial value) tells the SFTP server to use the session
     /// root, so a fresh connect that uploads before any navigation

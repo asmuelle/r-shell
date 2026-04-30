@@ -6,11 +6,13 @@ import RShellMacOS
 struct RShellApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var layoutManager = LayoutManager()
+    @StateObject private var tabsStore = TerminalTabsStore()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(layoutManager)
+                .environmentObject(tabsStore)
                 .frame(minWidth: 900, minHeight: 600)
         }
         .windowStyle(.titleBar)
@@ -46,33 +48,23 @@ struct RShellApp: App {
 
                 Divider()
 
-                Button("New Terminal Tab") {
-                    let groupId = layoutManager.tabGroups.first?.id ?? UUID()
-                    if !layoutManager.tabGroups.contains(where: { $0.id == groupId }) {
-                        let group = TabGroup(id: groupId, tabs: [], activeTabId: nil)
-                        layoutManager.tabGroups.append(group)
-                    }
-                    _ = layoutManager.addTab(to: groupId, title: "Terminal")
-                }
-                .keyboardShortcut("t", modifiers: .command)
-
                 Button("Close Tab") {
-                    if let groupId = layoutManager.activeGroupId,
-                       let activeTab = layoutManager.tabGroups.first(where: { $0.id == groupId })?.activeTab {
-                        layoutManager.closeTab(activeTab.id, in: groupId)
-                    }
+                    tabsStore.closeActiveTab()
                 }
                 .keyboardShortcut("w", modifiers: .command)
+                .disabled(tabsStore.activeTab == nil)
 
                 Button("Next Tab") {
-                    cycleTab(forward: true)
+                    tabsStore.selectAdjacentTab(forward: true)
                 }
                 .keyboardShortcut(.tab, modifiers: .command)
+                .disabled(tabsStore.tabs.count < 2)
 
                 Button("Previous Tab") {
-                    cycleTab(forward: false)
+                    tabsStore.selectAdjacentTab(forward: false)
                 }
                 .keyboardShortcut(.tab, modifiers: [.command, .shift])
+                .disabled(tabsStore.tabs.count < 2)
             }
 
             CommandMenu("Find") {
@@ -130,18 +122,4 @@ struct RShellApp: App {
         )
     }
 
-    private func cycleTab(forward: Bool) {
-        guard let groupId = layoutManager.activeGroupId,
-              let group = layoutManager.tabGroups.first(where: { $0.id == groupId }),
-              group.tabs.count > 1 else { return }
-
-        let sorted = group.tabs.sorted { $0.order < $1.order }
-        let currentIndex = sorted.firstIndex { $0.id == group.activeTabId } ?? 0
-        let nextIndex = forward
-            ? (currentIndex + 1) % sorted.count
-            : (currentIndex - 1 + sorted.count) % sorted.count
-
-        let groupIdx = layoutManager.tabGroups.firstIndex { $0.id == groupId }!
-        layoutManager.tabGroups[groupIdx].activeTabId = sorted[nextIndex].id
-    }
 }

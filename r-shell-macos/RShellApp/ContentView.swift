@@ -14,7 +14,7 @@ import RShellMacOS
 ///   │ Bottom: transfers / logs           │            │
 ///   └────────────────────────────────────┴────────────┘
 ///
-/// Layout is a two-column `NavigationSplitView` (sidebar | detail). The
+/// Layout is an explicit outer `HSplitView` (sidebar | detail). The
 /// detail column nests `HSplitView` + `VSplitView` so the three regions
 /// (terminal-pane / file-pane / bottom / inspector) collapse and resize
 /// independently. The three-column `NavigationSplitView` form can only
@@ -23,49 +23,31 @@ import RShellMacOS
 /// the detail column.
 ///
 /// `LayoutManager` is the source of truth for which panels are visible
-/// and at what size. The system-driven sidebar collapse (toolbar button,
-/// trackpad swipe, View menu) round-trips through `sidebarVisibility`.
-/// The bottom-panel and inspector dividers are observed via
+/// and at what size. The bottom-panel and inspector dividers are observed via
 /// `GeometryReader` preferences and persisted through a 250 ms debounced
 /// write.
 struct ContentView: View {
     @EnvironmentObject var layoutManager: LayoutManager
+    @EnvironmentObject var tabsStore: TerminalTabsStore
     @StateObject private var connectionStore = ConnectionStoreManager.shared
-    @StateObject private var tabsStore = TerminalTabsStore()
     @StateObject private var transfersStore = TransferQueueStore()
     @State private var selectedConnection: ConnectionProfile?
 
-    /// Two-way bridge between the system column-visibility enum and the
-    /// persisted `layout.sidebarVisible` flag.
-    private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(
-            get: { layoutManager.layout.sidebarVisible ? .all : .detailOnly },
-            set: { newValue in
-                layoutManager.layout.sidebarVisible = (newValue != .detailOnly)
-            }
-        )
-    }
-
     var body: some View {
-        NavigationSplitView(columnVisibility: sidebarVisibility) {
-            SidebarView(
-                storeManager: connectionStore,
-                selectedConnection: $selectedConnection,
-                onConnect: { profile in
-                    Task { await tabsStore.openConnection(profile) }
-                }
-            )
-            .finderSidebarBackground()
-            .navigationSplitViewColumnWidth(
-                min: LayoutConstants.minSidebarWidth,
-                ideal: layoutManager.layout.sidebarWidth,
-                max: LayoutConstants.maxSidebarWidth
-            )
-        } detail: {
+        HSplitView {
+            if layoutManager.layout.sidebarVisible {
+                SidebarColumn(
+                    layoutManager: layoutManager,
+                    storeManager: connectionStore,
+                    selectedConnection: $selectedConnection,
+                    onConnect: { profile in
+                        Task { await tabsStore.openConnection(profile) }
+                    }
+                )
+            }
+
             DetailColumn(layoutManager: layoutManager)
         }
-        .navigationSplitViewStyle(.balanced)
-        .environmentObject(tabsStore)
         .environmentObject(transfersStore)
         .frame(minWidth: 900, minHeight: 600)
         .alert("Connection error", isPresented: Binding(
@@ -101,6 +83,53 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Sidebar column
+
+private struct SidebarColumn: View {
+    @ObservedObject var layoutManager: LayoutManager
+    @ObservedObject var storeManager: ConnectionStoreManager
+    @Binding var selectedConnection: ConnectionProfile?
+    let onConnect: (ConnectionProfile) -> Void
+    @State private var sidebarWidthDebounce: Task<Void, Never>?
+
+    var body: some View {
+        SidebarView(
+            storeManager: storeManager,
+            selectedConnection: $selectedConnection,
+            onConnect: onConnect
+        )
+        .finderSidebarBackground()
+        .frame(
+            minWidth: LayoutConstants.minSidebarWidth,
+            idealWidth: layoutManager.layout.sidebarWidth,
+            maxWidth: LayoutConstants.maxSidebarWidth
+        )
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: SidebarWidthKey.self, value: proxy.size.width)
+            }
+        )
+        .onPreferenceChange(SidebarWidthKey.self, perform: persistSidebarWidth)
+    }
+
+    private func persistSidebarWidth(_ measured: CGFloat) {
+        sidebarWidthDebounce?.cancel()
+        sidebarWidthDebounce = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+
+            let clamped = min(
+                max(measured, LayoutConstants.minSidebarWidth),
+                LayoutConstants.maxSidebarWidth
+            )
+            if abs(clamped - layoutManager.layout.sidebarWidth) > 1 {
+                layoutManager.layout.sidebarWidth = clamped
+            }
+        }
+    }
+}
+
 // MARK: - Detail column (main + bottom + inspector)
 
 private struct DetailColumn: View {
@@ -125,47 +154,54 @@ private struct DetailColumn: View {
     }
 
     var body: some View {
-        HSplitView {
-            VSplitView {
-                MainPanel()
-                    .frame(minWidth: 320, minHeight: 320)
+        VStack(spacing: 0) {
+            if !tabsStore.tabs.isEmpty {
+                ConnectionTabBar()
+                Divider()
+            }
 
-                if layoutManager.layout.bottomVisible {
-                    BottomPanel()
+            HSplitView {
+                VSplitView {
+                    MainPanel()
+                        .frame(minWidth: 320, minHeight: 320)
+
+                    if layoutManager.layout.bottomVisible {
+                        BottomPanel()
+                            .frame(
+                                minHeight: LayoutConstants.minBottomHeight,
+                                idealHeight: layoutManager.layout.bottomHeight,
+                                maxHeight: LayoutConstants.maxBottomHeight
+                            )
+                            .background(
+                                GeometryReader { proxy in
+                                    Color.clear
+                                        .preference(key: BottomHeightKey.self,
+                                                    value: proxy.size.height)
+                                }
+                            )
+                            .materialBackground(.contentBackground,
+                                                blendingMode: .withinWindow)
+                    }
+                }
+                .onPreferenceChange(BottomHeightKey.self, perform: persistBottomHeight)
+
+                if inspectorShouldRender {
+                    InspectorPanel()
                         .frame(
-                            minHeight: LayoutConstants.minBottomHeight,
-                            idealHeight: layoutManager.layout.bottomHeight,
-                            maxHeight: LayoutConstants.maxBottomHeight
+                            minWidth: LayoutConstants.minInspectorWidth,
+                            idealWidth: layoutManager.layout.inspectorWidth,
+                            maxWidth: LayoutConstants.maxInspectorWidth
                         )
                         .background(
                             GeometryReader { proxy in
                                 Color.clear
-                                    .preference(key: BottomHeightKey.self,
-                                                value: proxy.size.height)
+                                    .preference(key: InspectorWidthKey.self,
+                                                value: proxy.size.width)
                             }
                         )
                         .materialBackground(.contentBackground,
                                             blendingMode: .withinWindow)
                 }
-            }
-            .onPreferenceChange(BottomHeightKey.self, perform: persistBottomHeight)
-
-            if inspectorShouldRender {
-                InspectorPanel()
-                    .frame(
-                        minWidth: LayoutConstants.minInspectorWidth,
-                        idealWidth: layoutManager.layout.inspectorWidth,
-                        maxWidth: LayoutConstants.maxInspectorWidth
-                    )
-                    .background(
-                        GeometryReader { proxy in
-                            Color.clear
-                                .preference(key: InspectorWidthKey.self,
-                                            value: proxy.size.width)
-                        }
-                    )
-                    .materialBackground(.contentBackground,
-                                        blendingMode: .withinWindow)
             }
         }
         .onPreferenceChange(InspectorWidthKey.self, perform: persistInspectorWidth)
@@ -232,3 +268,9 @@ private struct InspectorWidthKey: PreferenceKey {
     }
 }
 
+private struct SidebarWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}

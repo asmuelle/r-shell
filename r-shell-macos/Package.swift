@@ -1,5 +1,5 @@
 // swift-tools-version: 5.9
-// r-shell-macos SPM package — wraps the Rust static lib for the native macOS app.
+// r-shell-macos SPM package — pure-Swift models shared by the native macOS app.
 //
 // ## Prerequisites
 //
@@ -14,9 +14,9 @@
 //
 //   3. Select the RShellApp scheme, choose and macOS target, run
 //
-// The `build_cargo.sh` script runs automatically as a build phase and
-// produces a universal (arm64 + x86_64) static library at
-// `target/universal/release/libr_shell_macos.a`.
+// The Xcode app target links the Rust static library directly. This SwiftPM
+// package intentionally stays pure Swift so `swift test` can run without a
+// prebuilt Cargo artifact or custom library search paths.
 //
 // ## Generating Swift bindings
 //
@@ -48,10 +48,7 @@ let package = Package(
     targets: [
         .target(
             name: "RShellMacOS",
-            path: "Sources/RShellMacOS",
-            linkerSettings: [
-                .linkedLibrary("r_shell_macos"),
-            ]
+            path: "Sources/RShellMacOS"
         ),
         .testTarget(
             name: "RShellMacOSTests",

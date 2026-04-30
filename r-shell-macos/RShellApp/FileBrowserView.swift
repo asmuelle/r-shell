@@ -27,6 +27,11 @@ struct FileBrowserView: View {
     /// existing single-pane behaviour: `~/Downloads` + a save panel
     /// per file.
     var downloadDirectory: String? = nil
+    /// Permission / owner / group edits currently run remote shell
+    /// commands (`chmod`, `chown`, `chgrp`). SFTP-only accounts can
+    /// browse files without shell access, so callers must disable this
+    /// affordance when the active tab has no shell channel.
+    var canEditPermissions: Bool = true
     /// Fires whenever the user navigates to a new remote path. The
     /// dual-pane host uses this to mirror the cwd into the local
     /// pane's "Upload to Remote" target — without it, uploads
@@ -41,9 +46,6 @@ struct FileBrowserView: View {
     @State private var entries: [FfiFileEntry] = []
     @State private var error: String?
     @State private var loading = false
-    /// True while a Finder drag is hovering over the listing — drives a
-    /// subtle accent-tinted overlay so the drop target is obvious.
-    @State private var isDropTargeted = false
     /// When a drag hovers over a directory row, this holds the directory
     /// name so the row highlights and the drop lands inside that dir.
     @State private var dropTargetDir: String?
@@ -268,36 +270,46 @@ struct FileBrowserView: View {
     private var fileTable: some View {
         Table(sortedRows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { row in
-                nameCell(row)
+                folderDropTarget(for: row) {
+                    nameCell(row)
+                }
             }
 
             TableColumn("Size", value: \.size) { row in
-                Text(row.entry.kind == .directory ? "—" : formatSize(row.entry.size))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                folderDropTarget(for: row) {
+                    Text(row.entry.kind == .directory ? "—" : formatSize(row.entry.size))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
             .width(min: 70, ideal: 90, max: 140)
 
             TableColumn("Modified", value: \.modifiedSortKey) { row in
-                Text(row.modifiedDisplay)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                folderDropTarget(for: row) {
+                    Text(row.modifiedDisplay)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .width(min: 110, ideal: 140, max: 200)
 
             TableColumn("Permissions", value: \.permissions) { row in
-                Text(row.entry.permissions ?? "—")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.tertiary)
+                folderDropTarget(for: row) {
+                    Text(row.entry.permissions ?? "—")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.tertiary)
+                }
             }
             .width(min: 90, ideal: 110, max: 140)
 
             TableColumn("Owner", value: \.ownerGroup) { row in
-                Text(row.ownerGroupDisplay)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                folderDropTarget(for: row) {
+                    Text(row.ownerGroupDisplay)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             .width(min: 70, ideal: 100, max: 160)
         }
@@ -313,19 +325,6 @@ struct FileBrowserView: View {
         // when exactly one directory is selected, so Return is a
         // no-op everywhere else and doesn't shadow other handlers.
         .background(returnKeyShortcut)
-        .dropDestination(for: URL.self) { urls, _ in
-            acceptDrop(urls: urls)
-        } isTargeted: { hovering in
-            isDropTargeted = hovering
-        }
-        .overlay(alignment: .center) {
-            if isDropTargeted {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .padding(8)
-                    .allowsHitTesting(false)
-            }
-        }
     }
 
     /// Row data wrapped from `FfiFileEntry` so it's `Identifiable +
@@ -429,14 +428,16 @@ struct FileBrowserView: View {
                     Divider()
                 }
                 Button("Rename…") { presentRenamePrompt(for: entry) }
-                Divider()
-                Button("Edit Permissions…") {
-                    guard let connId = connectionId else { return }
-                    permissionsEditorTarget = PermissionsEditorTarget(
-                        entry: entry,
-                        connectionId: connId,
-                        remotePath: absolutePath(joining: entry.name)
-                    )
+                if canEditPermissions {
+                    Divider()
+                    Button("Edit Permissions…") {
+                        guard let connId = connectionId else { return }
+                        permissionsEditorTarget = PermissionsEditorTarget(
+                            entry: entry,
+                            connectionId: connId,
+                            remotePath: absolutePath(joining: entry.name)
+                        )
+                    }
                 }
                 Divider()
                 Button("Delete", role: .destructive) {
@@ -471,10 +472,40 @@ struct FileBrowserView: View {
         }
     }
 
-    /// Name-column cell with per-row drop target for directories.
-    /// Dropping files onto a folder row uploads into that folder
-    /// instead of the current directory. File rows remain draggable
-    /// (remote→local copy) but are not drop targets themselves.
+    /// Make every cell in a folder row a local-file drop target.
+    /// SwiftUI `Table` doesn't expose a row-level drop modifier, so
+    /// applying the same target to each visible cell is the closest
+    /// native equivalent: the whole folder row accepts the drop, while
+    /// file rows and blank table space do not.
+    @ViewBuilder
+    private func folderDropTarget<Content: View>(
+        for row: FileRow,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let cell = content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+
+        if row.entry.kind == .directory {
+            cell
+                .dropDestination(for: URL.self) { urls, _ in
+                    acceptDrop(urls: urls, into: row.entry.name)
+                } isTargeted: { hovering in
+                    dropTargetDir = hovering ? row.entry.name : nil
+                }
+                .background(
+                    dropTargetDir == row.entry.name
+                        ? Color.accentColor.opacity(0.12)
+                        : Color.clear
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else {
+            cell
+        }
+    }
+
+    /// Name-column cell. File rows remain draggable (remote→local copy);
+    /// directory rows are upload targets via `folderDropTarget`.
     @ViewBuilder
     private func nameCell(_ row: FileRow) -> some View {
         let content = HStack(spacing: 8) {
@@ -491,22 +522,11 @@ struct FileBrowserView: View {
             }
         }
 
-        if row.entry.kind == .directory {
-            content
-                .dropDestination(for: URL.self) { urls, _ in
-                    acceptDrop(urls: urls, into: row.entry.name)
-                } isTargeted: { hovering in
-                    dropTargetDir = hovering ? row.entry.name : nil
-                }
-                .background(
-                    dropTargetDir == row.entry.name
-                        ? Color.accentColor.opacity(0.12)
-                        : Color.clear
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-        } else {
+        if row.entry.kind == .file {
             content
                 .draggableIfPresent(remoteDragPayload(for: row))
+        } else {
+            content
         }
     }
 
@@ -606,11 +626,10 @@ struct FileBrowserView: View {
         )
     }
 
-    /// Handle URLs dropped from Finder (or the local pane) onto the
-    /// listing. When `into` is non-nil, uploads land inside that
-    /// subdirectory of the current path. When `nil` (table-level
-    /// drop), uploads go to the current directory.
-    private func acceptDrop(urls: [URL], into dirName: String? = nil) -> Bool {
+    /// Handle URLs dropped from Finder or the local pane onto a
+    /// remote folder row. Uploads land inside that subdirectory of
+    /// the current remote path.
+    private func acceptDrop(urls: [URL], into dirName: String) -> Bool {
         guard let connectionId else { return false }
         var enqueued = 0
 
@@ -623,12 +642,7 @@ struct FileBrowserView: View {
             }
 
             let remoteFileName = url.lastPathComponent
-            let remotePath: String
-            if let dirName {
-                remotePath = absolutePath(joining: "\(dirName)/\(remoteFileName)")
-            } else {
-                remotePath = absolutePath(joining: remoteFileName)
-            }
+            let remotePath = absolutePath(joining: "\(dirName)/\(remoteFileName)")
 
             if isDir.boolValue {
                 let connectionId = connectionId

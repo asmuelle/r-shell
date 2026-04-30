@@ -1,0 +1,19 @@
+{
+  "": {
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/master.swiftdeps"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellBetaSmokeTests.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellBetaSmokeTests.dia"
+  },
+  "/Users/andreasmuller/experiments/r-shell/r-shell-macos/Tests/RShellMacOSTests/RShellMacOSBridgeTests.swift": {
+    "dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests.d",
+    "object": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests.swift.o",
+    "swiftmodule": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests.swiftdeps",
+    "diagnostics": "/Users/andreasmuller/experiments/r-shell/r-shell-macos/.build/arm64-apple-macosx/debug/RShellMacOSTests.build/RShellMacOSBridgeTests.dia"
+  }
+}

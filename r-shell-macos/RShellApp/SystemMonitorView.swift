@@ -16,6 +16,7 @@ import OSLog
 struct SystemMonitorView: View {
     let connectionId: String?
     let connectionLabel: String
+    var isActive: Bool = true
 
     @State private var stats: FfiSystemStats?
     @State private var error: String?
@@ -28,6 +29,7 @@ struct SystemMonitorView: View {
     /// each append. Reset on `connectionId` change so a switch between
     /// hosts doesn't render misleading lines that span both.
     @State private var history: [StatSample] = []
+    @State private var lastConnectionId: String?
 
     private let logger = Logger(subsystem: "com.r-shell", category: "monitor")
     private static let pollInterval: UInt64 = 3_000_000_000  // 3 s
@@ -52,9 +54,14 @@ struct SystemMonitorView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: connectionId) {
+        .task(id: pollTaskKey) {
+            guard isActive else { return }
             await pollLoop()
         }
+    }
+
+    private var pollTaskKey: String {
+        "\(connectionId ?? "none"):\(isActive)"
     }
 
     // MARK: - Header
@@ -328,13 +335,16 @@ struct SystemMonitorView: View {
     // MARK: - Polling
 
     private func pollLoop() async {
-        // Drop the previous connection's history and any sticky
-        // error / unsupported flag. The `.task(id:)` semantics give us
-        // a fresh task per connectionId, so this runs exactly when the
-        // user switches hosts.
-        history.removeAll()
-        unsupportedOs = nil
-        error = nil
+        // Drop the previous connection's history and any sticky error /
+        // unsupported flag only when this view is retargeted to a different
+        // connection. When it merely becomes inactive and active again, keep
+        // its chart history as part of the tab's preserved workspace state.
+        if lastConnectionId != connectionId {
+            history.removeAll()
+            unsupportedOs = nil
+            error = nil
+            lastConnectionId = connectionId
+        }
 
         guard let connectionId else { return }
         while !Task.isCancelled {
