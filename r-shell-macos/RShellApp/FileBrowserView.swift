@@ -50,11 +50,11 @@ struct FileBrowserView: View {
     /// name so the row highlights and the drop lands inside that dir.
     @State private var dropTargetDir: String?
 
-    /// Selected row ids (each row's `id` is its file name, unique
-    /// within the directory). `Set` so the user can shift-/cmd-click
-    /// multiple rows; the selection-aware context menu picks the
-    /// single-vs-multi shape based on count.
-    @State private var selection: Set<String> = []
+    /// Selected row id (each row's `id` is its file name, unique
+    /// within the directory). Keep this single-select: AppKit's
+    /// multi-selection gestures compete with row dragging inside
+    /// SwiftUI `Table` and can turn a drag into range selection.
+    @State private var selection: String?
 
     /// Column sort order. `kindOrder` first keeps directories grouped
     /// at the top regardless of the active sort key; the user-chosen
@@ -263,10 +263,9 @@ struct FileBrowserView: View {
     }
 
     /// SwiftUI `Table` with native column headers, click-to-sort, and
-    /// multi-row selection. Each row's id is its file name (unique per
-    /// directory). Double-click on a directory drills in; the
-    /// selection-aware `.contextMenu(forSelectionType:)` adapts to the
-    /// number of selected rows for batch actions.
+    /// single-row selection. Each row's id is its file name (unique per
+    /// directory). Double-click on a directory drills in; row drags
+    /// are handled from the name cell.
     private var fileTable: some View {
         Table(sortedRows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { row in
@@ -313,9 +312,9 @@ struct FileBrowserView: View {
             }
             .width(min: 70, ideal: 100, max: 160)
         }
-        // Selection-aware context menu: shape adapts to single vs.
-        // multi-row selection. Right-click on an unselected row puts
-        // that row in `selectedIds` for the duration of the menu.
+        // Selection-aware context menu. Right-click on an unselected
+        // row puts that row in `selectedIds` for the duration of the
+        // menu.
         .contextMenu(forSelectionType: String.self) { selectedIds in
             contextMenuContent(for: selectedIds)
         }
@@ -396,8 +395,7 @@ struct FileBrowserView: View {
     @ViewBuilder
     private var returnKeyShortcut: some View {
         Button {
-            guard selection.count == 1,
-                  let id = selection.first,
+            guard let id = selection,
                   let entry = entries.first(where: { $0.name == id }),
                   entry.kind == .directory
             else { return }
@@ -406,10 +404,12 @@ struct FileBrowserView: View {
         .keyboardShortcut(.return, modifiers: [])
         .opacity(0)
         .frame(width: 0, height: 0)
-        .disabled(
-            selection.count != 1
-                || entries.first(where: { selection.contains($0.name) })?.kind != .directory
-        )
+        .disabled(selectedEntry?.kind != .directory)
+    }
+
+    private var selectedEntry: FfiFileEntry? {
+        guard let selection else { return nil }
+        return entries.first(where: { $0.name == selection })
     }
 
     @ViewBuilder
@@ -504,8 +504,8 @@ struct FileBrowserView: View {
         }
     }
 
-    /// Name-column cell. File rows remain draggable (remote→local copy);
-    /// directory rows are upload targets via `folderDropTarget`.
+    /// Name-column cell. Rows are draggable for remote→local copy;
+    /// directory rows are also upload targets via `folderDropTarget`.
     @ViewBuilder
     private func nameCell(_ row: FileRow) -> some View {
         let content = HStack(spacing: 8) {
@@ -522,12 +522,8 @@ struct FileBrowserView: View {
             }
         }
 
-        if row.entry.kind == .file {
-            content
-                .draggableIfPresent(remoteDragPayload(for: row))
-        } else {
-            content
-        }
+        content
+            .dragProviderIfPresent(remoteDragPayload(for: row)?.itemProvider)
     }
 
     private func formatSize(_ bytes: UInt64) -> String {
@@ -571,17 +567,25 @@ struct FileBrowserView: View {
     }
 
     /// Build a `RemoteFileDrag` payload for a row, or `nil` if the
-    /// row isn't draggable (currently: directories, or a missing
-    /// connection id). Pulled out so the call site stays readable
-    /// and the directory exclusion is in one place.
+    /// row isn't draggable (currently: only a missing connection id).
+    /// Pulled out so the call site stays readable.
     private func remoteDragPayload(for row: FileRow) -> RemoteFileDrag? {
         guard let connectionId else { return nil }
-        guard row.entry.kind == .file else { return nil }
+        let kind: RemoteFileDrag.Kind
+        switch row.entry.kind {
+        case .file:
+            kind = .file
+        case .directory:
+            kind = .directory
+        case .symlink:
+            kind = .symlink
+        }
         return RemoteFileDrag(
             connectionId: connectionId,
             remotePath: absolutePath(joining: row.entry.name),
             name: row.entry.name,
-            size: row.entry.size
+            size: row.entry.size,
+            kind: kind
         )
     }
 
@@ -910,7 +914,7 @@ struct FileBrowserView: View {
                 }
             }
             await MainActor.run {
-                self.selection.removeAll()
+                self.selection = nil
                 if !failures.isEmpty {
                     self.error = "Could not delete \(failures.count) item\(failures.count == 1 ? "" : "s"): "
                         + failures.prefix(3).joined(separator: "; ")

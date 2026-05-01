@@ -20,6 +20,7 @@ r-shell-macos/R-Shell.xcodeproj/
 
 # Xcode build outputs
 r-shell-macos/build/
+r-shell-macos/.build/
 
 # Cargo crate-level target dirs (in addition to the workspace `target`)
 **/target/

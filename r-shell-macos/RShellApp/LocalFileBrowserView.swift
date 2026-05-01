@@ -4,28 +4,51 @@ import OSLog
 import UniformTypeIdentifiers
 import Darwin
 
-/// Transferable wrapper for a remote (SFTP) file dragged out of
+/// Pasteboard payload for a remote (SFTP) file dragged out of
 /// `FileBrowserView`. Carries everything the receiver needs to
 /// schedule a download via `TransferQueueStore` without re-stating
-/// the SFTP listing — `connectionId` resolves the session, and
+/// the SFTP listing: `connectionId` resolves the session, and
 /// `remotePath` is the absolute remote path so the receiver doesn't
 /// need to know about the remote pane's cwd.
 ///
-/// Custom UTType so the drag can't accidentally be accepted by
-/// Finder, the system pasteboard, or any other sidebar drop target.
-struct RemoteFileDrag: Codable, Transferable {
+/// Transfer uses a tagged-string proxy rather than a custom UTType.
+/// UTType-backed Codable drags need an exported type declaration in
+/// Info.plist to reliably register on macOS; without it, SwiftUI can
+/// start the drag but matching drop destinations never receive it.
+/// The prefix keeps this from being accepted as generic text.
+struct RemoteFileDrag: Codable {
+    enum Kind: String, Codable {
+        case file
+        case directory
+        case symlink
+    }
+
     let connectionId: String
     let remotePath: String
     let name: String
     let size: UInt64
+    let kind: Kind
 
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .rshellRemoteFile)
+    var isDirectory: Bool { kind == .directory }
+
+    private static let prefix = "rshell-remote-file:"
+
+    var pasteboardString: String? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return Self.prefix + data.base64EncodedString()
     }
-}
 
-extension UTType {
-    static let rshellRemoteFile = UTType(exportedAs: "com.r-shell.remote-file")
+    var itemProvider: NSItemProvider? {
+        guard let pasteboardString else { return nil }
+        return NSItemProvider(object: pasteboardString as NSString)
+    }
+
+    static func decodePasteboardString(_ string: String) -> RemoteFileDrag? {
+        guard string.hasPrefix(prefix),
+              let data = Data(base64Encoded: String(string.dropFirst(prefix.count)))
+        else { return nil }
+        return try? JSONDecoder().decode(RemoteFileDrag.self, from: data)
+    }
 }
 
 /// Folder reparent payload. Carries just the folder id; the receiver
@@ -55,14 +78,13 @@ struct FolderMove: Codable, Transferable {
 }
 
 extension View {
-    /// Apply `.draggable` only when a payload is supplied. Lets call
-    /// sites express "directories aren't draggable" as the absence
-    /// of a payload (`nil`) rather than wrapping the modifier chain
-    /// in a `Group { if … }` that breaks `some View` inference.
+    /// Apply `.onDrag` only when a provider is supplied. Lets call
+    /// sites express "this row is not draggable" as `nil` without
+    /// breaking `some View` inference.
     @ViewBuilder
-    func draggableIfPresent<T: Transferable>(_ payload: T?) -> some View {
-        if let payload {
-            self.draggable(payload)
+    func dragProviderIfPresent(_ provider: NSItemProvider?) -> some View {
+        if let provider {
+            self.onDrag { provider }
         } else {
             self
         }
@@ -80,9 +102,9 @@ extension View {
 /// Cross-pane copy hooks: each row is `.draggable` with its file URL,
 /// so a drag onto the remote pane's listing reuses
 /// `FileBrowserView.acceptDrop` and uploads. The reverse direction
-/// (remote → local) is handled by the remote pane's "Download here"
-/// context-menu item, which the dual-pane host wires up with the
-/// local path as the target.
+/// (remote → local) accepts `RemoteFileDrag` payloads from the remote
+/// pane and lets the dual-pane host queue a download into this pane's
+/// current path.
 struct LocalFileBrowserView: View {
     @Binding var path: String
     let onUploadToRemote: ((URL) -> Void)?
@@ -94,7 +116,7 @@ struct LocalFileBrowserView: View {
     let onDownloadFromRemote: ((RemoteFileDrag) -> Void)?
 
     @State private var entries: [LocalFileEntry] = []
-    @State private var selection: Set<String> = []
+    @State private var selection: String?
     @State private var sortOrder: [KeyPathComparator<LocalFileEntry>] = [
         KeyPathComparator(\.name)
     ]
@@ -284,12 +306,8 @@ struct LocalFileBrowserView: View {
         // download into this pane's current cwd. Hover state drives
         // the same accent border the remote pane uses for Finder
         // drops, so the cross-pane direction reads consistently.
-        .dropDestination(for: RemoteFileDrag.self) { drops, _ in
-            guard let onDownloadFromRemote else { return false }
-            for drop in drops { onDownloadFromRemote(drop) }
-            return !drops.isEmpty
-        } isTargeted: { hovering in
-            isDropTargeted = hovering
+        .onDrop(of: [UTType.plainText], isTargeted: $isDropTargeted) { providers in
+            acceptRemoteDrops(providers)
         }
         .overlay(alignment: .center) {
             if isDropTargeted {
@@ -299,6 +317,43 @@ struct LocalFileBrowserView: View {
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    private func acceptRemoteDrops(_ providers: [NSItemProvider]) -> Bool {
+        guard let onDownloadFromRemote else { return false }
+
+        let remoteProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
+        }
+        guard !remoteProviders.isEmpty else { return false }
+
+        for provider in remoteProviders {
+            provider.loadItem(
+                forTypeIdentifier: UTType.plainText.identifier,
+                options: nil
+            ) { item, _ in
+                let raw: String?
+                if let string = item as? String {
+                    raw = string
+                } else if let string = item as? NSString {
+                    raw = string as String
+                } else if let data = item as? Data {
+                    raw = String(data: data, encoding: .utf8)
+                } else {
+                    raw = nil
+                }
+
+                guard let raw,
+                      let drop = RemoteFileDrag.decodePasteboardString(raw)
+                else { return }
+
+                DispatchQueue.main.async {
+                    onDownloadFromRemote(drop)
+                }
+            }
+        }
+
+        return true
     }
 
     @ViewBuilder

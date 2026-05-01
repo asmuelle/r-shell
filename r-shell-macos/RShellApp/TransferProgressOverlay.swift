@@ -30,14 +30,19 @@ struct TransferProgressOverlay: View {
     }
 
     var body: some View {
-        if isVisible {
-            panel
-        } else {
-            Color.clear
-                .frame(width: 0, height: 0)
-                .onChange(of: activeTransfers.isEmpty) { nowEmpty in
-                    if !nowEmpty { isVisible = true }
-                }
+        Group {
+            if isVisible {
+                panel
+            } else {
+                Color.clear
+                    .frame(width: 0, height: 0)
+            }
+        }
+        .onAppear {
+            revealIfNeeded()
+        }
+        .onChange(of: activeTransfers.count) { _ in
+            revealIfNeeded()
         }
     }
 
@@ -108,6 +113,12 @@ struct TransferProgressOverlay: View {
         isVisible = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             transfers.clearCompleted()
+        }
+    }
+
+    private func revealIfNeeded() {
+        if !activeTransfers.isEmpty {
+            isVisible = true
         }
     }
 }

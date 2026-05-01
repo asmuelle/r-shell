@@ -561,16 +561,18 @@ private struct ConnectionDetailsPanel: View {
     }
 
     private func detailRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(width: 110, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 78, alignment: .leading)
             Text(value)
                 .font(.caption.monospacedDigit())
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

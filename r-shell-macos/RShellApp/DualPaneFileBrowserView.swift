@@ -17,10 +17,10 @@ import SwiftUI
 ///    the `onUploadToRemote` closure; we forward it through the
 ///    `TransferQueueStore` to the active SFTP session, just like
 ///    Finder drag-drops onto the remote pane already do.
-/// 2. Remote → Local: handled by the existing `FileBrowserView`
-///    Download flow; we surface the local pane's current cwd as the
-///    download destination so users don't have to round-trip through
-///    `~/Downloads`.
+/// 2. Remote → Local: the remote pane exports `RemoteFileDrag`
+///    payloads; dropping one on the local pane queues a download into
+///    the local pane's current cwd so users don't have to round-trip
+///    through `~/Downloads`.
 struct DualPaneFileBrowserView: View {
     let connectionId: String?
     let connectionLabel: String
@@ -37,6 +37,7 @@ struct DualPaneFileBrowserView: View {
     /// queuing an upload so files land where the user is looking,
     /// not at the SFTP root.
     @State private var remotePath: String = "."
+    @State private var transferError: String?
 
     var body: some View {
         HSplitView {
@@ -63,6 +64,17 @@ struct DualPaneFileBrowserView: View {
         .overlay {
             TransferProgressOverlay()
                 .environmentObject(transfers)
+        }
+        .alert(
+            "Transfer failed",
+            isPresented: Binding(
+                get: { transferError != nil },
+                set: { if !$0 { transferError = nil } }
+            )
+        ) {
+            Button("OK") { transferError = nil }
+        } message: {
+            Text(transferError ?? "")
         }
     }
 
@@ -99,11 +111,81 @@ struct DualPaneFileBrowserView: View {
     private func enqueueDownload(_ drop: RemoteFileDrag) {
         let localURL = URL(fileURLWithPath: localPath)
             .appendingPathComponent(drop.name)
+        if drop.isDirectory {
+            Task {
+                await enqueueDirectoryDownload(drop, localRoot: localURL)
+            }
+            return
+        }
+
         transfers.enqueueDownload(
             connectionId: drop.connectionId,
             remotePath: drop.remotePath,
             localPath: localURL.path,
             expectedSize: drop.size
         )
+    }
+
+    private func enqueueDirectoryDownload(_ drop: RemoteFileDrag, localRoot: URL) async {
+        do {
+            try await createLocalDirectory(localRoot)
+            try await enqueueRemoteDirectoryContents(
+                connectionId: drop.connectionId,
+                remoteRoot: drop.remotePath,
+                localRoot: localRoot
+            )
+        } catch {
+            transferError = "Could not download \(drop.name): \(error.localizedDescription)"
+        }
+    }
+
+    private func enqueueRemoteDirectoryContents(
+        connectionId: String,
+        remoteRoot: String,
+        localRoot: URL
+    ) async throws {
+        let entries = try await Task.detached {
+            try rshellSftpListDir(connectionId: connectionId, path: remoteRoot)
+        }.value
+
+        for entry in entries {
+            let remoteChild = joinRemotePath(remoteRoot, entry.name)
+            let localChild = localRoot.appendingPathComponent(entry.name)
+
+            switch entry.kind {
+            case .directory:
+                try await createLocalDirectory(localChild)
+                try await enqueueRemoteDirectoryContents(
+                    connectionId: connectionId,
+                    remoteRoot: remoteChild,
+                    localRoot: localChild
+                )
+            case .file, .symlink:
+                await MainActor.run {
+                    transfers.enqueueDownload(
+                        connectionId: connectionId,
+                        remotePath: remoteChild,
+                        localPath: localChild.path,
+                        expectedSize: entry.size
+                    )
+                }
+            }
+        }
+    }
+
+    private func createLocalDirectory(_ url: URL) async throws {
+        try await Task.detached {
+            try FileManager.default.createDirectory(
+                at: url,
+                withIntermediateDirectories: true
+            )
+        }.value
+    }
+
+    private func joinRemotePath(_ base: String, _ name: String) -> String {
+        if base == "." || base.isEmpty {
+            return name
+        }
+        return base.hasSuffix("/") ? base + name : base + "/" + name
     }
 }
