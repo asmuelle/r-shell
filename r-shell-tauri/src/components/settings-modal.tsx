@@ -324,6 +324,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange }: Settin
                         <SelectItem value="nord">Nord</SelectItem>
                         <SelectItem value="gruvbox-dark">Gruvbox Dark</SelectItem>
                         <SelectItem value="tokyo-night">Tokyo Night</SelectItem>
+                        <SelectItem value="homebrew">Homebrew</SelectItem>
                         <SelectItem value="matrix">Matrix</SelectItem>
                       </SelectContent>
                     </Select>

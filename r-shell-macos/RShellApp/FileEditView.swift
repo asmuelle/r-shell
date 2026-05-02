@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Minimal text editor for remote files. Fetches content on open and
@@ -7,10 +8,12 @@ struct FileEditView: View {
     let connectionId: String
     let path: String
     @State var content: String
-    var onSave: (String) -> Void
+    var onSave: (String) async throws -> Void
 
     @State private var originalContent = ""
     @State private var isModified = false
+    @State private var isSaving = false
+    @State private var saveError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,16 +31,20 @@ struct FileEditView: View {
                         .font(.caption)
                         .foregroundColor(.orange)
                 }
+                if isSaving {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.75)
+                }
 
                 Button("Save") {
-                    onSave(content)
-                    originalContent = content
-                    isModified = false
+                    save()
                 }
-                .disabled(!isModified)
+                .disabled(!isModified || isSaving)
                 .keyboardShortcut("s", modifiers: .command)
 
                 Button("Cancel") { dismiss() }
+                    .disabled(isSaving)
                     .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 8)
@@ -46,17 +53,370 @@ struct FileEditView: View {
 
             Divider()
 
-            // Editor area
-            TextEditor(text: $content)
-                .font(.system(size: 12, design: .monospaced))
-                .disableAutocorrection(true)
+            if let saveError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.yellow)
+                    Text(saveError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer()
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                Divider()
+            }
+
+            SyntaxTextEditor(
+                text: $content,
+                syntax: FileSyntax(path: path),
+                isEditable: !isSaving
+            )
                 .onChange(of: content) { _ in
                     isModified = content != originalContent
+                    saveError = nil
                 }
         }
         .frame(width: 560, height: 420)
         .onAppear {
             originalContent = content
+        }
+    }
+
+    private func save() {
+        saveError = nil
+        isSaving = true
+        Task { @MainActor in
+            do {
+                try await onSave(content)
+                originalContent = content
+                isModified = false
+                isSaving = false
+                dismiss()
+            } catch {
+                saveError = error.localizedDescription
+                isSaving = false
+            }
+        }
+    }
+}
+
+private enum FileSyntax: Equatable {
+    case plain
+    case shell
+    case yaml
+
+    init(path: String) {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "sh":
+            self = .shell
+        case "yaml", "yml":
+            self = .yaml
+        default:
+            self = .plain
+        }
+    }
+}
+
+private struct SyntaxTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    let syntax: FileSyntax
+    let isEditable: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, syntax: syntax)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        let textView = NSTextView()
+        textView.string = text
+        textView.delegate = context.coordinator
+        textView.allowsUndo = true
+        textView.isEditable = isEditable
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.drawsBackground = true
+        textView.backgroundColor = NSColor.textBackgroundColor
+        textView.textColor = NSColor.labelColor
+        textView.font = SyntaxHighlighter.font
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.autoresizingMask = [.width, .height]
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+
+        scrollView.documentView = textView
+        context.coordinator.applyHighlighting(to: textView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.text = $text
+        context.coordinator.syntax = syntax
+
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        textView.isEditable = isEditable
+        textView.backgroundColor = NSColor.textBackgroundColor
+
+        if textView.string != text {
+            context.coordinator.isProgrammaticChange = true
+            textView.string = text
+            context.coordinator.isProgrammaticChange = false
+        }
+        context.coordinator.applyHighlighting(to: textView)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        var syntax: FileSyntax
+        var isProgrammaticChange = false
+        private var isApplyingHighlighting = false
+
+        init(text: Binding<String>, syntax: FileSyntax) {
+            self.text = text
+            self.syntax = syntax
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard !isProgrammaticChange,
+                  let textView = notification.object as? NSTextView
+            else { return }
+
+            text.wrappedValue = textView.string
+            applyHighlighting(to: textView)
+        }
+
+        func applyHighlighting(to textView: NSTextView) {
+            guard !isApplyingHighlighting, let storage = textView.textStorage else { return }
+            isApplyingHighlighting = true
+            let selectedRanges = textView.selectedRanges
+
+            storage.beginEditing()
+            SyntaxHighlighter.apply(to: storage, syntax: syntax)
+            storage.endEditing()
+
+            textView.selectedRanges = selectedRanges
+            textView.typingAttributes = SyntaxHighlighter.baseAttributes
+            isApplyingHighlighting = false
+        }
+    }
+}
+
+private enum SyntaxHighlighter {
+    static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+    static var baseAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: font,
+            .foregroundColor: NSColor.labelColor
+        ]
+    }
+
+    private static var commentAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+    }
+
+    private static var shellKeywordAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemBlue]
+    }
+
+    private static var shellVariableAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemPurple]
+    }
+
+    private static var stringAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemGreen]
+    }
+
+    private static var yamlKeyAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemBlue]
+    }
+
+    private static var yamlScalarAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemOrange]
+    }
+
+    static func apply(to storage: NSTextStorage, syntax: FileSyntax) {
+        let nsString = storage.string as NSString
+        let fullRange = NSRange(location: 0, length: nsString.length)
+        guard fullRange.length > 0 else { return }
+
+        storage.setAttributes(baseAttributes, range: fullRange)
+
+        switch syntax {
+        case .plain:
+            return
+        case .shell:
+            highlightShell(storage, range: fullRange)
+        case .yaml:
+            highlightYAML(storage, range: fullRange)
+        }
+    }
+
+    private static func highlightShell(_ storage: NSTextStorage, range: NSRange) {
+        applyRegex(
+            #"(?<![A-Za-z0-9_])(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|function|in|select|time|coproc|return|exit|export|local|readonly|declare|typeset|source|alias|unalias|trap|shift|test)(?![A-Za-z0-9_])"#,
+            to: storage,
+            range: range,
+            attributes: shellKeywordAttributes
+        )
+        applyRegex(
+            #"\$\{[^}\n]+\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9#?*!@$-]"#,
+            to: storage,
+            range: range,
+            attributes: shellVariableAttributes
+        )
+        applyRegex(
+            #""(?:\\.|[^"\\])*"|'[^'\n]*'"#,
+            to: storage,
+            range: range,
+            attributes: stringAttributes
+        )
+        applyCommentHighlighting(to: storage)
+    }
+
+    private static func highlightYAML(_ storage: NSTextStorage, range: NSRange) {
+        applyRegex(
+            #"(?m)^([ \t-]*)([A-Za-z0-9_.-]+)([ \t]*:)"#,
+            to: storage,
+            range: range,
+            captureGroup: 2,
+            attributes: yamlKeyAttributes
+        )
+        applyRegex(
+            #"(?<![A-Za-z0-9_])[&*][A-Za-z0-9_-]+"#,
+            to: storage,
+            range: range,
+            attributes: shellVariableAttributes
+        )
+        applyRegex(
+            #"(?<=[:\[, \t-])(?:true|false|null|~|-?\d+(?:\.\d+)?)(?=$|[,\] \t#])"#,
+            to: storage,
+            range: range,
+            options: [.caseInsensitive],
+            attributes: yamlScalarAttributes
+        )
+        applyRegex(
+            #""(?:\\.|[^"\\])*"|'[^'\n]*'"#,
+            to: storage,
+            range: range,
+            attributes: stringAttributes
+        )
+        applyCommentHighlighting(to: storage)
+    }
+
+    private static func applyRegex(
+        _ pattern: String,
+        to storage: NSTextStorage,
+        range: NSRange,
+        options: NSRegularExpression.Options = [],
+        captureGroup: Int = 0,
+        attributes: [NSAttributedString.Key: Any]
+    ) {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options)
+        else { return }
+
+        regex.enumerateMatches(in: storage.string, range: range) { match, _, _ in
+            guard let match else { return }
+            let highlightedRange = captureGroup > 0 ? match.range(at: captureGroup) : match.range
+            guard highlightedRange.location != NSNotFound, highlightedRange.length > 0 else { return }
+            storage.addAttributes(attributes, range: highlightedRange)
+        }
+    }
+
+    private static func applyCommentHighlighting(to storage: NSTextStorage) {
+        let nsString = storage.string as NSString
+        var location = 0
+
+        while location < nsString.length {
+            let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
+            let line = nsString.substring(with: lineRange)
+            if let offset = commentOffset(in: line) {
+                storage.addAttributes(
+                    commentAttributes,
+                    range: NSRange(
+                        location: lineRange.location + offset,
+                        length: lineRange.length - offset
+                    )
+                )
+            }
+
+            let nextLocation = NSMaxRange(lineRange)
+            if nextLocation <= location { break }
+            location = nextLocation
+        }
+    }
+
+    private static func commentOffset(in line: String) -> Int? {
+        var inSingleQuote = false
+        var inDoubleQuote = false
+        var escaped = false
+        var previous: Character?
+        var utf16Offset = 0
+
+        for character in line {
+            defer {
+                previous = character
+                utf16Offset += character.utf16.count
+            }
+
+            if escaped {
+                escaped = false
+                continue
+            }
+
+            if character == "\\" && !inSingleQuote {
+                escaped = true
+                continue
+            }
+
+            if character == "'" && !inDoubleQuote {
+                inSingleQuote.toggle()
+                continue
+            }
+
+            if character == "\"" && !inSingleQuote {
+                inDoubleQuote.toggle()
+                continue
+            }
+
+            if character == "#",
+               !inSingleQuote,
+               !inDoubleQuote,
+               isWhitespace(previous) {
+                return utf16Offset
+            }
+        }
+
+        return nil
+    }
+
+    private static func isWhitespace(_ character: Character?) -> Bool {
+        guard let character else { return true }
+        return character.unicodeScalars.allSatisfy {
+            CharacterSet.whitespacesAndNewlines.contains($0)
         }
     }
 }

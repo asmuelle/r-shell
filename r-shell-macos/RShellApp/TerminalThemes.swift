@@ -32,6 +32,7 @@ struct TerminalTheme: Identifiable {
         switch id {
         case "light":           return .light
         case "dark":            return .dark
+        case "homebrew":        return .homebrew
         case "solarized-dark":  return .solarizedDark
         case "dracula":         return .dracula
         case "nord":            return .nord
@@ -42,7 +43,7 @@ struct TerminalTheme: Identifiable {
 
     /// Order shown in the Settings picker.
     static let all: [TerminalTheme] = [
-        .system, .light, .dark, .solarizedDark, .dracula, .nord, .tomorrowNight,
+        .system, .light, .dark, .homebrew, .solarizedDark, .dracula, .nord, .tomorrowNight,
     ]
 }
 
@@ -74,6 +75,21 @@ extension TerminalTheme {
         foreground: NSColor(calibratedWhite: 0.92, alpha: 1),
         caret: NSColor(calibratedWhite: 0.92, alpha: 1),
         ansiPalette: nil
+    )
+
+    /// Homebrew — based on the VS Code Homebrew terminal palette.
+    static let homebrew = TerminalTheme(
+        id: "homebrew",
+        label: "Homebrew",
+        background: HexColor.ns("000000"),
+        foreground: HexColor.ns("00a600"),
+        caret: HexColor.ns("00d900"),
+        ansiPalette: [
+            HexColor.term("000000"), HexColor.term("990000"), HexColor.term("00a600"), HexColor.term("999900"),
+            HexColor.term("0000b2"), HexColor.term("b200b2"), HexColor.term("00a6b2"), HexColor.term("bfbfbf"),
+            HexColor.term("666666"), HexColor.term("e50000"), HexColor.term("00d900"), HexColor.term("e5e500"),
+            HexColor.term("0000ff"), HexColor.term("e500e5"), HexColor.term("00e5e5"), HexColor.term("e5e5e5"),
+        ]
     )
 
     /// Solarized Dark — Ethan Schoonover, https://ethanschoonover.com/solarized/

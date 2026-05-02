@@ -74,6 +74,8 @@ pub fn run() {
             commands::ssh_execute_command,
             commands::ssh_tab_complete,
             commands::get_system_stats,
+            commands::get_systemd_services,
+            commands::get_ufw_status,
             commands::list_files,
             commands::list_connections,
             commands::sftp_download_file,

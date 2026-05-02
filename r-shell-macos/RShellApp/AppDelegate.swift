@@ -10,7 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.r-shell", category: "appdelegate")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        logger.info("R-Shell macOS app launching")
+        logger.info("midnight-ssh macOS app launching")
         BridgeManager.shared.initialize()
         logger.info("Rust bridge initialized — app ready")
 
@@ -36,7 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        logger.info("R-Shell shutting down")
+        logger.info("midnight-ssh shutting down")
         BridgeManager.shared.shutdown()
     }
 

@@ -54,7 +54,7 @@ class UpdateManager {
         <?xml version="1.0" encoding="utf-8"?>
         <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
             <channel>
-                <title>R-Shell Changelog</title>
+                <title>midnight-ssh Changelog</title>
                 <item>
                     <title>Version \(version)</title>
                     <sparkle:version>\(build)</sparkle:version>
@@ -64,7 +64,7 @@ class UpdateManager {
                                type="application/octet-stream"
                                sparkle:edSignature=""/>
                     <description><![CDATA[
-                        <h2>R-Shell \(version)</h2>
+                        <h2>midnight-ssh \(version)</h2>
                         <p>See the full changelog on GitHub.</p>
                     ]]></description>
                 </item>

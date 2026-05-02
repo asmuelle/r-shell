@@ -1,4 +1,4 @@
-# R-Shell command surface — cross-stack helpers for the Cargo + pnpm
+# midnight-ssh command surface — cross-stack helpers for the Cargo + pnpm
 # workspace.
 #
 # Install `just` once: `brew install just`. Run `just` (no args) to see all
@@ -18,7 +18,7 @@ macos_dir   := "r-shell-macos"
 xcode_proj  := macos_dir + "/R-Shell.xcodeproj"
 mac_scheme  := "RShellApp"
 mac_build   := macos_dir + "/build"
-mac_app     := mac_build + "/Build/Products/Release/R-Shell.app"
+mac_app     := mac_build + "/Build/Products/Release/midnight-ssh.app"
 universal   := "target/universal/release/libr_shell_macos.a"
 
 

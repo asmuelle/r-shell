@@ -33,13 +33,14 @@ enum RemoteCommandError: LocalizedError {
 
 enum RemoteCommandRunner {
     static func runRaw(connectionId: String, command: String) async throws -> String {
-        try await Task.detached {
-            let result = rshellExecuteCommand(connectionId: connectionId, command: command)
-            guard result.success else {
-                throw RemoteCommandError.ffi(result.error ?? "Remote command failed.")
-            }
-            return result.value ?? ""
-        }.value
+        do {
+            return try await BridgeManager.shared.executeCommand(
+                connectionId: connectionId,
+                command: command
+            )
+        } catch {
+            throw RemoteCommandError.ffi(error.localizedDescription)
+        }
     }
 
     static func runShell(connectionId: String, script: String) async throws -> RemoteCommandResult {
@@ -171,6 +172,198 @@ private struct UFWTopTalker: Identifiable, Hashable {
     var id: String { source }
 }
 
+enum UFWProtectionLevel: Equatable {
+    case loading
+    case unavailable
+    case inactive
+    case protected
+    case open
+    case unknown
+}
+
+struct UFWProtectionSummary: Equatable {
+    let level: UFWProtectionLevel
+    let statusText: String
+    let extraOpenRules: [String]
+    let error: String?
+
+    static let loading = UFWProtectionSummary(
+        level: .loading,
+        statusText: "Loading UFW status",
+        extraOpenRules: [],
+        error: nil
+    )
+
+    var badgeText: String {
+        switch level {
+        case .loading: return "..."
+        case .unavailable: return "n/a"
+        case .inactive: return "off"
+        case .protected: return "on"
+        case .open: return "open"
+        case .unknown: return "?"
+        }
+    }
+
+    var helpText: String {
+        switch level {
+        case .open where !extraOpenRules.isEmpty:
+            return "\(statusText). Extra open rules: \(extraOpenRules.joined(separator: ", "))"
+        case .unknown:
+            return error ?? statusText
+        default:
+            return statusText
+        }
+    }
+}
+
+let ufwUnavailableMarker = "__R_SHELL_UFW_UNAVAILABLE__"
+
+func summarizeUFWStatusOutput(_ output: String, sshPort: UInt16?) -> UFWProtectionSummary {
+    let statusText = output
+        .split(whereSeparator: \.isNewline)
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first { !$0.isEmpty } ?? "Unknown"
+
+    if statusText == ufwUnavailableMarker || output.contains(ufwUnavailableMarker) {
+        return UFWProtectionSummary(
+            level: .unavailable,
+            statusText: "UFW not installed",
+            extraOpenRules: [],
+            error: nil
+        )
+    }
+
+    let lower = statusText.lowercased()
+    if lower.contains("inactive") {
+        return UFWProtectionSummary(
+            level: .inactive,
+            statusText: statusText,
+            extraOpenRules: [],
+            error: nil
+        )
+    }
+
+    if lower.contains("active") {
+        let extraRules = collectExtraUFWOpenRules(from: output, sshPort: sshPort)
+        return UFWProtectionSummary(
+            level: extraRules.isEmpty ? .protected : .open,
+            statusText: statusText,
+            extraOpenRules: extraRules,
+            error: nil
+        )
+    }
+
+    let isPermissionError = lower.contains("permission")
+        || lower.contains("need to be root")
+        || lower.contains("must be root")
+        || lower.contains("password")
+
+    return UFWProtectionSummary(
+        level: .unknown,
+        statusText: statusText,
+        extraOpenRules: [],
+        error: isPermissionError ? statusText : nil
+    )
+}
+
+func summarizeUFWStatus(
+    active: Bool,
+    statusText: String,
+    openRuleTargets: [String],
+    sshPort: UInt16?
+) -> UFWProtectionSummary {
+    guard active else {
+        return UFWProtectionSummary(
+            level: .inactive,
+            statusText: statusText,
+            extraOpenRules: [],
+            error: nil
+        )
+    }
+
+    let extraRules = openRuleTargets.filter { !isAllowedUFWOpenRule($0, sshPort: sshPort) }
+    return UFWProtectionSummary(
+        level: extraRules.isEmpty ? .protected : .open,
+        statusText: statusText,
+        extraOpenRules: extraRules,
+        error: nil
+    )
+}
+
+func collectExtraUFWOpenRules(from output: String, sshPort: UInt16?) -> [String] {
+    output
+        .split(whereSeparator: \.isNewline)
+        .compactMap { extractUFWOpenRuleTarget(from: String($0)) }
+        .filter { !isAllowedUFWOpenRule($0, sshPort: sshPort) }
+}
+
+func extractUFWOpenRuleTarget(from line: String) -> String? {
+    var trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          !trimmed.hasPrefix("Status:"),
+          !trimmed.hasPrefix("To "),
+          !trimmed.hasPrefix("--")
+    else { return nil }
+
+    if trimmed.hasPrefix("["),
+       let end = trimmed.firstIndex(of: "]") {
+        trimmed = String(trimmed[trimmed.index(after: end)...])
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    let allowRange = trimmed.range(of: " ALLOW", options: .caseInsensitive)
+    let limitRange = trimmed.range(of: " LIMIT", options: .caseInsensitive)
+    let actionRange = [allowRange, limitRange]
+        .compactMap { $0 }
+        .min { $0.lowerBound < $1.lowerBound }
+
+    guard let actionRange else { return nil }
+    let target = trimmed[..<actionRange.lowerBound]
+        .trimmingCharacters(in: .whitespaces)
+    return target.isEmpty ? nil : target
+}
+
+func isAllowedUFWOpenRule(_ rule: String, sshPort: UInt16?) -> Bool {
+    let normalized = rule
+        .replacingOccurrences(of: "(v6)", with: "")
+        .split(whereSeparator: \.isWhitespace)
+        .joined(separator: " ")
+        .lowercased()
+
+    let knownAllowedServices: Set<String> = [
+        "http",
+        "https",
+        "ssh",
+        "openssh",
+        "www",
+        "www full",
+        "www secure",
+        "apache",
+        "apache full",
+        "apache secure",
+        "nginx http",
+        "nginx https",
+        "nginx full",
+    ]
+    if knownAllowedServices.contains(normalized) {
+        return true
+    }
+
+    guard let portSpec = normalized.split(whereSeparator: \.isWhitespace).first else {
+        return false
+    }
+    let portPart = portSpec.split(separator: "/").first.map(String.init) ?? String(portSpec)
+    let ports = portPart.split(separator: ",").map(String.init)
+    guard !ports.isEmpty else { return false }
+
+    var allowedPorts: Set<String> = ["22", "80", "443"]
+    if let sshPort {
+        allowedPorts.insert(String(sshPort))
+    }
+    return ports.allSatisfy { allowedPorts.contains($0) }
+}
+
 struct UFWMonitorView: View {
     let connectionId: String?
     let connectionLabel: String
@@ -277,15 +470,18 @@ struct UFWMonitorView: View {
     }
 
     private var statusBadge: some View {
-        Text(snapshot.active ? "active" : "inactive")
+        let summary = ufwProtectionSummary
+        let color = ufwProtectionColor(summary)
+        return Text(summary.badgeText)
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(snapshot.active ? .green : .secondary)
+            .foregroundStyle(color)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
                 Capsule()
-                    .fill((snapshot.active ? Color.green : Color.secondary).opacity(0.12))
+                    .fill(color.opacity(0.12))
             )
+            .help(summary.helpText)
     }
 
     @ViewBuilder
@@ -317,7 +513,7 @@ struct UFWMonitorView: View {
                 }
 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
-                    ufwMetric("Status", snapshot.active ? "Active" : "Inactive", color: snapshot.active ? .green : .secondary)
+                    ufwMetric("Status", snapshot.active ? "Active" : "Inactive", color: ufwProtectionColor(ufwProtectionSummary))
                     ufwMetric("Incoming", snapshot.incomingPolicy, color: policyColor(snapshot.incomingPolicy))
                     ufwMetric("Outgoing", snapshot.outgoingPolicy, color: policyColor(snapshot.outgoingPolicy))
                     ufwMetric("Forward", snapshot.routedPolicy, color: policyColor(snapshot.routedPolicy))
@@ -586,6 +782,37 @@ struct UFWMonitorView: View {
     private var selectedRule: UFWRule? {
         guard let number = selectedRules.sorted().first else { return nil }
         return rules.first { $0.number == number }
+    }
+
+    private var ufwProtectionSummary: UFWProtectionSummary {
+        let statusText = snapshot.rawStatus.lines()
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+            ?? (snapshot.active ? "Status: active" : "Status: inactive")
+        return summarizeUFWStatus(
+            active: snapshot.active,
+            statusText: statusText,
+            openRuleTargets: rules
+                .filter {
+                    let action = $0.action.lowercased()
+                    return action.contains("allow") || action.contains("limit")
+                }
+                .map(\.target),
+            sshPort: sshPort
+        )
+    }
+
+    private func ufwProtectionColor(_ summary: UFWProtectionSummary) -> Color {
+        switch summary.level {
+        case .protected:
+            return .green
+        case .inactive, .open:
+            return .orange
+        case .unknown:
+            return .yellow
+        case .loading, .unavailable:
+            return .secondary
+        }
     }
 
     private var topBlockedSources: [UFWTopTalker] {
@@ -869,6 +1096,7 @@ private struct SystemdUnit: Identifiable, Hashable {
     let description: String
 
     var id: String { name }
+    var statusSortKey: String { "\(active) \(sub)" }
 }
 
 private struct SystemdTimer: Identifiable, Hashable {
@@ -1038,6 +1266,9 @@ struct SystemdMonitorView: View {
     @State private var loading = false
     @State private var liveJournal = false
     @State private var pendingAction: UnitAction?
+    @State private var unitSortOrder: [KeyPathComparator<SystemdUnit>] = [
+        .init(\.name)
+    ]
 
     private let logger = Logger(subsystem: "com.r-shell", category: "systemd-monitor")
     private static let pollInterval: UInt64 = 5_000_000_000
@@ -1156,35 +1387,51 @@ struct SystemdMonitorView: View {
         }
     }
 
+    private var sortedFilteredUnits: [SystemdUnit] {
+        filteredUnits.sorted(using: unitSortOrder)
+    }
+
     private var unitList: some View {
-        List(selection: Binding(
+        Table(sortedFilteredUnits, selection: Binding(
             get: { selectedUnit?.id },
             set: { id in selectedUnit = units.first { $0.id == id } }
-        )) {
-            ForEach(filteredUnits) { unit in
-                HStack(spacing: 8) {
+        ), sortOrder: $unitSortOrder) {
+            TableColumn("Service", value: \.name) { unit in
+                HStack(spacing: 6) {
                     Circle()
                         .fill(statusColor(unit.active))
                         .frame(width: 8, height: 8)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(unit.name)
-                            .font(.caption.monospaced())
-                            .lineLimit(1)
-                        Text(unit.description)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
+                    Text(unit.name)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                }
+            }
+            .width(min: 180, ideal: 260)
+
+            TableColumn("Status", value: \.statusSortKey) { unit in
+                HStack(spacing: 5) {
+                    Text(unit.active)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(statusColor(unit.active))
                     Text(unit.sub)
                         .font(.caption2.monospaced())
                         .foregroundStyle(statusColor(unit.sub))
                 }
-                .tag(unit.id)
-                .contextMenu { unitActions(unit.name) }
+            }
+            .width(min: 100, ideal: 130)
+
+            TableColumn("Description", value: \.description) { unit in
+                Text(unit.description)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-        .listStyle(.plain)
+        .contextMenu(forSelectionType: String.self) { selected in
+            if let unit = selected.first {
+                unitActions(unit)
+            }
+        }
     }
 
     private var timerList: some View {

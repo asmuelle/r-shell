@@ -14,7 +14,7 @@ import OSLog
 ///   <tofu_path>
 /// ```
 /// We parse out the two fingerprints for an aligned NSAlert presentation,
-/// then on confirm call `rshellForgetHostKey` so the next connect
+/// then on confirm forget the stored key through `BridgeManager` so the next connect
 /// TOFU-trusts the new key.
 enum HostKeyPrompt {
     private static let logger = Logger(subsystem: "com.r-shell", category: "host-key")
@@ -27,7 +27,7 @@ enum HostKeyPrompt {
         case cancel
     }
 
-    /// Show the dialog and (if confirmed) call `rshellForgetHostKey`.
+    /// Show the dialog and (if confirmed) forget the stored key.
     /// Synchronous — runs an `NSAlert.runModal()` on the main thread.
     @MainActor
     static func presentMismatch(
@@ -52,15 +52,15 @@ enum HostKeyPrompt {
             return .cancel
         }
 
-        let result = rshellForgetHostKey(host: host, port: port)
-        if !result.success {
-            logger.error("Failed to forget host key: \(result.error ?? "?", privacy: .public)")
+        do {
+            try BridgeManager.shared.forgetHostKey(host: host, port: port)
+            logger.info("Forgot host-key entry for \(host, privacy: .public):\(port)")
+        } catch {
+            logger.error("Failed to forget host key: \(error.localizedDescription, privacy: .public)")
             // Even on failure we return .trust — the user said yes;
             // surfacing a second dialog about the storage write would
             // be confusing. The retry will fail again with the same
             // mismatch and we'll surface the underlying error there.
-        } else {
-            logger.info("Forgot host-key entry for \(host, privacy: .public):\(port)")
         }
         return .trust
     }

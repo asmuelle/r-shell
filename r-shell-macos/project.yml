@@ -74,8 +74,8 @@ targets:
       base:
         INFOPLIST_FILE: RShellApp/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos
-        PRODUCT_NAME: "R-Shell"
-        # Auto-derived module name would be "R_Shell" (dash → underscore).
+        PRODUCT_NAME: "midnight-ssh"
+        # Auto-derived module name would be "midnight_ssh" (dash → underscore).
         # Force a clean identifier so the test bundle's `@testable import
         # RShellApp` resolves.
         PRODUCT_MODULE_NAME: RShellApp
@@ -165,10 +165,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos.app-tests
         PRODUCT_NAME: RShellAppTests
         GENERATE_INFOPLIST_FILE: YES
-        # The app's PRODUCT_NAME is "R-Shell" (with a dash) which doesn't
+        # The app's PRODUCT_NAME is "midnight-ssh" (with a dash) which doesn't
         # match the target name, so xcodegen can't infer the right
         # TEST_HOST path. Set both explicitly.
-        TEST_HOST: $(BUILT_PRODUCTS_DIR)/R-Shell.app/Contents/MacOS/R-Shell
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/midnight-ssh.app/Contents/MacOS/midnight-ssh
         BUNDLE_LOADER: $(TEST_HOST)
         # The test bundle re-compiles the bindings transitively when it
         # @testable-imports RShellApp; needs the same module-map path.

@@ -2,8 +2,7 @@ import SwiftUI
 import OSLog
 
 /// Modal sheet for editing a remote file's permissions, owner, and group.
-/// Uses the Rust FFI (`rshellSftpChmod`, `rshellSftpChown`, `rshellSftpChgrp`)
-/// to apply changes on the remote host.
+/// Uses the typed Rust bridge facade to apply changes on the remote host.
 struct FilePermissionsEditor: View {
     let connectionId: String
     let remotePath: String
@@ -211,24 +210,28 @@ struct FilePermissionsEditor: View {
 
     private func resolveOwner() {
         guard !ownerText.isEmpty else { return }
-        Task.detached {
+        Task {
             do {
-                let name = try rshellSftpResolveUid(connectionId: connectionId, uid: ownerText)
-                await MainActor.run { resolvedOwner = name }
+                resolvedOwner = try await BridgeManager.shared.sftpResolveUid(
+                    connectionId: connectionId,
+                    uid: ownerText
+                )
             } catch {
-                await MainActor.run { resolvedOwner = "(not found)" }
+                resolvedOwner = "(not found)"
             }
         }
     }
 
     private func resolveGroup() {
         guard !groupText.isEmpty else { return }
-        Task.detached {
+        Task {
             do {
-                let name = try rshellSftpResolveGid(connectionId: connectionId, gid: groupText)
-                await MainActor.run { resolvedGroup = name }
+                resolvedGroup = try await BridgeManager.shared.sftpResolveGid(
+                    connectionId: connectionId,
+                    gid: groupText
+                )
             } catch {
-                await MainActor.run { resolvedGroup = "(not found)" }
+                resolvedGroup = "(not found)"
             }
         }
     }
@@ -242,18 +245,18 @@ struct FilePermissionsEditor: View {
         let connId = connectionId
         let path = remotePath
 
-        Task.detached {
+        Task {
             var failures: [String] = []
 
             do {
-                try rshellSftpChmod(connectionId: connId, path: path, mode: mode)
+                try await BridgeManager.shared.sftpChmod(connectionId: connId, path: path, mode: mode)
             } catch {
                 failures.append("chmod: \(error.localizedDescription)")
             }
 
             if !owner.isEmpty && owner != currentOwner {
                 do {
-                    try rshellSftpChown(connectionId: connId, path: path, uid: owner)
+                    try await BridgeManager.shared.sftpChown(connectionId: connId, path: path, uid: owner)
                 } catch {
                     failures.append("chown: \(error.localizedDescription)")
                 }
@@ -261,19 +264,17 @@ struct FilePermissionsEditor: View {
 
             if !group.isEmpty && group != currentGroup {
                 do {
-                    try rshellSftpChgrp(connectionId: connId, path: path, gid: group)
+                    try await BridgeManager.shared.sftpChgrp(connectionId: connId, path: path, gid: group)
                 } catch {
                     failures.append("chgrp: \(error.localizedDescription)")
                 }
             }
 
-            await MainActor.run {
-                applying = false
-                if failures.isEmpty {
-                    onDone()
-                } else {
-                    error = failures.joined(separator: "; ")
-                }
+            applying = false
+            if failures.isEmpty {
+                onDone()
+            } else {
+                error = failures.joined(separator: "; ")
             }
         }
     }

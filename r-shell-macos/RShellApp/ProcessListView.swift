@@ -1,7 +1,7 @@
 import OSLog
 import SwiftUI
 
-/// Polls `rshellGetProcesses` for the active connection and renders
+/// Polls processes through `BridgeManager` for the active connection and renders
 /// the result as a sortable Table. Multi-row selection enables
 /// bulk-signal flows (Send TERM / Force Kill via context menu).
 ///
@@ -239,21 +239,15 @@ struct ProcessListView: View {
     private func dispatchKill(_ target: KillTarget) async {
         guard let connectionId else { return }
         for pid in target.pids {
-            let result = await Task.detached {
-                do {
-                    try rshellSignalProcess(
-                        connectionId: connectionId,
-                        pid: pid,
-                        signal: target.signal
-                    )
-                    return Result<Void, Error>.success(())
-                } catch {
-                    return Result<Void, Error>.failure(error)
-                }
-            }.value
-            if case .failure(let err) = result {
-                logger.error("kill -\(target.signal == .term ? "TERM" : "KILL") \(pid) failed: \(err.localizedDescription, privacy: .public)")
-                error = "Failed to signal PID \(pid): \(err.localizedDescription)"
+            do {
+                try await BridgeManager.shared.signalProcess(
+                    connectionId: connectionId,
+                    pid: pid,
+                    signal: target.signal
+                )
+            } catch {
+                logger.error("kill -\(target.signal == .term ? "TERM" : "KILL") \(pid) failed: \(error.localizedDescription, privacy: .public)")
+                self.error = "Failed to signal PID \(pid): \(error.localizedDescription)"
                 return
             }
         }
@@ -279,16 +273,8 @@ struct ProcessListView: View {
     }
 
     private func fetchOnce(connectionId: String) async {
-        let result: Result<[FfiProcess], Error> = await Task.detached {
-            do {
-                return .success(try rshellGetProcesses(connectionId: connectionId))
-            } catch {
-                return .failure(error)
-            }
-        }.value
-
-        switch result {
-        case .success(let rows):
+        do {
+            let rows = try await BridgeManager.shared.getProcesses(connectionId: connectionId)
             processes = rows
             error = nil
             unsupportedOs = nil
@@ -297,7 +283,7 @@ struct ProcessListView: View {
             // menu would offer to kill PIDs that no longer exist.
             let alivePids = Set(rows.map { $0.pid })
             selection = selection.intersection(alivePids)
-        case .failure(let err as MonitorError):
+        } catch let err as MonitorError {
             switch err {
             case .Unsupported(let os):
                 unsupportedOs = os
@@ -309,8 +295,8 @@ struct ProcessListView: View {
             case .Other(let detail):
                 error = detail
             }
-        case .failure(let err):
-            error = err.localizedDescription
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 

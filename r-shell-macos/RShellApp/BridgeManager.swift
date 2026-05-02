@@ -12,15 +12,20 @@ import RShellMacOS
 /// - `openTerminal(...)`: starts a PTY and parses the generation counter.
 /// - `sendInput`, `resize`, `closeTerminal`: thin pass-throughs.
 ///
-/// All FFI calls run on `dispatchQueue` (a serial background queue) to
-/// keep the main thread responsive — the Rust side blocks on its Tokio
-/// runtime, so calling from main can stall the UI.
+/// FFI calls run off the main thread. Terminal lifecycle and input use a
+/// serial control queue for ordering; remote commands, monitor reads, and
+/// short SFTP probes use a separate utility queue so slow host commands do
+/// not delay interactive typing.
 final class BridgeManager {
     static let shared = BridgeManager()
     private let logger = Logger(subsystem: "com.r-shell", category: "bridge")
 
-    /// Serial queue for FFI calls — keeps blocking Rust calls off the main thread.
+    /// Serial control queue for terminal lifecycle and input ordering.
     let dispatchQueue: DispatchQueue
+    /// Utility FFI queue for remote commands, monitoring, and SFTP probes.
+    /// Kept separate from `dispatchQueue` so a slow command cannot delay
+    /// terminal input writes.
+    private let utilityQueue: DispatchQueue
 
     private(set) var isInitialized = false
 
@@ -36,6 +41,35 @@ final class BridgeManager {
             attributes: [],
             autoreleaseFrequency: .workItem
         )
+        self.utilityQueue = DispatchQueue(
+            label: "com.r-shell.bridge.utility",
+            qos: .utility,
+            attributes: .concurrent,
+            autoreleaseFrequency: .workItem
+        )
+    }
+
+    private func runOnControlQueue<T>(_ work: @escaping () throws -> T) async throws -> T {
+        try await run(on: dispatchQueue, work)
+    }
+
+    private func runOnUtilityQueue<T>(_ work: @escaping () throws -> T) async throws -> T {
+        try await run(on: utilityQueue, work)
+    }
+
+    private func run<T>(
+        on queue: DispatchQueue,
+        _ work: @escaping () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    continuation.resume(returning: try work())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Lifecycle
@@ -95,7 +129,7 @@ final class BridgeManager {
         keyPath: String? = nil,
         passphrase: String? = nil,
         sessionId: String? = nil
-    ) async -> Result<String, BridgeError> {
+    ) async throws -> String {
         let config = FfiConnectConfig(
             host: profile.host,
             port: profile.port,
@@ -106,22 +140,18 @@ final class BridgeManager {
             sessionId: sessionId
         )
 
-        return await withCheckedContinuation { cont in
-            dispatchQueue.async { [weak self] in
-                guard let self else { return }
-
-                do {
-                    let connectionId = try rshellConnect(config: config)
-                    self.logger.log("Connected: \(connectionId, privacy: .public)")
-                    cont.resume(returning: .success(connectionId))
-                } catch let err as ConnectError {
-                    self.logger.error("Connect failed: \(String(describing: err), privacy: .public)")
-                    cont.resume(returning: .failure(BridgeError.from(err)))
-                } catch {
-                    self.logger.error("Connect failed (unexpected): \(error.localizedDescription, privacy: .public)")
-                    cont.resume(returning: .failure(.other(error.localizedDescription)))
-                }
+        do {
+            let connectionId: String = try await runOnControlQueue {
+                try rshellConnect(config: config)
             }
+            logger.log("Connected: \(connectionId, privacy: .public)")
+            return connectionId
+        } catch let err as ConnectError {
+            logger.error("Connect failed: \(String(describing: err), privacy: .public)")
+            throw BridgeError.from(err)
+        } catch {
+            logger.error("Connect failed (unexpected): \(error.localizedDescription, privacy: .public)")
+            throw BridgeError.other(error.localizedDescription)
         }
     }
 
@@ -145,23 +175,12 @@ final class BridgeManager {
     /// that breaks here is genuinely a "this session is unusable"
     /// signal.
     func canUseSftp(connectionId: String) async -> Bool {
-        await withCheckedContinuation { cont in
-            dispatchQueue.async { [weak self] in
-                guard let self else {
-                    cont.resume(returning: false)
-                    return
-                }
-                do {
-                    _ = try rshellSftpListDir(
-                        connectionId: connectionId,
-                        path: "."
-                    )
-                    cont.resume(returning: true)
-                } catch {
-                    self.logger.info("SFTP probe failed: \(error.localizedDescription, privacy: .public)")
-                    cont.resume(returning: false)
-                }
-            }
+        do {
+            _ = try await sftpListDir(connectionId: connectionId, path: ".")
+            return true
+        } catch {
+            logger.info("SFTP probe failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
@@ -169,38 +188,156 @@ final class BridgeManager {
 
     /// Start a PTY session. Returns the `generation` counter so the caller
     /// can use it for `closeTerminal` and stale-close protection.
-    func openTerminal(connectionId: String, cols: Int = 80, rows: Int = 24) async -> UInt64? {
-        await withCheckedContinuation { cont in
-            dispatchQueue.async { [weak self] in
-                guard let self else { return }
-
-                let result = rshellPtyStart(
-                    connectionId: connectionId,
-                    cols: UInt32(cols),
-                    rows: UInt32(rows)
-                )
-                guard result.success else {
-                    self.logger.error("PTY start failed: \(result.error ?? "?", privacy: .public)")
-                    cont.resume(returning: nil)
-                    return
-                }
-
-                // Rust returns `{"generation": N}` as a JSON string in `value`.
-                guard
-                    let valueStr = result.value,
-                    let data = valueStr.data(using: .utf8),
-                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                    let gen = json["generation"] as? UInt64
-                else {
-                    self.logger.warning("Could not parse PTY generation; defaulting to 1")
-                    cont.resume(returning: 1)
-                    return
-                }
-
-                self.logger.log("PTY \(connectionId, privacy: .public) generation=\(gen)")
-                cont.resume(returning: gen)
-            }
+    func openTerminal(connectionId: String, cols: Int = 80, rows: Int = 24) async throws -> UInt64 {
+        let result: FfiResult = try await runOnControlQueue {
+            rshellPtyStart(
+                connectionId: connectionId,
+                cols: UInt32(cols),
+                rows: UInt32(rows)
+            )
         }
+        let payload = try result.requireValue(operation: "PTY start")
+        guard
+            let data = payload.data(using: .utf8),
+            let decoded = try? JSONDecoder().decode(PtyStartPayload.self, from: data)
+        else {
+            throw BridgeError.malformedResponse(
+                operation: "PTY start",
+                detail: "Rust returned an invalid PTY generation payload."
+            )
+        }
+
+        logger.log("PTY \(connectionId, privacy: .public) generation=\(decoded.generation)")
+        return decoded.generation
+    }
+
+    func executeCommand(connectionId: String, command: String) async throws -> String {
+        let result: FfiResult = try await runOnUtilityQueue {
+            rshellExecuteCommand(connectionId: connectionId, command: command)
+        }
+        return try result.requireValue(operation: "execute command")
+    }
+
+    func getSystemStats(connectionId: String) async throws -> FfiSystemStats {
+        try await runOnUtilityQueue {
+            try rshellGetSystemStats(connectionId: connectionId)
+        }
+    }
+
+    func getProcesses(connectionId: String) async throws -> [FfiProcess] {
+        try await runOnUtilityQueue {
+            try rshellGetProcesses(connectionId: connectionId)
+        }
+    }
+
+    func signalProcess(connectionId: String, pid: UInt32, signal: FfiSignal) async throws {
+        try await runOnUtilityQueue {
+            try rshellSignalProcess(connectionId: connectionId, pid: pid, signal: signal)
+        }
+    }
+
+    func sftpListDir(connectionId: String, path: String) async throws -> [FfiFileEntry] {
+        try await runOnUtilityQueue {
+            try rshellSftpListDir(connectionId: connectionId, path: path)
+        }
+    }
+
+    func sftpCreateDir(connectionId: String, path: String) async throws {
+        try await runOnUtilityQueue {
+            try rshellSftpCreateDir(connectionId: connectionId, path: path)
+        }
+    }
+
+    func sftpRename(connectionId: String, oldPath: String, newPath: String) async throws {
+        try await runOnUtilityQueue {
+            try rshellSftpRename(connectionId: connectionId, oldPath: oldPath, newPath: newPath)
+        }
+    }
+
+    func sftpDeleteFile(connectionId: String, path: String) async throws {
+        try await runOnUtilityQueue {
+            try rshellSftpDeleteFile(connectionId: connectionId, path: path)
+        }
+    }
+
+    func sftpDeleteDir(connectionId: String, path: String) async throws {
+        try await runOnUtilityQueue {
+            try rshellSftpDeleteDir(connectionId: connectionId, path: path)
+        }
+    }
+
+    func sftpDownload(
+        transferId: UUID,
+        connectionId: String,
+        remotePath: String,
+        localPath: String,
+        expectedSize: UInt64
+    ) async throws -> UInt64 {
+        try await runOnUtilityQueue {
+            try rshellSftpDownload(
+                transferId: transferId.uuidString,
+                connectionId: connectionId,
+                remotePath: remotePath,
+                localPath: localPath,
+                expectedSize: expectedSize
+            )
+        }
+    }
+
+    func sftpUpload(
+        transferId: UUID,
+        connectionId: String,
+        localPath: String,
+        remotePath: String
+    ) async throws -> UInt64 {
+        try await runOnUtilityQueue {
+            try rshellSftpUpload(
+                transferId: transferId.uuidString,
+                connectionId: connectionId,
+                localPath: localPath,
+                remotePath: remotePath
+            )
+        }
+    }
+
+    @discardableResult
+    func sftpCancel(transferId: UUID) -> Bool {
+        rshellSftpCancel(transferId: transferId.uuidString)
+    }
+
+    func sftpChmod(connectionId: String, path: String, mode: String) async throws {
+        try await runOnUtilityQueue {
+            try rshellSftpChmod(connectionId: connectionId, path: path, mode: mode)
+        }
+    }
+
+    func sftpChown(connectionId: String, path: String, uid: String) async throws {
+        try await runOnUtilityQueue {
+            try rshellSftpChown(connectionId: connectionId, path: path, uid: uid)
+        }
+    }
+
+    func sftpChgrp(connectionId: String, path: String, gid: String) async throws {
+        try await runOnUtilityQueue {
+            try rshellSftpChgrp(connectionId: connectionId, path: path, gid: gid)
+        }
+    }
+
+    func sftpResolveUid(connectionId: String, uid: String) async throws -> String {
+        try await runOnUtilityQueue {
+            try rshellSftpResolveUid(connectionId: connectionId, uid: uid)
+        }
+    }
+
+    func sftpResolveGid(connectionId: String, gid: String) async throws -> String {
+        try await runOnUtilityQueue {
+            try rshellSftpResolveGid(connectionId: connectionId, gid: gid)
+        }
+    }
+
+    func forgetHostKey(host: String, port: UInt16) throws {
+        let result = rshellForgetHostKey(host: host, port: port)
+        try result.requireSuccess(operation: "forget host key")
     }
 
     /// Send keyboard input to a running PTY.
@@ -258,6 +395,32 @@ final class BridgeManager {
     }
 }
 
+private struct PtyStartPayload: Decodable {
+    let generation: UInt64
+}
+
+private extension FfiResult {
+    func requireSuccess(operation: String) throws {
+        guard success else {
+            throw BridgeError.operationFailed(
+                operation: operation,
+                detail: error ?? "\(operation) failed without an error message."
+            )
+        }
+    }
+
+    func requireValue(operation: String) throws -> String {
+        try requireSuccess(operation: operation)
+        guard let value else {
+            throw BridgeError.malformedResponse(
+                operation: operation,
+                detail: "\(operation) succeeded without a return value."
+            )
+        }
+        return value
+    }
+}
+
 // MARK: - Errors
 
 /// Swift-side mirror of `ConnectError` plus the non-connect error cases.
@@ -272,6 +435,8 @@ enum BridgeError: Error, LocalizedError {
     case network(String)
     case ptyStart(String)
     case notInitialized
+    case operationFailed(operation: String, detail: String)
+    case malformedResponse(operation: String, detail: String)
     case other(String)
 
     var errorDescription: String? {
@@ -283,6 +448,10 @@ enum BridgeError: Error, LocalizedError {
         case .network(let msg):           return "Network error: \(msg)"
         case .ptyStart(let msg):          return "Failed to start terminal: \(msg)"
         case .notInitialized:             return "Rust bridge not initialized"
+        case .operationFailed(let operation, let detail):
+            return "\(operation) failed: \(detail)"
+        case .malformedResponse(let operation, let detail):
+            return "\(operation) returned an unexpected response: \(detail)"
         case .other(let msg):             return msg
         }
     }

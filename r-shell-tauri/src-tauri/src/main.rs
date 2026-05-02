@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    k_shell_lib::run()
+    midnight_ssh_lib::run()
 }

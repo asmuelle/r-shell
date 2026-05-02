@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
 import type { TerminalTab } from '../lib/terminal-group-types';
 import { terminalGroupReducer, createDefaultState } from '../lib/terminal-group-reducer';
+import { isFileBrowserTab, isOpenSshTerminalTab } from '../lib/terminal-group-utils';
 
 // ── Helpers ──
 
@@ -200,40 +201,42 @@ describe('SFTP/FTP tab integration unit tests', () => {
   describe('layout adaptation for file-browser tabs', () => {
     it('isFileBrowserTab is true when activeTab.tabType === "file-browser"', () => {
       const activeTab = createTab({ tabType: 'file-browser', protocol: 'SFTP' });
-      const isFileBrowserTab = activeTab.tabType === 'file-browser';
-      expect(isFileBrowserTab).toBe(true);
+      expect(isFileBrowserTab(activeTab)).toBe(true);
+    });
+
+    it('isFileBrowserTab is true for SFTP protocol even when tabType is missing', () => {
+      const activeTab = createTab({ protocol: 'SFTP' });
+      expect(isFileBrowserTab(activeTab)).toBe(true);
     });
 
     it('isFileBrowserTab is false for terminal tabs', () => {
       const activeTab = createTab({ tabType: 'terminal', protocol: 'SSH' });
-      const isFileBrowserTab = activeTab.tabType === 'file-browser';
-      expect(isFileBrowserTab).toBe(false);
+      expect(isFileBrowserTab(activeTab)).toBe(false);
     });
 
-    it('isFileBrowserTab is false for undefined tabType', () => {
+    it('isFileBrowserTab is false for undefined tabType without a file-browser protocol', () => {
       const activeTab = createTab({});
-      const isFileBrowserTab = activeTab.tabType === 'file-browser';
-      expect(isFileBrowserTab).toBe(false);
+      expect(isFileBrowserTab(activeTab)).toBe(false);
     });
 
     it('right sidebar hidden when isFileBrowserTab && rightSidebarVisible', () => {
       const rightSidebarVisible = true;
-      const isFileBrowserTab = true;
-      const showRightSidebar = rightSidebarVisible && !isFileBrowserTab;
+      const activeIsFileBrowser = true;
+      const showRightSidebar = rightSidebarVisible && !activeIsFileBrowser;
       expect(showRightSidebar).toBe(false);
     });
 
     it('right sidebar visible when terminal tab and rightSidebarVisible', () => {
       const rightSidebarVisible = true;
-      const isFileBrowserTab = false;
-      const showRightSidebar = rightSidebarVisible && !isFileBrowserTab;
+      const activeIsFileBrowser = false;
+      const showRightSidebar = rightSidebarVisible && !activeIsFileBrowser;
       expect(showRightSidebar).toBe(true);
     });
 
     it('bottom panel hidden when isFileBrowserTab', () => {
       const bottomPanelVisible = true;
-      const isFileBrowserTab = true;
-      const showBottomPanel = bottomPanelVisible && !isFileBrowserTab;
+      const activeIsFileBrowser = true;
+      const showBottomPanel = bottomPanelVisible && !activeIsFileBrowser;
       expect(showBottomPanel).toBe(false);
     });
 
@@ -241,6 +244,13 @@ describe('SFTP/FTP tab integration unit tests', () => {
       // Left sidebar visibility doesn't depend on isFileBrowserTab
       const leftSidebarVisible = true;
       expect(leftSidebarVisible).toBe(true); // Not conditioned on tab type
+    });
+
+    it('connection panels require a connected SSH terminal tab', () => {
+      expect(isOpenSshTerminalTab(createTab({ protocol: 'SSH', connectionStatus: 'connected' }))).toBe(true);
+      expect(isOpenSshTerminalTab(createTab({ protocol: 'SSH', connectionStatus: 'disconnected' }))).toBe(false);
+      expect(isOpenSshTerminalTab(createTab({ protocol: 'SFTP', tabType: 'file-browser' }))).toBe(false);
+      expect(isOpenSshTerminalTab(null)).toBe(false);
     });
   });
 
@@ -251,18 +261,18 @@ describe('SFTP/FTP tab integration unit tests', () => {
       const terminalTab = createTab({ tabType: 'terminal', protocol: 'SSH' });
 
       // File browser active
-      let isFileBrowserTab = fileBrowserTab.tabType === 'file-browser';
-      expect(isFileBrowserTab).toBe(true);
+      let activeIsFileBrowser = isFileBrowserTab(fileBrowserTab);
+      expect(activeIsFileBrowser).toBe(true);
 
       // Switch to terminal tab
-      isFileBrowserTab = terminalTab.tabType === 'file-browser';
-      expect(isFileBrowserTab).toBe(false);
+      activeIsFileBrowser = isFileBrowserTab(terminalTab);
+      expect(activeIsFileBrowser).toBe(false);
 
       // Right sidebar and bottom panel should be restorable
       const rightSidebarVisible = true;
       const bottomPanelVisible = true;
-      expect(rightSidebarVisible && !isFileBrowserTab).toBe(true);
-      expect(bottomPanelVisible && !isFileBrowserTab).toBe(true);
+      expect(rightSidebarVisible && !activeIsFileBrowser).toBe(true);
+      expect(bottomPanelVisible && !activeIsFileBrowser).toBe(true);
     });
   });
 });

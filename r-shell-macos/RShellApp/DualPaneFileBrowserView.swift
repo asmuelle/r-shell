@@ -144,9 +144,7 @@ struct DualPaneFileBrowserView: View {
         remoteRoot: String,
         localRoot: URL
     ) async throws {
-        let entries = try await Task.detached {
-            try rshellSftpListDir(connectionId: connectionId, path: remoteRoot)
-        }.value
+        let entries = try await BridgeManager.shared.sftpListDir(connectionId: connectionId, path: remoteRoot)
 
         for entry in entries {
             let remoteChild = joinRemotePath(remoteRoot, entry.name)

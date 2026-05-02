@@ -136,7 +136,7 @@ export function WelcomeScreen({ onNewConnection, onOpenSettings }: WelcomeScreen
               <Terminal className="h-8 w-8 text-primary" />
             </div>
             <div className="text-left">
-              <h1 className="text-2xl font-bold tracking-tight">R-Shell</h1>
+              <h1 className="text-2xl font-bold tracking-tight">midnight-ssh</h1>
               <p className="text-muted-foreground text-sm">
                 Modern SSH / SFTP / FTP client built with Tauri
               </p>
@@ -254,7 +254,7 @@ export function WelcomeScreen({ onNewConnection, onOpenSettings }: WelcomeScreen
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-primary mt-0.5">5.</span>
-                    <span>Your sessions are saved automatically — R-Shell will restore them next time you launch</span>
+                    <span>Your sessions are saved automatically — midnight-ssh will restore them next time you launch</span>
                   </li>
                 </ul>
               </div>

@@ -104,18 +104,7 @@ struct MainPanel: View {
             )
         } else {
             VSplitView {
-                TerminalView(
-                    connectionId: tab.connectionId,
-                    ptyGeneration: tab.ptyGeneration,
-                    themeOverride: tab.themeOverride,
-                    isActive: isActive,
-                    terminalTitle: .constant(tab.title),
-                    searchVisible: .constant(false),
-                    onSearchQueryChanged: nil,
-                    onSearchNext: nil,
-                    onSearchPrevious: nil
-                )
-                .frame(minHeight: 200, idealHeight: 380)
+                TerminalPane(tab: tab, isActive: isActive)
 
                 FileBrowserView(
                     connectionId: tab.connectionId,
@@ -137,6 +126,90 @@ struct MainPanel: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct TerminalPane: View {
+    @EnvironmentObject private var tabsStore: TerminalTabsStore
+    @AppStorage("terminalTheme") private var globalTerminalTheme = "system"
+
+    let tab: TerminalTab
+    let isActive: Bool
+
+    private var activeTheme: TerminalTheme {
+        TerminalTheme.resolve(tab.themeOverride ?? globalTerminalTheme)
+    }
+
+    private var globalTheme: TerminalTheme {
+        TerminalTheme.resolve(globalTerminalTheme)
+    }
+
+    var body: some View {
+        TerminalView(
+            connectionId: tab.connectionId,
+            ptyGeneration: tab.ptyGeneration,
+            themeOverride: tab.themeOverride,
+            isActive: isActive,
+            terminalTitle: .constant(tab.title),
+            searchVisible: .constant(false),
+            onSearchQueryChanged: nil,
+            onSearchNext: nil,
+            onSearchPrevious: nil
+        )
+        .padding(5)
+        .frame(minHeight: 200, idealHeight: 380)
+        .background(Color(activeTheme.background))
+        .overlay(alignment: .topTrailing) {
+            TerminalThemeSelector(
+                currentThemeOverride: tab.themeOverride,
+                globalTheme: globalTheme,
+                activeTheme: activeTheme
+            ) { themeId in
+                tabsStore.setTheme(themeId, forTabId: tab.id)
+            }
+            .padding(.top, 8)
+            .padding(.trailing, 8)
+        }
+    }
+}
+
+private struct TerminalThemeSelector: View {
+    let currentThemeOverride: String?
+    let globalTheme: TerminalTheme
+    let activeTheme: TerminalTheme
+    let onSetTheme: (String?) -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                onSetTheme(nil)
+            } label: {
+                Label(
+                    "Use global (\(globalTheme.label))",
+                    systemImage: currentThemeOverride == nil ? "checkmark" : ""
+                )
+            }
+            Divider()
+            ForEach(TerminalTheme.all) { theme in
+                Button {
+                    onSetTheme(theme.id)
+                } label: {
+                    Label(
+                        theme.label,
+                        systemImage: currentThemeOverride == theme.id ? "checkmark" : ""
+                    )
+                }
+            }
+        } label: {
+            Image(systemName: "paintpalette")
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .foregroundStyle(Color(activeTheme.foreground).opacity(0.85))
+        .background(Color(activeTheme.background).opacity(0.9), in: RoundedRectangle(cornerRadius: 6))
+        .help("Terminal theme")
     }
 }
 
@@ -223,73 +296,77 @@ struct BottomPanel: View {
     @State private var selectedSegment = 0
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $selectedSegment) {
-                Text("Output").tag(0)
-                Text("Logs").tag(1)
-                Text("Problems").tag(2)
-                // Badge the segment with active count when a transfer is
-                // in flight — gives a glanceable signal even when the
-                // user is on a different segment.
-                let active = transfers.transfers.filter {
-                    $0.status == .inProgress || $0.status == .queued
-                }.count
-                if active > 0 {
-                    Text("Transfers (\(active))").tag(3)
-                } else {
-                    Text("Transfers").tag(3)
+        if let activeTab = tabsStore.activeOpenSSHTab {
+            VStack(spacing: 0) {
+                Picker("", selection: $selectedSegment) {
+                    Text("Output").tag(0)
+                    Text("Logs").tag(1)
+                    Text("Problems").tag(2)
+                    // Badge the segment with active count when a transfer is
+                    // in flight — gives a glanceable signal even when the
+                    // user is on a different segment.
+                    let active = transfers.transfers.filter {
+                        $0.status == .inProgress || $0.status == .queued
+                    }.count
+                    if active > 0 {
+                        Text("Transfers (\(active))").tag(3)
+                    } else {
+                        Text("Transfers").tag(3)
+                    }
+                    Text("Processes").tag(4)
+                    Text("systemd").tag(5)
+                    Text("Docker").tag(6)
+                    Text("PostgreSQL").tag(7)
+                    Text("UFW").tag(8)
                 }
-                Text("Processes").tag(4)
-                Text("systemd").tag(5)
-                Text("Docker").tag(6)
-                Text("PostgreSQL").tag(7)
-                Text("UFW").tag(8)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
 
-            Divider()
+                Divider()
 
-            Group {
-                switch selectedSegment {
-                case 0: emptyState("No output yet", systemImage: "terminal")
-                case 1: emptyState("No logs", systemImage: "doc.text")
-                case 2: emptyState("No problems detected", systemImage: "checkmark.seal")
-                case 3: TransferQueueView(store: transfers)
-                case 4:
-                    ProcessListView(
-                        connectionId: tabsStore.activeTab?.connectionId,
-                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
-                    )
-                case 5:
-                    SystemdMonitorView(
-                        connectionId: tabsStore.activeTab?.connectionId,
-                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
-                    )
-                case 6:
-                    DockerMonitorView(
-                        connectionId: tabsStore.activeTab?.connectionId,
-                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
-                    )
-                case 7:
-                    PostgresMonitorView(
-                        connectionId: tabsStore.activeTab?.connectionId,
-                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection"
-                    )
-                case 8:
-                    UFWMonitorView(
-                        connectionId: tabsStore.activeTab?.connectionId,
-                        connectionLabel: tabsStore.activeTab?.profile.name ?? "No connection",
-                        sshPort: tabsStore.activeTab?.profile.port
-                    )
-                default: EmptyView()
+                Group {
+                    switch selectedSegment {
+                    case 0: emptyState("No output yet", systemImage: "terminal")
+                    case 1: emptyState("No logs", systemImage: "doc.text")
+                    case 2: emptyState("No problems detected", systemImage: "checkmark.seal")
+                    case 3: TransferQueueView(store: transfers)
+                    case 4:
+                        ProcessListView(
+                            connectionId: activeTab.connectionId,
+                            connectionLabel: activeTab.profile.name
+                        )
+                    case 5:
+                        SystemdMonitorView(
+                            connectionId: activeTab.connectionId,
+                            connectionLabel: activeTab.profile.name
+                        )
+                    case 6:
+                        DockerMonitorView(
+                            connectionId: activeTab.connectionId,
+                            connectionLabel: activeTab.profile.name
+                        )
+                    case 7:
+                        PostgresMonitorView(
+                            connectionId: activeTab.connectionId,
+                            connectionLabel: activeTab.profile.name
+                        )
+                    case 8:
+                        UFWMonitorView(
+                            connectionId: activeTab.connectionId,
+                            connectionLabel: activeTab.profile.name,
+                            sshPort: activeTab.profile.port
+                        )
+                    default: EmptyView()
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minHeight: LayoutConstants.minBottomHeight)
+        } else {
+            EmptyView()
         }
-        .frame(minHeight: LayoutConstants.minBottomHeight)
     }
 
     private func emptyState(_ message: String, systemImage: String) -> some View {
@@ -457,6 +534,7 @@ struct InspectorPanel: View {
                     SystemMonitorView(
                         connectionId: tab.connectionId,
                         connectionLabel: tab.profile.name,
+                        sshPort: tab.profile.port,
                         isActive: isActive
                     )
                     .opacity(isActive ? 1 : 0)

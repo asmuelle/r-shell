@@ -4,7 +4,7 @@ import OSLog
 
 /// Single-pane remote file browser.
 ///
-/// Calls `rshellSftpListDir` over the FFI for the active connection.
+/// Calls typed bridge SFTP APIs for the active connection.
 /// Path navigation is breadcrumb-style: clicking a directory drills in,
 /// clicking an ancestor crumb walks back up. Right-click → Download
 /// pushes a Transfer onto `TransferQueueStore`; the toolbar Upload
@@ -69,12 +69,25 @@ struct FileBrowserView: View {
 
     /// Sheet state for the permissions/owner/group editor.
     @State private var permissionsEditorTarget: PermissionsEditorTarget?
+    /// Remote text file currently open in the built-in modal editor.
+    @State private var editorTarget: EditorTarget?
+    /// Remote path currently being fetched for the editor. Used to
+    /// suppress duplicate opens and show a small row spinner.
+    @State private var editorLoadingPath: String?
 
     private struct PermissionsEditorTarget: Identifiable {
         let entry: FfiFileEntry
         let connectionId: String
         let remotePath: String
         var id: String { entry.name + remotePath }
+    }
+
+    private struct EditorTarget: Identifiable {
+        let id = UUID()
+        let connectionId: String
+        let remotePath: String
+        let fileName: String
+        let content: String
     }
 
     private struct InputSheet: Identifiable {
@@ -132,6 +145,15 @@ struct FileBrowserView: View {
                 }
             )
             .frame(minWidth: 360, minHeight: 440)
+        }
+        .sheet(item: $editorTarget) { target in
+            FileEditView(
+                connectionId: target.connectionId,
+                path: target.remotePath,
+                content: target.content
+            ) { updatedContent in
+                try await saveEditedRemoteFile(updatedContent, target: target)
+            }
         }
     }
 
@@ -264,8 +286,9 @@ struct FileBrowserView: View {
 
     /// SwiftUI `Table` with native column headers, click-to-sort, and
     /// single-row selection. Each row's id is its file name (unique per
-    /// directory). Double-click on a directory drills in; row drags
-    /// are handled from the name cell.
+    /// directory). Double-click activates a row: directories drill in,
+    /// editable text files open the modal editor. Row drags are handled
+    /// from the name cell.
     private var fileTable: some View {
         Table(sortedRows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { row in
@@ -424,6 +447,9 @@ struct FileBrowserView: View {
             // Single selection: show the existing file/dir actions.
             if let id = selectedIds.first, let entry = entries.first(where: { $0.name == id }) {
                 if entry.kind == .file {
+                    if isInlineEditableFile(entry) {
+                        Button("Open in Editor") { openEditor(for: entry) }
+                    }
                     Button("Download…") { presentDownloadPicker(for: entry) }
                     Divider()
                 }
@@ -485,6 +511,9 @@ struct FileBrowserView: View {
         let cell = content()
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                activate(row.entry)
+            }
 
         if row.entry.kind == .directory {
             cell
@@ -514,13 +543,13 @@ struct FileBrowserView: View {
                 .frame(width: 16)
             Text(row.entry.name)
                 .lineLimit(1)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            if row.entry.kind == .directory {
-                navigate(into: row.entry.name)
+            if editorLoadingPath == absolutePath(joining: row.entry.name) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.65)
             }
         }
+        .contentShape(Rectangle())
 
         content
             .dragProviderIfPresent(remoteDragPayload(for: row)?.itemProvider)
@@ -545,6 +574,15 @@ struct FileBrowserView: View {
     }
 
     // MARK: - Navigation
+
+    private func activate(_ entry: FfiFileEntry) {
+        selection = entry.name
+        if entry.kind == .directory {
+            navigate(into: entry.name)
+        } else if isInlineEditableFile(entry) {
+            openEditor(for: entry)
+        }
+    }
 
     private func navigate(into name: String) {
         let next: String
@@ -671,9 +709,9 @@ struct FileBrowserView: View {
     }
 
     /// Mirror a local directory tree onto the remote: mkdir each
-    /// subdirectory in BFS order, then enqueue every file. mkdir is
-    /// synchronous (one round trip per dir, fast); file uploads go
-    /// through `TransferQueueStore` for progress / cancel UX.
+    /// subdirectory in BFS order, then enqueue every file. Directory
+    /// creation is awaited one path at a time; file uploads go through
+    /// `TransferQueueStore` for progress / cancel UX.
     ///
     /// Errors mid-walk surface inline at the top of the listing —
     /// failed mkdirs stop their subtree, but other branches keep
@@ -696,7 +734,7 @@ struct FileBrowserView: View {
 
         // Make the root directory first.
         do {
-            try rshellSftpCreateDir(connectionId: connectionId, path: remoteRoot)
+            try await BridgeManager.shared.sftpCreateDir(connectionId: connectionId, path: remoteRoot)
         } catch let err as SftpError {
             // mkdir often fails with "already exists" — accept that
             // silently and proceed. Real errors (permission, no parent)
@@ -712,11 +750,16 @@ struct FileBrowserView: View {
             await MainActor.run { self.error = "Could not create \(remoteRoot): \(error.localizedDescription)" }
         }
 
+        var discoveredURLs: [URL] = []
+        while let url = enumerator.nextObject() as? URL {
+            discoveredURLs.append(url)
+        }
+
         // Walk every entry. The enumerator yields files and directories
         // in some traversal order; we mkdir directories synchronously
         // (so a child file enqueue can rely on its parent existing) and
         // enqueue files via the transfer queue.
-        for case let url as URL in enumerator {
+        for url in discoveredURLs {
             guard let resolved = try? url.resourceValues(forKeys: [.isDirectoryKey]) else {
                 continue
             }
@@ -731,7 +774,7 @@ struct FileBrowserView: View {
 
             if resolved.isDirectory == true {
                 // Best-effort mkdir; ignore "already exists".
-                _ = try? rshellSftpCreateDir(connectionId: connectionId, path: remoteChild)
+                try? await BridgeManager.shared.sftpCreateDir(connectionId: connectionId, path: remoteChild)
             } else {
                 await MainActor.run {
                     transfers.enqueueUpload(
@@ -778,6 +821,118 @@ struct FileBrowserView: View {
         return path.hasSuffix("/") ? path + name : path + "/" + name
     }
 
+    // MARK: - Inline editor
+
+    private func isInlineEditableFile(_ entry: FfiFileEntry) -> Bool {
+        guard entry.kind == .file else { return false }
+        switch (entry.name as NSString).pathExtension.lowercased() {
+        case "yaml", "yml", "txt", "sh":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func openEditor(for entry: FfiFileEntry) {
+        guard let connectionId, isInlineEditableFile(entry) else { return }
+        let remotePath = absolutePath(joining: entry.name)
+        guard editorLoadingPath != remotePath else { return }
+
+        selection = entry.name
+        editorLoadingPath = remotePath
+        error = nil
+
+        Task {
+            do {
+                let content = try await loadRemoteTextFile(
+                    connectionId: connectionId,
+                    remotePath: remotePath,
+                    expectedSize: entry.size
+                )
+                await MainActor.run {
+                    editorLoadingPath = nil
+                    editorTarget = EditorTarget(
+                        connectionId: connectionId,
+                        remotePath: remotePath,
+                        fileName: entry.name,
+                        content: content
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    editorLoadingPath = nil
+                    self.error = "Could not open \(entry.name): \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func loadRemoteTextFile(
+        connectionId: String,
+        remotePath: String,
+        expectedSize: UInt64
+    ) async throws -> String {
+        let tempURL = temporaryEditorURL(for: remotePath)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        _ = try await BridgeManager.shared.sftpDownload(
+            transferId: UUID(),
+            connectionId: connectionId,
+            remotePath: remotePath,
+            localPath: tempURL.path,
+            expectedSize: expectedSize
+        )
+
+        let data = try Data(contentsOf: tempURL)
+        if let content = String(data: data, encoding: .utf8) {
+            return content
+        }
+        if let content = String(data: data, encoding: .ascii) {
+            return content
+        }
+        throw CocoaError(.fileReadInapplicableStringEncoding)
+    }
+
+    private func saveEditedRemoteFile(
+        _ content: String,
+        target: EditorTarget
+    ) async throws {
+        let tempURL = temporaryEditorURL(for: target.remotePath)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        guard let data = content.data(using: .utf8) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        try data.write(to: tempURL, options: .atomic)
+
+        _ = try await BridgeManager.shared.sftpUpload(
+            transferId: UUID(),
+            connectionId: target.connectionId,
+            localPath: tempURL.path,
+            remotePath: target.remotePath
+        )
+
+        await MainActor.run {
+            editorTarget = nil
+            refresh()
+        }
+    }
+
+    private func temporaryEditorURL(for remotePath: String) -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("midnight-ssh-editor", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+
+        let pathExtension = (remotePath as NSString).pathExtension
+        let fileName = pathExtension.isEmpty
+            ? UUID().uuidString
+            : "\(UUID().uuidString).\(pathExtension)"
+        return directory.appendingPathComponent(fileName)
+    }
+
     // MARK: - mkdir / rename / delete
 
     private func presentNewFolderPrompt() {
@@ -792,7 +947,7 @@ struct FileBrowserView: View {
             guard !trimmed.isEmpty, !trimmed.contains("/") else { return }
             let target = absolutePath(joining: trimmed)
             performSftp(action: "create folder") {
-                try rshellSftpCreateDir(connectionId: connectionId, path: target)
+                try await BridgeManager.shared.sftpCreateDir(connectionId: connectionId, path: target)
             }
         }
     }
@@ -810,7 +965,7 @@ struct FileBrowserView: View {
             let oldPath = absolutePath(joining: entry.name)
             let newPath = absolutePath(joining: trimmed)
             performSftp(action: "rename") {
-                try rshellSftpRename(
+                try await BridgeManager.shared.sftpRename(
                     connectionId: connectionId,
                     oldPath: oldPath,
                     newPath: newPath
@@ -836,9 +991,9 @@ struct FileBrowserView: View {
         performSftp(action: "delete") {
             switch entry.kind {
             case .directory:
-                try Self.deleteRecursive(connectionId: connectionId, path: target)
+                try await Self.deleteRecursive(connectionId: connectionId, path: target)
             case .file, .symlink:
-                try rshellSftpDeleteFile(connectionId: connectionId, path: target)
+                try await BridgeManager.shared.sftpDeleteFile(connectionId: connectionId, path: target)
             }
         }
     }
@@ -896,84 +1051,75 @@ struct FileBrowserView: View {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let toDelete = entries.filter { ids.contains($0.name) }
-        Task.detached {
+        Task {
             var failures: [String] = []
             for entry in toDelete {
-                let target = await MainActor.run {
-                    self.absolutePath(joining: entry.name)
-                }
+                let target = self.absolutePath(joining: entry.name)
                 do {
                     switch entry.kind {
                     case .directory:
-                        try Self.deleteRecursive(connectionId: connectionId, path: target)
+                        try await Self.deleteRecursive(connectionId: connectionId, path: target)
                     case .file, .symlink:
-                        try rshellSftpDeleteFile(connectionId: connectionId, path: target)
+                        try await BridgeManager.shared.sftpDeleteFile(connectionId: connectionId, path: target)
                     }
                 } catch {
                     failures.append("\(entry.name): \(error.localizedDescription)")
                 }
             }
-            await MainActor.run {
-                self.selection = nil
-                if !failures.isEmpty {
-                    self.error = "Could not delete \(failures.count) item\(failures.count == 1 ? "" : "s"): "
-                        + failures.prefix(3).joined(separator: "; ")
-                }
-                self.refresh()
+            self.selection = nil
+            if !failures.isEmpty {
+                self.error = "Could not delete \(failures.count) item\(failures.count == 1 ? "" : "s"): "
+                    + failures.prefix(3).joined(separator: "; ")
             }
+            self.refresh()
         }
     }
 
     /// Recursive delete: walk the directory contents, delete each
     /// child (subdirectories first via recursion), then delete the
-    /// now-empty directory itself. Synchronous — runs on the
-    /// background `Task.detached` that `performSftp` already uses.
+    /// now-empty directory itself.
     ///
     /// Each step is its own SFTP round-trip, so a deep tree is N+1
     /// requests where N is the descendant count. Acceptable for a
     /// single user-initiated delete; bulk operations would benefit
     /// from a server-side `rm -rf` over the SSH channel, but that's
     /// a larger UX shift (we'd lose the per-step error handling).
-    private static func deleteRecursive(connectionId: String, path: String) throws {
-        let entries = try rshellSftpListDir(connectionId: connectionId, path: path)
+    private static func deleteRecursive(connectionId: String, path: String) async throws {
+        let entries = try await BridgeManager.shared.sftpListDir(connectionId: connectionId, path: path)
         for entry in entries {
             let childPath = path.hasSuffix("/") ? path + entry.name : path + "/" + entry.name
             switch entry.kind {
             case .directory:
-                try deleteRecursive(connectionId: connectionId, path: childPath)
+                try await deleteRecursive(connectionId: connectionId, path: childPath)
             case .file, .symlink:
-                try rshellSftpDeleteFile(connectionId: connectionId, path: childPath)
+                try await BridgeManager.shared.sftpDeleteFile(connectionId: connectionId, path: childPath)
             }
         }
-        try rshellSftpDeleteDir(connectionId: connectionId, path: path)
+        try await BridgeManager.shared.sftpDeleteDir(connectionId: connectionId, path: path)
     }
 
-    /// Run an SFTP mutation off the main actor, refresh on success,
+    /// Run an SFTP mutation through the bridge, refresh on success,
     /// surface failures inline (rather than as a modal — every alert
     /// for a failed delete in a loop would be hostile).
-    private func performSftp(action: String, _ work: @escaping () throws -> Void) {
-        Task.detached {
+    private func performSftp(action: String, _ work: @escaping () async throws -> Void) {
+        Task {
             do {
-                try work()
-                await MainActor.run { self.refresh() }
+                try await work()
+                self.refresh()
             } catch let err as SftpError {
-                await MainActor.run {
-                    switch err {
-                    case .NotConnected:
-                        self.error = "Not connected to this host."
-                    case .Cancelled:
-                        // Mutations don't go through cancellation paths
-                        // (they're one-shot SFTP commands), but the
-                        // exhaustive switch needs the case.
-                        self.error = "\(action.capitalized) cancelled."
-                    case .Other(let detail):
-                        self.error = "Could not \(action): \(detail)"
-                    }
+                switch err {
+                case .NotConnected:
+                    self.error = "Not connected to this host."
+                case .Cancelled:
+                    // Mutations don't go through cancellation paths
+                    // (they're one-shot SFTP commands), but the
+                    // exhaustive switch needs the case.
+                    self.error = "\(action.capitalized) cancelled."
+                case .Other(let detail):
+                    self.error = "Could not \(action): \(detail)"
                 }
             } catch {
-                await MainActor.run {
-                    self.error = "Could not \(action): \(error.localizedDescription)"
-                }
+                self.error = "Could not \(action): \(error.localizedDescription)"
             }
         }
     }
@@ -1002,9 +1148,9 @@ struct FileBrowserView: View {
         error = nil
 
         let pathToList = path
-        Task.detached {
+        Task {
             do {
-                let result = try rshellSftpListDir(
+                let result = try await BridgeManager.shared.sftpListDir(
                     connectionId: connectionId,
                     path: pathToList
                 )

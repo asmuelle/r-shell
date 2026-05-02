@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, Terminal, HardDrive, ArrowDownUp, Gauge, X, ArrowDown, Cpu } from 'lucide-react';
+import { Activity, Terminal, HardDrive, ArrowDownUp, Gauge, X, ArrowDown, Cpu, ServerCog, Shield, ArrowUp } from 'lucide-react';
 import { Card, CardContent } from './ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Progress } from './ui/progress';
@@ -19,6 +19,12 @@ import {
   AlertDialogTitle,
 } from './ui/alert-dialog';
 import { toast } from 'sonner';
+import {
+  sortSystemdServices,
+  type SystemdService,
+  type SystemdServiceSort,
+  type SystemdServiceSortKey,
+} from '../lib/system-monitor-utils';
 
 interface SystemStats {
   cpu: number;
@@ -77,6 +83,24 @@ interface InterfaceBandwidth {
   interface: string;
   rx_bytes_per_sec: number;
   tx_bytes_per_sec: number;
+}
+
+interface SystemdServicesResponse {
+  success: boolean;
+  systemd_available: boolean;
+  services: SystemdService[];
+  error?: string;
+}
+
+interface UfwStatus {
+  success: boolean;
+  available: boolean;
+  enabled: boolean;
+  has_extra_open_ports: boolean;
+  extra_open_rules: string[];
+  status: string;
+  status_text: string;
+  error?: string;
 }
 
 // GPU Types
@@ -151,6 +175,74 @@ const getProgressColor = (usage: number): string => {
   return '[&>div]:bg-green-500';
 };
 
+const getServiceStatusColor = (status: string): string => {
+  const normalized = status.toLowerCase();
+  if (normalized === 'active') return 'text-green-500 border-green-500/40 bg-green-500/10';
+  if (normalized === 'failed') return 'text-red-500 border-red-500/40 bg-red-500/10';
+  if (normalized === 'activating' || normalized === 'reloading') {
+    return 'text-blue-500 border-blue-500/40 bg-blue-500/10';
+  }
+  if (normalized === 'inactive') return 'text-muted-foreground border-border bg-muted/40';
+  return 'text-yellow-500 border-yellow-500/40 bg-yellow-500/10';
+};
+
+const getUfwIndicator = (status: UfwStatus | null) => {
+  if (!status) {
+    return {
+      label: 'UFW ...',
+      title: 'Loading UFW status',
+      dotClassName: 'bg-muted-foreground',
+      className: 'text-muted-foreground border-border',
+    };
+  }
+
+  if (!status.available) {
+    return {
+      label: 'UFW n/a',
+      title: status.status_text,
+      dotClassName: 'bg-muted-foreground',
+      className: 'text-muted-foreground border-border',
+    };
+  }
+
+  if (status.status === 'active' && !status.has_extra_open_ports) {
+    return {
+      label: 'UFW on',
+      title: status.status_text,
+      dotClassName: 'bg-green-500',
+      className: 'text-green-600 border-green-500/40 bg-green-500/10',
+    };
+  }
+
+  if (status.status === 'active') {
+    const extraRules = status.extra_open_rules.join(', ');
+    return {
+      label: 'UFW open',
+      title: extraRules
+        ? `${status.status_text}. Extra open rules: ${extraRules}`
+        : status.status_text,
+      dotClassName: 'bg-orange-500',
+      className: 'text-orange-600 border-orange-500/40 bg-orange-500/10',
+    };
+  }
+
+  if (status.status === 'inactive') {
+    return {
+      label: 'UFW off',
+      title: status.status_text,
+      dotClassName: 'bg-orange-500',
+      className: 'text-orange-600 border-orange-500/40 bg-orange-500/10',
+    };
+  }
+
+  return {
+    label: 'UFW ?',
+    title: status.error || status.status_text,
+    dotClassName: 'bg-yellow-500',
+    className: 'text-yellow-600 border-yellow-500/40 bg-yellow-500/10',
+  };
+};
+
 export function SystemMonitor({ connectionId }: SystemMonitorProps) {
   const [stats, setStats] = useState<SystemStats>({
     cpu: 0,
@@ -162,6 +254,13 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
   const [processToKill, setProcessToKill] = useState<Process | null>(null);
   const [processSortBy, setProcessSortBy] = useState<'cpu' | 'mem'>('cpu');
   const [disks, setDisks] = useState<DiskUsage[]>([]);
+  const [services, setServices] = useState<SystemdService[]>([]);
+  const [systemdAvailable, setSystemdAvailable] = useState<boolean | null>(null);
+  const [serviceSort, setServiceSort] = useState<SystemdServiceSort>({
+    key: 'name',
+    direction: 'asc',
+  });
+  const [ufwStatus, setUfwStatus] = useState<UfwStatus | null>(null);
 
   // GPU State
   const [gpuDetection, setGpuDetection] = useState<GpuDetectionResult | null>(null);
@@ -172,6 +271,30 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
 
   // GPU colors for multi-GPU chart
   const GPU_COLORS = ['#8b5cf6', '#06b6d4', '#f97316', '#22c55e', '#ec4899', '#eab308'];
+
+  const sortedServices = useMemo(
+    () => sortSystemdServices(services, serviceSort),
+    [services, serviceSort],
+  );
+
+  const ufwIndicator = getUfwIndicator(ufwStatus);
+
+  const toggleServiceSort = (key: SystemdServiceSortKey) => {
+    setServiceSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const renderServiceSortIcon = (key: SystemdServiceSortKey) => {
+    if (serviceSort.key !== key) {
+      return <ArrowDownUp className="w-2.5 h-2.5 opacity-50" />;
+    }
+
+    return serviceSort.direction === 'asc'
+      ? <ArrowUp className="w-2.5 h-2.5" />
+      : <ArrowDown className="w-2.5 h-2.5" />;
+  };
 
   // Fetch system stats from backend
   const fetchSystemStats = async () => {
@@ -370,6 +493,68 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
       }
     }, 60000);
     
+    return () => clearInterval(interval);
+  }, [connectionId]);
+
+  // Fetch service and firewall status at a lower cadence than live metrics.
+  useEffect(() => {
+    if (!connectionId) {
+      setServices([]);
+      setSystemdAvailable(null);
+      setUfwStatus(null);
+      return;
+    }
+
+    const fetchSystemdServices = async () => {
+      try {
+        const result = await invoke<SystemdServicesResponse>('get_systemd_services', { connectionId });
+        if (result.success) {
+          setServices(result.services);
+          setSystemdAvailable(result.systemd_available);
+        } else {
+          setServices([]);
+          setSystemdAvailable(false);
+        }
+      } catch (error) {
+        console.error('Failed to fetch systemd services:', error);
+        setServices([]);
+        setSystemdAvailable(false);
+      }
+    };
+
+    const fetchUfwStatus = async () => {
+      try {
+        const result = await invoke<UfwStatus>('get_ufw_status', { connectionId });
+        setUfwStatus(result);
+      } catch (error) {
+        console.error('Failed to fetch UFW status:', error);
+        setUfwStatus({
+          success: false,
+          available: true,
+          enabled: false,
+          has_extra_open_ports: false,
+          extra_open_rules: [],
+          status: 'unknown',
+          status_text: 'Unable to read UFW status',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    const fetchServicePanelData = async () => {
+      await Promise.all([fetchSystemdServices(), fetchUfwStatus()]);
+    };
+
+    void fetchServicePanelData();
+
+    const interval = setInterval(() => {
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(() => { void fetchServicePanelData(); });
+      } else {
+        void fetchServicePanelData();
+      }
+    }, 30000);
+
     return () => clearInterval(interval);
   }, [connectionId]);
 
@@ -669,9 +854,22 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
       <div className="space-y-2.5">
         {/* System Overview */}
         <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <Activity className="w-3 h-3 shrink-0" />
-            <h3 className="text-xs font-medium truncate">System Overview</h3>
+          <div className="flex items-center justify-between gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Activity className="w-3 h-3 shrink-0" />
+              <h3 className="text-xs font-medium truncate">System Overview</h3>
+            </div>
+            {connectionId && (
+              <Badge
+                variant="outline"
+                className={`h-5 gap-1 px-1.5 py-0 text-[9px] shrink-0 ${ufwIndicator.className}`}
+                title={ufwIndicator.title}
+              >
+                <Shield className="w-2.5 h-2.5" />
+                <span className={`h-1.5 w-1.5 rounded-full ${ufwIndicator.dotClassName}`} />
+                {ufwIndicator.label}
+              </Badge>
+            )}
           </div>
           <Card>
             <CardContent className="p-2 space-y-1.5">
@@ -715,6 +913,86 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
                       {stats.swapUsed}MB / {stats.swapTotal}MB
                     </div>
                   )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Systemd Services */}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <ServerCog className="w-3 h-3 shrink-0" />
+            <h3 className="text-xs font-medium truncate">Systemd Services</h3>
+          </div>
+          <Card>
+            <CardContent className="p-0">
+              {systemdAvailable === null ? (
+                <div className="p-2 text-[10px] text-muted-foreground">
+                  Loading service information...
+                </div>
+              ) : systemdAvailable === false ? (
+                <div className="p-2 text-[10px] text-muted-foreground">
+                  systemd is not available on this host
+                </div>
+              ) : sortedServices.length === 0 ? (
+                <div className="p-2 text-[10px] text-muted-foreground">
+                  No service information available
+                </div>
+              ) : (
+                <div className="rounded-md border h-40 overflow-auto">
+                  <table className="w-full caption-bottom text-sm table-fixed">
+                    <thead className="[&_tr]:border-b">
+                      <tr className="border-b transition-colors">
+                        <th
+                          className="sticky top-0 z-10 bg-background text-foreground h-7 px-1 text-left align-middle font-medium text-xs cursor-pointer hover:bg-muted/50 select-none"
+                          onClick={() => toggleServiceSort('name')}
+                        >
+                          <div className="flex items-center gap-0.5">
+                            Service
+                            {renderServiceSortIcon('name')}
+                          </div>
+                        </th>
+                        <th
+                          className="sticky top-0 z-10 bg-background text-foreground h-7 px-1 text-left align-middle font-medium text-xs cursor-pointer hover:bg-muted/50 select-none w-[78px]"
+                          onClick={() => toggleServiceSort('status')}
+                        >
+                          <div className="flex items-center gap-0.5">
+                            Status
+                            {renderServiceSortIcon('status')}
+                          </div>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="[&_tr:last-child]:border-0">
+                      {sortedServices.map((service) => (
+                        <tr key={service.name} className="hover:bg-muted/50 border-b transition-colors">
+                          <td className="p-1 align-middle min-w-0">
+                            <div className="text-[10px] font-mono font-medium truncate" title={service.name}>
+                              {service.name}
+                            </div>
+                            {service.description && (
+                              <div className="text-[9px] text-muted-foreground truncate" title={service.description}>
+                                {service.description}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-1 align-middle">
+                            <Badge
+                              variant="outline"
+                              className={`h-4 px-1 py-0 text-[8px] ${getServiceStatusColor(service.active)}`}
+                              title={`${service.active} / ${service.sub}`}
+                            >
+                              {service.active}
+                            </Badge>
+                            <div className="text-[8px] text-muted-foreground truncate mt-0.5" title={service.sub}>
+                              {service.sub}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </CardContent>

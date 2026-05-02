@@ -21,6 +21,7 @@ import { useLayout, LayoutProvider } from './lib/layout-context';
 import { useKeyboardShortcuts, createLayoutShortcuts, createSplitViewShortcuts } from './lib/keyboard-shortcuts';
 import { TerminalGroupProvider, useTerminalGroups } from './lib/terminal-group-context';
 import { TerminalCallbacksProvider } from './lib/terminal-callbacks-context';
+import { isFileBrowserTab, isOpenSshTerminalTab } from './lib/terminal-group-utils';
 import { GridRenderer } from './components/terminal/grid-renderer';
 import type { TerminalTab } from './lib/terminal-group-types';
 import { Toaster } from './components/ui/sonner';
@@ -652,8 +653,8 @@ function AppContent() {
     for (const group of Object.values(state.groups)) {
       const tab = group.tabs.find(t => t.id === tabId);
       if (tab) {
-        // Disconnect SFTP/FTP sessions when closing file-browser tabs
-        if (tab.tabType === 'file-browser') {
+        // Disconnect SFTP/FTP sessions when closing file-browser tabs.
+        if (isFileBrowserTab(tab)) {
           try {
             if (tab.protocol === 'SFTP') {
               await invoke('sftp_standalone_disconnect', { connection_id: tabId });
@@ -1472,13 +1473,14 @@ function AppContent() {
   const hasAnyTabs = allTabs.length > 0;
   // Check if the grid has only one empty group (show welcome screen)
   const showWelcomeInMainArea = !hasAnyTabs && Object.keys(state.groups).length <= 1;
-  // File-browser tabs don't need right sidebar (system monitor) or bottom panel (integrated file browser)
-  const isFileBrowserTab = activeTab?.tabType === 'file-browser';
+  // File-browser protocols don't support SSH-backed monitor/log panels.
+  const activeTabIsFileBrowser = isFileBrowserTab(activeTab);
   // Desktop tabs (RDP/VNC) also don't need right sidebar or bottom panel
   const isDesktopTab = activeTab?.tabType === 'desktop';
   // Editor tabs are standalone — hide extra panels like file-browser/desktop tabs
   const isEditorTab = activeTab?.tabType === 'editor';
-  const hideExtraPanels = isFileBrowserTab || isDesktopTab || isEditorTab;
+  const hideExtraPanels = activeTabIsFileBrowser || isDesktopTab || isEditorTab;
+  const showConnectionPanels = !hideExtraPanels && isOpenSshTerminalTab(activeTab);
 
   return (
     <div className="h-screen flex flex-col bg-background">
@@ -1594,8 +1596,8 @@ function AppContent() {
         onQuickConnect={handleQuickConnect}
         recentConnections={recentConnections}
         leftSidebarVisible={layout.leftSidebarVisible}
-        rightSidebarVisible={layout.rightSidebarVisible && hasAnyTabs && !hideExtraPanels}
-        bottomPanelVisible={layout.bottomPanelVisible && !hideExtraPanels}
+        rightSidebarVisible={layout.rightSidebarVisible && hasAnyTabs && showConnectionPanels}
+        bottomPanelVisible={layout.bottomPanelVisible && showConnectionPanels}
         zenMode={layout.zenMode}
       />
 
@@ -1630,7 +1632,7 @@ function AppContent() {
           <ResizablePanel
             id="main-content"
             order={2}
-            defaultSize={100 - (layout.leftSidebarVisible ? layout.leftSidebarSize : 0) - ((layout.rightSidebarVisible && hasAnyTabs && !hideExtraPanels) ? layout.rightSidebarSize : 0)}
+            defaultSize={100 - (layout.leftSidebarVisible ? layout.leftSidebarSize : 0) - ((layout.rightSidebarVisible && hasAnyTabs && showConnectionPanels) ? layout.rightSidebarSize : 0)}
             minSize={30}
           >
             <div className="h-full flex flex-col">
@@ -1642,13 +1644,13 @@ function AppContent() {
               ) : (
                 <ResizablePanelGroup direction="vertical" className="flex-1">
                   {/* Terminal Grid Panel */}
-                  <ResizablePanel id="terminal-grid" order={1} defaultSize={layout.bottomPanelVisible ? 70 : 100} minSize={30}>
+                  <ResizablePanel id="terminal-grid" order={1} defaultSize={layout.bottomPanelVisible && showConnectionPanels ? 70 : 100} minSize={30}>
                     <TerminalCallbacksProvider value={{ onDuplicateTab: handleDuplicateTab, onNewTab: handleNewTab }}>
                       <GridRenderer node={state.gridLayout} path={[]} />
                     </TerminalCallbacksProvider>
                   </ResizablePanel>
 
-                  {layout.bottomPanelVisible && !hideExtraPanels && activeConnection && (
+                  {layout.bottomPanelVisible && showConnectionPanels && activeConnection && (
                     <>
                       <ResizableHandle />
 
@@ -1677,7 +1679,7 @@ function AppContent() {
             </div>
           </ResizablePanel>
 
-          {layout.rightSidebarVisible && hasAnyTabs && !hideExtraPanels && (
+          {layout.rightSidebarVisible && hasAnyTabs && showConnectionPanels && (
             <>
               <ResizableHandle />
 

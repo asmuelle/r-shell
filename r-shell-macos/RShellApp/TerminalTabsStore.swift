@@ -228,19 +228,15 @@ final class TerminalTabsStore: ObservableObject {
             }
         }
 
-        // SSH connect.
-        let connectResult = await BridgeManager.shared.connect(
-            profile: profile,
-            password: resolvedPassword,
-            keyPath: profile.privateKeyPath,
-            passphrase: resolvedPassphrase,
-            sessionId: sessionId
-        )
-
         let connectionId: String
-        switch connectResult {
-        case .success(let id):
-            connectionId = id
+        do {
+            connectionId = try await BridgeManager.shared.connect(
+                profile: profile,
+                password: resolvedPassword,
+                keyPath: profile.privateKeyPath,
+                passphrase: resolvedPassphrase,
+                sessionId: sessionId
+            )
             // Persist on first successful interactive entry so the next
             // connect is silent. We only save when the credential we just
             // used wasn't already in Keychain — otherwise we re-save what
@@ -256,7 +252,7 @@ final class TerminalTabsStore: ObservableObject {
                 )
             }
 
-        case .failure(let error):
+        } catch let error as BridgeError {
             let msg = error.localizedDescription
 
             switch error {
@@ -334,6 +330,11 @@ final class TerminalTabsStore: ObservableObject {
             lastError = msg
             logger.error("Connect failed: \(msg, privacy: .public)")
             return
+        } catch {
+            let msg = error.localizedDescription
+            lastError = msg
+            logger.error("Connect failed: \(msg, privacy: .public)")
+            return
         }
 
         // PTY start — generation lets us guard against stale closes.
@@ -344,11 +345,10 @@ final class TerminalTabsStore: ObservableObject {
         var displayTitle = profile.name
 
         if profile.kind.supportsTerminal {
-            if let g = await BridgeManager.shared.openTerminal(
-                connectionId: connectionId
-            ) {
+            do {
+                let g = try await BridgeManager.shared.openTerminal(connectionId: connectionId)
                 generation = g
-            } else {
+            } catch {
                 // PTY failed. The most common reason on a server that
                 // *did* accept the SSH connect is shell restriction
                 // (scponly, ForceCommand internal-sftp, hosting
@@ -429,16 +429,14 @@ final class TerminalTabsStore: ObservableObject {
             ? KeychainManager.shared.loadPassword(kind: .sshKeyPassphrase, account: account)
             : nil
 
-        let connectResult = await BridgeManager.shared.connect(
-            profile: profile,
-            password: resolvedPassword,
-            keyPath: profile.privateKeyPath,
-            passphrase: resolvedPassphrase,
-            sessionId: sessionId
-        )
-
-        switch connectResult {
-        case .success(let id):
+        do {
+            let id = try await BridgeManager.shared.connect(
+                profile: profile,
+                password: resolvedPassword,
+                keyPath: profile.privateKeyPath,
+                passphrase: resolvedPassphrase,
+                sessionId: sessionId
+            )
             // Sanity check: r-shell-core should hand back the same
             // connection_id we asked for (same `(user, host, port,
             // sessionId)` tuple). Log + bail if not — we don't want
@@ -455,23 +453,24 @@ final class TerminalTabsStore: ObservableObject {
             // tabs (or SSH tabs that fell back to SFTP earlier) skip
             // this — there's no terminal to recreate.
             if tab.effectiveKind.supportsTerminal {
-                guard let generation = await BridgeManager.shared.openTerminal(
-                    connectionId: tab.connectionId
-                ) else {
+                do {
+                    let generation = try await BridgeManager.shared.openTerminal(
+                        connectionId: tab.connectionId
+                    )
+                    // The SwiftTerm view's session was registered with the OLD
+                    // generation. Update so the new PTY's output isn't dropped
+                    // by the stale-frame filter in dispatch.
+                    tabs[idx].ptyGeneration = generation
+                    TerminalSessionManager.shared.updateGeneration(generation, forConnectionId: tab.connectionId)
+                } catch {
                     lastError = "Failed to start terminal session on reconnect"
                     tabs[idx].status = .error
                     return
                 }
-
-                // The SwiftTerm view's session was registered with the OLD
-                // generation. Update so the new PTY's output isn't dropped
-                // by the stale-frame filter in dispatch.
-                tabs[idx].ptyGeneration = generation
-                TerminalSessionManager.shared.updateGeneration(generation, forConnectionId: tab.connectionId)
             }
             tabs[idx].status = .connected
 
-        case .failure(let error):
+        } catch {
             lastError = error.localizedDescription
             logger.error("Reconnect failed: \(error.localizedDescription, privacy: .public)")
             tabs[idx].status = .error
@@ -542,5 +541,17 @@ final class TerminalTabsStore: ObservableObject {
     var activeTab: TerminalTab? {
         guard let activeTabId else { return nil }
         return tabs.first { $0.id == activeTabId }
+    }
+
+    /// The currently selected tab only when it is an open SSH workspace.
+    /// SFTP-only tabs, SSH tabs demoted to SFTP after PTY denial, and
+    /// disconnected/error tabs cannot drive the lower service panels or
+    /// live system inspector commands.
+    var activeOpenSSHTab: TerminalTab? {
+        guard let tab = activeTab,
+              tab.effectiveKind.supportsTerminal,
+              tab.status == .connected
+        else { return nil }
+        return tab
     }
 }

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build a release DMG for R-Shell macOS app.
+# Build a release DMG for midnight-ssh macOS app.
 # Run after `xcodegen generate` and a successful Xcode archive build.
 #
 # Usage:
-#   ./build_dmg.sh [path/to/R-Shell.app]
+#   ./build_dmg.sh [path/to/midnight-ssh.app]
 #
 # If no path is given, looks in DerivedData for the latest build.
 
@@ -11,7 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_NAME="R-Shell"
+APP_NAME="midnight-ssh"
 DMG_NAME="${APP_NAME}.dmg"
 VOLUME_NAME="${APP_NAME}"
 
@@ -25,7 +25,7 @@ fi
 
 if [ ! -d "$APP_PATH" ]; then
     echo "❌ App not found at: ${APP_PATH:-<none>}"
-    echo "   Pass the path: $0 /path/to/R-Shell.app"
+    echo "   Pass the path: $0 /path/to/midnight-ssh.app"
     exit 1
 fi
 

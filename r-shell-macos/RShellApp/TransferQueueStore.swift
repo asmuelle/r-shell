@@ -117,7 +117,7 @@ final class TransferQueueStore: ObservableObject {
 
     /// Cancel a transfer. For `.queued` items the FFI hasn't been
     /// called yet — we just remove the row. For `.inProgress` items
-    /// the FFI signals the running transfer; the running Task observes
+    /// the bridge signals the running transfer; the running Task observes
     /// `SftpError::Cancelled` and marks the row.
     func cancel(transferId: UUID) {
         guard let idx = transfers.firstIndex(where: { $0.id == transferId }) else { return }
@@ -125,7 +125,7 @@ final class TransferQueueStore: ObservableObject {
         case .queued:
             transfers.remove(at: idx)
         case .inProgress:
-            _ = rshellSftpCancel(transferId: transferId.uuidString)
+            BridgeManager.shared.sftpCancel(transferId: transferId)
             // The Task's failure path flips status to `.cancelled`.
         case .completed, .failed, .cancelled:
             break
@@ -135,7 +135,7 @@ final class TransferQueueStore: ObservableObject {
     // MARK: - Per-connection run loop
 
     /// Ensure a single Task drains the queue for this connection. Runs
-    /// each pending transfer sequentially via the FFI; on completion or
+    /// each pending transfer sequentially via the bridge; on completion or
     /// failure, picks up the next pending one for the same connection.
     private func scheduleRun(for connectionId: String) {
         // If a runner is already in flight for this connection, the
@@ -159,40 +159,27 @@ final class TransferQueueStore: ObservableObject {
     }
 
     private func runTransfer(_ transfer: Transfer) async {
-        let transferId = transfer.id.uuidString
-
-        let result: Result<UInt64, Error> = await Task.detached {
-            do {
-                let bytes: UInt64
-                switch transfer.kind {
-                case .download:
-                    bytes = try rshellSftpDownload(
-                        transferId: transferId,
-                        connectionId: transfer.connectionId,
-                        remotePath: transfer.remotePath,
-                        localPath: transfer.localPath,
-                        expectedSize: transfer.totalBytes
-                    )
-                case .upload:
-                    bytes = try rshellSftpUpload(
-                        transferId: transferId,
-                        connectionId: transfer.connectionId,
-                        localPath: transfer.localPath,
-                        remotePath: transfer.remotePath
-                    )
-                }
-                return .success(bytes)
-            } catch {
-                return .failure(error)
+        do {
+            let bytes: UInt64
+            switch transfer.kind {
+            case .download:
+                bytes = try await BridgeManager.shared.sftpDownload(
+                    transferId: transfer.id,
+                    connectionId: transfer.connectionId,
+                    remotePath: transfer.remotePath,
+                    localPath: transfer.localPath,
+                    expectedSize: transfer.totalBytes
+                )
+            case .upload:
+                bytes = try await BridgeManager.shared.sftpUpload(
+                    transferId: transfer.id,
+                    connectionId: transfer.connectionId,
+                    localPath: transfer.localPath,
+                    remotePath: transfer.remotePath
+                )
             }
-        }.value
 
-        // Update the matching transfer by id (the one we set to inProgress
-        // earlier — the snapshot may now point at a stale index).
-        guard let idx = transfers.firstIndex(where: { $0.id == transfer.id }) else { return }
-
-        switch result {
-        case .success(let bytes):
+            guard let idx = transfers.firstIndex(where: { $0.id == transfer.id }) else { return }
             transfers[idx].bytesTransferred = bytes
             transfers[idx].status = .completed
             logger.info("Transfer completed: \(transfer.remotePath, privacy: .public) (\(bytes) bytes)")
@@ -204,7 +191,8 @@ final class TransferQueueStore: ObservableObject {
             if transfer.kind == .download {
                 scheduleReveal(URL(fileURLWithPath: transfer.localPath))
             }
-        case .failure(let error as SftpError):
+        } catch let error as SftpError {
+            guard let idx = transfers.firstIndex(where: { $0.id == transfer.id }) else { return }
             switch error {
             case .Cancelled:
                 transfers[idx].status = .cancelled
@@ -214,7 +202,8 @@ final class TransferQueueStore: ObservableObject {
                 transfers[idx].error = error.localizedDescription
                 logger.error("Transfer failed for \(transfer.remotePath, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
-        case .failure(let error):
+        } catch {
+            guard let idx = transfers.firstIndex(where: { $0.id == transfer.id }) else { return }
             transfers[idx].status = .failed
             transfers[idx].error = error.localizedDescription
             logger.error("Transfer failed for \(transfer.remotePath, privacy: .public): \(error.localizedDescription, privacy: .public)")

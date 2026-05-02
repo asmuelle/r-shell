@@ -44,11 +44,11 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // App menu (macOS puts our product name here; other platforms ignore it)
     // ------------------------------------------------------------------
     let about_metadata = AboutMetadataBuilder::new()
-        .name(Some("r-shell".to_string()))
+        .name(Some("midnight-ssh".to_string()))
         .version(Some(env!("CARGO_PKG_VERSION").to_string()))
         .build();
 
-    let app_submenu = SubmenuBuilder::new(app, "r-shell")
+    let app_submenu = SubmenuBuilder::new(app, "midnight-ssh")
         .about(Some(about_metadata))
         .separator()
         .services()

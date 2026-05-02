@@ -7,6 +7,7 @@ import { FileBrowserView } from '../file-browser-view';
 import { DesktopViewer } from '../desktop-viewer';
 import { FileEditorView } from '../file-editor-view';
 import { WelcomeScreen } from '../welcome-screen';
+import { isFileBrowserTab } from '../../lib/terminal-group-utils';
 
 interface TerminalGroupViewProps {
   groupId: string;
@@ -129,7 +130,7 @@ export function TerminalGroupView({ groupId }: TerminalGroupViewProps) {
                   isConnected={tab.connectionStatus === 'connected'}
                   onReconnect={() => handleReconnect(tab.id)}
                 />
-              ) : tab.tabType === 'file-browser' ? (
+              ) : isFileBrowserTab(tab) ? (
                 <FileBrowserView
                   connectionId={tab.id}
                   connectionName={tab.name}

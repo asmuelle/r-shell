@@ -301,7 +301,7 @@ struct SidebarView: View {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(.tint)
-                Text("Welcome to R-Shell")
+                Text("Welcome to midnight-ssh")
                     .font(.headline)
             }
 
