@@ -14,6 +14,9 @@ struct TabBarView: View {
     var themeOverrides: [UUID: String] = [:]
     /// Live connection state per tab id, for the coloured dot prefix.
     var statuses: [UUID: TerminalConnectionStatus] = [:]
+    var showsDashboardButton = false
+    var dashboardVisible = false
+    var onToggleDashboard: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -47,6 +50,28 @@ struct TabBarView: View {
             }
 
             Spacer(minLength: 0)
+
+            if showsDashboardButton, let onToggleDashboard {
+                Button(action: onToggleDashboard) {
+                    Label("Dashboard", systemImage: "square.grid.2x2")
+                        .font(.system(size: 11, weight: .medium))
+                        .labelStyle(.titleAndIcon)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(
+                                    dashboardVisible
+                                        ? Color.accentColor.opacity(0.18)
+                                        : Color.clear
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(dashboardVisible ? Color.accentColor : Color.primary)
+                .help(dashboardVisible ? "Close dashboard" : "Open multi-host dashboard")
+                .padding(.trailing, 8)
+            }
         }
         .frame(height: LayoutConstants.tabBarHeight)
         .background(Color(NSColor.controlBackgroundColor))

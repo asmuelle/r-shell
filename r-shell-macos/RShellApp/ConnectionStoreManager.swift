@@ -68,6 +68,43 @@ class ConnectionStoreManager: ObservableObject {
         logger.info("Profile \(profileId, privacy: .public) kind → \(kind.rawValue, privacy: .public)")
     }
 
+    func monitoredSystemdServices(profileId: String?) -> [String] {
+        guard let profileId,
+              let profile = connections.first(where: { $0.id == profileId })
+        else { return [] }
+        return profile.monitoredSystemdServices
+    }
+
+    func isMonitoringSystemdService(_ serviceName: String, profileId: String?) -> Bool {
+        monitoredSystemdServices(profileId: profileId).contains(serviceName)
+    }
+
+    func setMonitoringSystemdService(_ enabled: Bool, serviceName: String, profileId: String?) {
+        guard let profileId,
+              let idx = connections.firstIndex(where: { $0.id == profileId })
+        else { return }
+
+        var services = Set(connections[idx].monitoredSystemdServices)
+        if enabled {
+            services.insert(serviceName)
+        } else {
+            services.remove(serviceName)
+        }
+
+        var updated = connections
+        updated[idx].monitoredSystemdServices = sortedServiceNames(Array(services))
+        connections = updated
+        save()
+    }
+
+    func setMonitoredSystemdServices(_ services: [String], profileId: String) {
+        guard let idx = connections.firstIndex(where: { $0.id == profileId }) else { return }
+        var updated = connections
+        updated[idx].monitoredSystemdServices = sortedServiceNames(services)
+        connections = updated
+        save()
+    }
+
     // MARK: - Folder CRUD
 
     /// Outcome of a folder mutation. The sidebar surfaces failures via
@@ -232,6 +269,13 @@ class ConnectionStoreManager: ObservableObject {
             return "\(parent)/\(name)"
         }
         return name
+    }
+
+    private func sortedServiceNames(_ services: [String]) -> [String] {
+        Array(Set(services.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }))
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     /// Rewrite `path` / `parentPath` on every folder and `folderPath`

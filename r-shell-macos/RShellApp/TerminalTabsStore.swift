@@ -215,7 +215,9 @@ final class TerminalTabsStore: ObservableObject {
 
         case .publicKey:
             resolvedPassword = nil
-            if let explicit = passphrase {
+            if profile.sshKeyReference?.isAgent == true {
+                resolvedPassphrase = nil
+            } else if let explicit = passphrase {
                 resolvedPassphrase = explicit
             } else if let stored = KeychainManager.shared.loadPassword(
                 kind: .sshKeyPassphrase,
@@ -229,12 +231,24 @@ final class TerminalTabsStore: ObservableObject {
         }
 
         let connectionId: String
+        let preparedKey: PreparedSSHKey?
         do {
+            if profile.authMethod == .publicKey {
+                preparedKey = try SSHKeyAccessCoordinator.prepare(profile.sshKeyReference)
+            } else {
+                preparedKey = nil
+            }
+            defer {
+                preparedKey?.stop()
+            }
+
             connectionId = try await BridgeManager.shared.connect(
                 profile: profile,
                 password: resolvedPassword,
-                keyPath: profile.privateKeyPath,
+                keyPath: preparedKey?.keyPath,
                 passphrase: resolvedPassphrase,
+                useAgent: preparedKey?.useAgent ?? false,
+                agentIdentityHint: preparedKey?.agentIdentityHint,
                 sessionId: sessionId
             )
             // Persist on first successful interactive entry so the next
@@ -290,7 +304,7 @@ final class TerminalTabsStore: ObservableObject {
                 logger.info("Evicting stale key passphrase for \(account, privacy: .public) and re-prompting")
                 KeychainManager.shared.deletePassword(kind: .sshKeyPassphrase, account: account)
                 if let fresh = KeychainManager.shared.promptPassphrase(
-                    keyPath: profile.privateKeyPath ?? account
+                    keyPath: keyPromptLabel(for: profile)
                 ) {
                     await openConnection(profile, password: nil, passphrase: fresh)
                     if lastError == nil {
@@ -309,7 +323,7 @@ final class TerminalTabsStore: ObservableObject {
                 && resolvedPassphrase == nil
                 && passphrase == nil:
                 if let prompt = KeychainManager.shared.promptPassphrase(
-                    keyPath: profile.privateKeyPath ?? account
+                    keyPath: keyPromptLabel(for: profile)
                 ) {
                     logger.info("Retrying connect with prompted passphrase")
                     await openConnection(profile, password: nil, passphrase: prompt)
@@ -394,6 +408,12 @@ final class TerminalTabsStore: ObservableObject {
         activeTabId = tab.id
     }
 
+    private func keyPromptLabel(for profile: ConnectionProfile) -> String {
+        SSHKeyVault.shared.metadata(for: profile.sshKeyReference)?.label
+            ?? profile.sshKeyReference?.displayName
+            ?? profile.keychainAccount
+    }
+
     /// Re-establish a dead session in place. Called from the Reconnect
     /// button overlay on disconnected tabs. Reuses the original
     /// connection id (so the SwiftTerm view, registered against this
@@ -426,15 +446,28 @@ final class TerminalTabsStore: ObservableObject {
             ? KeychainManager.shared.loadPassword(kind: .sshPassword, account: account)
             : nil
         let resolvedPassphrase: String? = profile.authMethod == .publicKey
+            && profile.sshKeyReference?.isAgent != true
             ? KeychainManager.shared.loadPassword(kind: .sshKeyPassphrase, account: account)
             : nil
 
         do {
+            let preparedKey: PreparedSSHKey?
+            if profile.authMethod == .publicKey {
+                preparedKey = try SSHKeyAccessCoordinator.prepare(profile.sshKeyReference)
+            } else {
+                preparedKey = nil
+            }
+            defer {
+                preparedKey?.stop()
+            }
+
             let id = try await BridgeManager.shared.connect(
                 profile: profile,
                 password: resolvedPassword,
-                keyPath: profile.privateKeyPath,
+                keyPath: preparedKey?.keyPath,
                 passphrase: resolvedPassphrase,
+                useAgent: preparedKey?.useAgent ?? false,
+                agentIdentityHint: preparedKey?.agentIdentityHint,
                 sessionId: sessionId
             )
             // Sanity check: r-shell-core should hand back the same
@@ -553,5 +586,16 @@ final class TerminalTabsStore: ObservableObject {
               tab.status == .connected
         else { return nil }
         return tab
+    }
+
+    /// Connected SSH workspaces that can drive command-backed monitor
+    /// panels. Used by the dashboard view to render one right-panel
+    /// column per live SSH connection.
+    var connectedSSHTabs: [TerminalTab] {
+        tabs
+            .filter {
+                $0.effectiveKind.supportsTerminal && $0.status == .connected
+            }
+            .sorted { $0.order < $1.order }
     }
 }

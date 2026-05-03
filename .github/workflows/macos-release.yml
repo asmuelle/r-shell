@@ -1,0 +1,136 @@
+name: macOS Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_PATH: r-shell-macos/build/Build/Products/Release/midnight-ssh.app
+
+jobs:
+  build-sign-notarize:
+    name: Build signed DMG
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            release-cargo-${{ runner.os }}-
+
+      - name: Install build tools
+        run: brew install just xcodegen
+
+      - name: Generate project
+        run: just mac-gen
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_CI_KEYCHAIN_PASSWORD }}
+        run: |
+          test -n "$MACOS_CERTIFICATE_P12_BASE64"
+          test -n "$MACOS_CERTIFICATE_PASSWORD"
+          test -n "$KEYCHAIN_PASSWORD"
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+      - name: Build signed app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: just mac-build-signed
+
+      - name: Verify app signature
+        run: just mac-verify
+
+      - name: Build DMG
+        run: just mac-dmg
+
+      - name: Locate DMG
+        id: artifact
+        run: |
+          DMG_PATH="$(find r-shell-macos -maxdepth 3 -type f -name '*.dmg' | head -n 1)"
+          test -n "$DMG_PATH"
+          echo "dmg=$DMG_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Sign DMG
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign \
+            --force \
+            --timestamp \
+            --options runtime \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            "${{ steps.artifact.outputs.dmg }}"
+          codesign --verify --verbose=2 "${{ steps.artifact.outputs.dmg }}"
+
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          test -n "$APPLE_ID"
+          test -n "$APPLE_TEAM_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+
+          xcrun notarytool submit "${{ steps.artifact.outputs.dmg }}" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple "${{ steps.artifact.outputs.dmg }}"
+          spctl -a -t open -vv "${{ steps.artifact.outputs.dmg }}"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: midnight-ssh-macos-dmg
+          path: ${{ steps.artifact.outputs.dmg }}
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.artifact.outputs.dmg }}

@@ -40,8 +40,12 @@ pub use desktop_protocol::{
     RdpConfig, VncConfig,
 };
 pub use event_bus::CoreEvent;
-pub use keychain::{CredentialKind, delete_password, is_supported, list_accounts, load_password, save_password};
-pub use sftp_client::{FileEntry, FileEntryType, RemoteFileEntry, SftpAuthMethod, SftpConfig, StandaloneSftpClient};
+pub use keychain::{
+    CredentialKind, delete_password, is_supported, list_accounts, load_password, save_password,
+};
+pub use sftp_client::{
+    FileEntry, FileEntryType, RemoteFileEntry, SftpAuthMethod, SftpConfig, StandaloneSftpClient,
+};
 pub use ssh::{
     AuthMethod, CommandOutput, HostKeyMismatch, HostKeyStore, HostKeyStoreAccessError,
     HostKeyVerificationFailure, PtySession, SshClient, SshConfig,

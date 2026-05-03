@@ -12,6 +12,7 @@ options:
   bundleIdPrefix: com.r-shell
   deploymentTarget:
     macOS: "13.0"
+    iOS: "17.0"
   xcodeVersion: "15.0"
   postGenCommand: |
     # After project generation, copy the Rust library to a known location
@@ -21,11 +22,15 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     MACOSX_DEPLOYMENT_TARGET: "13.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
 
 packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: 1.0.0
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.9.1
 
 targets:
   RShellApp:
@@ -45,6 +50,8 @@ targets:
       - target: RShellMacOS
       - package: SwiftTerm
         product: SwiftTerm
+      - package: Sparkle
+        product: Sparkle
     # Declared inline so `xcodegen generate` regenerates the file
     # deterministically. A bare `path:` (no `properties:`) would write an
     # empty plist and silently break code signing — every regenerate would
@@ -61,6 +68,7 @@ targets:
         com.apple.security.device.audio-input: false
         com.apple.security.device.camera: false
         com.apple.security.files.user-selected.read-write: true
+        com.apple.security.files.bookmarks.app-scope: true
         com.apple.security.network.client: true
         com.apple.security.network.server: true
         # `keychain-access-groups` requires a provisioning profile (Apple
@@ -75,6 +83,7 @@ targets:
         INFOPLIST_FILE: RShellApp/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.macos
         PRODUCT_NAME: "midnight-ssh"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Auto-derived module name would be "midnight_ssh" (dash → underscore).
         # Force a clean identifier so the test bundle's `@testable import
         # RShellApp` resolves.
@@ -115,6 +124,55 @@ targets:
     scheme:
       testTargets:
         - RShellAppTests
+
+  RShellMobile:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: RShellMobile
+        type: group
+        createIntermediateGroups: true
+      - path: bindings/r_shell_macos.swift
+        optional: true
+    dependencies:
+      - package: SwiftTerm
+        product: SwiftTerm
+    entitlements:
+      path: RShellMobile/RShellMobile.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.r-shell.mobile
+    settings:
+      base:
+        INFOPLIST_FILE: RShellMobile/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.r-shell.mobile
+        PRODUCT_NAME: "midnight-ssh"
+        PRODUCT_MODULE_NAME: RShellMobile
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: false
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/bindings
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/../target/universal-ios/release
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -lr_shell_macos
+          - -lobjc
+          - -lresolv
+          - -framework
+          - Security
+          - -framework
+          - LocalAuthentication
+          - -lxml2
+          - -lz
+    preBuildScripts:
+      - name: "Build Rust Library for iOS"
+        script: |
+          "${SRCROOT}/scripts/build_cargo_ios.sh"
+        basedOnDependencyAnalysis: false
+        inputFiles: []
+        outputFiles: []
+    scheme: {}
 
   RShellMacOS:
     type: framework

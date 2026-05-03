@@ -283,82 +283,83 @@ pub async fn get_gpu_stats(
 
     if let Ok(output) = client.execute_command(amd_rocm_cmd).await {
         let output = output.trim();
-        if !output.is_empty() && output.starts_with('{')
+        if !output.is_empty()
+            && output.starts_with('{')
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(output)
         {
-                let mut gpus = Vec::new();
-                if let Some(obj) = json.as_object() {
-                    for (key, value) in obj {
-                        if key.starts_with("card") {
-                            let index = key.trim_start_matches("card").parse::<u32>().unwrap_or(0);
+            let mut gpus = Vec::new();
+            if let Some(obj) = json.as_object() {
+                for (key, value) in obj {
+                    if key.starts_with("card") {
+                        let index = key.trim_start_matches("card").parse::<u32>().unwrap_or(0);
 
-                            let utilization = value
-                                .get("GPU use (%)")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
-                                .unwrap_or(0.0);
+                        let utilization = value
+                            .get("GPU use (%)")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+                            .unwrap_or(0.0);
 
-                            let memory_used = value
-                                .get("VRAM Total Used Memory (B)")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .map(|b| b / (1024 * 1024))
-                                .unwrap_or(0);
+                        let memory_used = value
+                            .get("VRAM Total Used Memory (B)")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(|b| b / (1024 * 1024))
+                            .unwrap_or(0);
 
-                            let memory_total = value
-                                .get("VRAM Total Memory (B)")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .map(|b| b / (1024 * 1024))
-                                .unwrap_or(1);
+                        let memory_total = value
+                            .get("VRAM Total Memory (B)")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(|b| b / (1024 * 1024))
+                            .unwrap_or(1);
 
-                            let memory_percent = if memory_total > 0 {
-                                (memory_used as f64 / memory_total as f64) * 100.0
-                            } else {
-                                0.0
-                            };
+                        let memory_percent = if memory_total > 0 {
+                            (memory_used as f64 / memory_total as f64) * 100.0
+                        } else {
+                            0.0
+                        };
 
-                            let temperature = value
-                                .get("Temperature (Sensor edge) (C)")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.parse::<f64>().ok());
+                        let temperature = value
+                            .get("Temperature (Sensor edge) (C)")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<f64>().ok());
 
-                            let power_draw = value
-                                .get("Average Graphics Package Power (W)")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.parse::<f64>().ok());
+                        let power_draw = value
+                            .get("Average Graphics Package Power (W)")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<f64>().ok());
 
-                            let fan_speed = value
-                                .get("Fan speed (%)")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok());
+                        let fan_speed = value
+                            .get("Fan speed (%)")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok());
 
-                            gpus.push(GpuStats {
-                                index,
-                                name: format!("AMD GPU {}", index),
-                                vendor: GpuVendor::Amd,
-                                utilization,
-                                memory_used,
-                                memory_total,
-                                memory_percent,
-                                temperature,
-                                power_draw,
-                                power_limit: None,
-                                fan_speed,
-                                encoder_util: None,
-                                decoder_util: None,
-                            });
-                        }
+                        gpus.push(GpuStats {
+                            index,
+                            name: format!("AMD GPU {}", index),
+                            vendor: GpuVendor::Amd,
+                            utilization,
+                            memory_used,
+                            memory_total,
+                            memory_percent,
+                            temperature,
+                            power_draw,
+                            power_limit: None,
+                            fan_speed,
+                            encoder_util: None,
+                            decoder_util: None,
+                        });
                     }
                 }
-                if !gpus.is_empty() {
-                    return Ok(GpuStatsResponse {
-                        success: true,
-                        gpus,
-                        error: None,
-                    });
-                }
             }
+            if !gpus.is_empty() {
+                return Ok(GpuStatsResponse {
+                    success: true,
+                    gpus,
+                    error: None,
+                });
+            }
+        }
     }
 
     let amd_sysfs_cmd = r#"

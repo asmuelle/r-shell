@@ -105,12 +105,18 @@ struct FileEditView: View {
 private enum FileSyntax: Equatable {
     case plain
     case shell
+    case sql
+    case systemdUnit
     case yaml
 
     init(path: String) {
         switch (path as NSString).pathExtension.lowercased() {
         case "sh":
             self = .shell
+        case "sql":
+            self = .sql
+        case "service":
+            self = .systemdUnit
         case "yaml", "yml":
             self = .yaml
         default:
@@ -246,6 +252,14 @@ private enum SyntaxHighlighter {
         [.font: font, .foregroundColor: NSColor.systemPurple]
     }
 
+    private static var sqlKeywordAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemBlue]
+    }
+
+    private static var sqlNumberAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemOrange]
+    }
+
     private static var stringAttributes: [NSAttributedString.Key: Any] {
         [.font: font, .foregroundColor: NSColor.systemGreen]
     }
@@ -255,6 +269,21 @@ private enum SyntaxHighlighter {
     }
 
     private static var yamlScalarAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemOrange]
+    }
+
+    private static var systemdSectionAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.systemPurple
+        ]
+    }
+
+    private static var systemdKeyAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.systemBlue]
+    }
+
+    private static var systemdValueAttributes: [NSAttributedString.Key: Any] {
         [.font: font, .foregroundColor: NSColor.systemOrange]
     }
 
@@ -270,6 +299,10 @@ private enum SyntaxHighlighter {
             return
         case .shell:
             highlightShell(storage, range: fullRange)
+        case .sql:
+            highlightSQL(storage, range: fullRange)
+        case .systemdUnit:
+            highlightSystemdUnit(storage, range: fullRange)
         case .yaml:
             highlightYAML(storage, range: fullRange)
         }
@@ -295,6 +328,72 @@ private enum SyntaxHighlighter {
             attributes: stringAttributes
         )
         applyCommentHighlighting(to: storage)
+    }
+
+    private static func highlightSQL(_ storage: NSTextStorage, range: NSRange) {
+        applyRegex(
+            #"(?<![A-Za-z0-9_])(?:add|all|alter|and|as|asc|begin|between|by|cascade|case|check|commit|constraint|create|cross|database|default|delete|desc|distinct|drop|else|end|exists|foreign|from|full|grant|group|having|if|in|index|inner|insert|into|is|join|key|left|like|limit|not|null|offset|on|or|order|outer|primary|procedure|references|returning|revoke|right|rollback|schema|select|sequence|set|table|then|trigger|truncate|union|unique|update|using|values|view|when|where|with)(?![A-Za-z0-9_])"#,
+            to: storage,
+            range: range,
+            options: [.caseInsensitive],
+            attributes: sqlKeywordAttributes
+        )
+        applyRegex(
+            #"(?<![A-Za-z0-9_])-?\d+(?:\.\d+)?(?![A-Za-z0-9_])"#,
+            to: storage,
+            range: range,
+            attributes: sqlNumberAttributes
+        )
+        applyRegex(
+            #"'(?:''|[^'])*'"#,
+            to: storage,
+            range: range,
+            attributes: stringAttributes
+        )
+        applyRegex(
+            #"(?m)--.*$"#,
+            to: storage,
+            range: range,
+            attributes: commentAttributes
+        )
+        applyRegex(
+            #"/\*.*?\*/"#,
+            to: storage,
+            range: range,
+            options: [.dotMatchesLineSeparators],
+            attributes: commentAttributes
+        )
+    }
+
+    private static func highlightSystemdUnit(_ storage: NSTextStorage, range: NSRange) {
+        applyRegex(
+            #"(?m)^\s*(\[[A-Za-z][A-Za-z0-9_.-]*\])"#,
+            to: storage,
+            range: range,
+            captureGroup: 1,
+            attributes: systemdSectionAttributes
+        )
+        applyRegex(
+            #"(?m)^\s*([A-Za-z][A-Za-z0-9_.-]*)(?=\s*=)"#,
+            to: storage,
+            range: range,
+            captureGroup: 1,
+            attributes: systemdKeyAttributes
+        )
+        applyRegex(
+            #"(?<=\=)(?:true|false|yes|no|on|off|null|none|-?\d+(?:\.\d+)?[A-Za-z]*)\b"#,
+            to: storage,
+            range: range,
+            options: [.caseInsensitive],
+            attributes: systemdValueAttributes
+        )
+        applyRegex(
+            #""(?:\\.|[^"\\])*"|'[^'\n]*'"#,
+            to: storage,
+            range: range,
+            attributes: stringAttributes
+        )
+        applySystemdCommentHighlighting(to: storage)
     }
 
     private static func highlightYAML(_ storage: NSTextStorage, range: NSRange) {
@@ -403,6 +502,73 @@ private enum SyntaxHighlighter {
             }
 
             if character == "#",
+               !inSingleQuote,
+               !inDoubleQuote,
+               isWhitespace(previous) {
+                return utf16Offset
+            }
+        }
+
+        return nil
+    }
+
+    private static func applySystemdCommentHighlighting(to storage: NSTextStorage) {
+        let nsString = storage.string as NSString
+        var location = 0
+
+        while location < nsString.length {
+            let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
+            let line = nsString.substring(with: lineRange)
+            if let offset = systemdCommentOffset(in: line) {
+                storage.addAttributes(
+                    commentAttributes,
+                    range: NSRange(
+                        location: lineRange.location + offset,
+                        length: lineRange.length - offset
+                    )
+                )
+            }
+
+            let nextLocation = NSMaxRange(lineRange)
+            if nextLocation <= location { break }
+            location = nextLocation
+        }
+    }
+
+    private static func systemdCommentOffset(in line: String) -> Int? {
+        var inSingleQuote = false
+        var inDoubleQuote = false
+        var escaped = false
+        var previous: Character?
+        var utf16Offset = 0
+
+        for character in line {
+            defer {
+                previous = character
+                utf16Offset += character.utf16.count
+            }
+
+            if escaped {
+                escaped = false
+                continue
+            }
+
+            if character == "\\" {
+                escaped = true
+                continue
+            }
+
+            if character == "'" && !inDoubleQuote {
+                inSingleQuote.toggle()
+                continue
+            }
+
+            if character == "\"" && !inSingleQuote {
+                inDoubleQuote.toggle()
+                continue
+            }
+
+            if (character == "#" || character == ";"),
                !inSingleQuote,
                !inDoubleQuote,
                isWhitespace(previous) {

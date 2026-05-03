@@ -63,6 +63,12 @@ pub struct UfwStatusResponse {
 const SYSTEMD_UNAVAILABLE_MARKER: &str = "__R_SHELL_SYSTEMD_UNAVAILABLE__";
 const UFW_UNAVAILABLE_MARKER: &str = "__R_SHELL_UFW_UNAVAILABLE__";
 
+#[derive(Debug, PartialEq, Eq)]
+struct UfwOpenRule<'a> {
+    target: &'a str,
+    source: &'a str,
+}
+
 #[tauri::command]
 pub async fn get_system_stats(
     connection_id: String,
@@ -316,13 +322,13 @@ fn collect_extra_ufw_open_rules(output: &str) -> Vec<String> {
     output
         .lines()
         .filter_map(parse_ufw_open_rule)
-        .filter(|rule| !is_allowed_ufw_rule(rule))
-        .map(str::to_string)
+        .filter(|rule| is_public_ufw_source(rule.source) && !is_allowed_ufw_rule(rule.target))
+        .map(|rule| rule.target.to_string())
         .collect()
 }
 
-fn parse_ufw_open_rule(line: &str) -> Option<&str> {
-    let trimmed = line.trim();
+fn parse_ufw_open_rule(line: &str) -> Option<UfwOpenRule<'_>> {
+    let mut trimmed = line.trim();
     if trimmed.is_empty()
         || trimmed.starts_with("Status:")
         || trimmed.starts_with("To ")
@@ -331,9 +337,63 @@ fn parse_ufw_open_rule(line: &str) -> Option<&str> {
         return None;
     }
 
-    let action_index = trimmed.find(" ALLOW").or_else(|| trimmed.find(" LIMIT"))?;
-    let rule = trimmed[..action_index].trim();
-    (!rule.is_empty()).then_some(rule)
+    if trimmed.starts_with('[') {
+        let end = trimmed.find(']')?;
+        trimmed = trimmed[end + 1..].trim_start();
+    }
+
+    let (target, source) = split_ufw_open_rule(trimmed)?;
+    let source = strip_ufw_rule_comment(source);
+    (!target.is_empty() && !source.is_empty()).then_some(UfwOpenRule { target, source })
+}
+
+fn split_ufw_open_rule(line: &str) -> Option<(&str, &str)> {
+    let lower = line.to_ascii_lowercase();
+    let action_index = lower.find(" allow").or_else(|| lower.find(" limit"))?;
+    let target = line[..action_index].trim();
+    let action_and_source = line[action_index..].trim_start();
+    let action = action_and_source.split_whitespace().next()?;
+    if !action.eq_ignore_ascii_case("allow") && !action.eq_ignore_ascii_case("limit") {
+        return None;
+    }
+
+    let mut source = action_and_source[action.len()..].trim_start();
+    if let Some(direction) = source.split_whitespace().next() {
+        if direction.eq_ignore_ascii_case("in") || direction.eq_ignore_ascii_case("out") {
+            source = source[direction.len()..].trim_start();
+        }
+    }
+    Some((target, source))
+}
+
+fn is_public_ufw_source(source: &str) -> bool {
+    let normalized = normalize_ufw_source(source);
+    matches!(
+        normalized.as_str(),
+        "any"
+            | "anyone"
+            | "anyone (v6)"
+            | "anywhere"
+            | "anywhere (v6)"
+            | "0.0.0.0/0"
+            | "::/0"
+            | "::/0 (v6)"
+    )
+}
+
+fn normalize_ufw_source(source: &str) -> String {
+    strip_ufw_rule_comment(source)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn strip_ufw_rule_comment(source: &str) -> &str {
+    source
+        .split_once(" # ")
+        .map_or(source, |(source, _)| source)
+        .trim()
 }
 
 fn is_allowed_ufw_rule(rule: &str) -> bool {
@@ -467,6 +527,47 @@ Postfix                    ALLOW       Anywhere
             status.extra_open_rules,
             vec!["8080/tcp".to_string(), "Postfix".to_string()]
         );
+    }
+
+    #[test]
+    fn ignores_extra_ufw_open_rules_for_specific_sources() {
+        let status = parse_ufw_status_output(
+            "\
+Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+5432/tcp                   ALLOW       10.0.0.0/8
+9000/tcp                   LIMIT IN    192.168.1.12
+8080/tcp                   ALLOW IN    Anywhere
+8443/tcp                   ALLOW       Anywhere (v6)
+",
+        );
+
+        assert!(status.enabled);
+        assert!(status.has_extra_open_ports);
+        assert_eq!(
+            status.extra_open_rules,
+            vec!["8080/tcp".to_string(), "8443/tcp".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_numbered_ufw_public_sources() {
+        let status = parse_ufw_status_output(
+            "\
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 8080/tcp                   ALLOW IN    203.0.113.20
+[ 3] 9000/tcp                   ALLOW IN    Anywhere
+",
+        );
+
+        assert_eq!(status.extra_open_rules, vec!["9000/tcp".to_string()]);
     }
 
     #[test]

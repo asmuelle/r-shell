@@ -219,6 +219,11 @@ struct UFWProtectionSummary: Equatable {
 
 let ufwUnavailableMarker = "__R_SHELL_UFW_UNAVAILABLE__"
 
+struct UFWOpenRuleExposure: Equatable {
+    let target: String
+    let source: String
+}
+
 func summarizeUFWStatusOutput(_ output: String, sshPort: UInt16?) -> UFWProtectionSummary {
     let statusText = output
         .split(whereSeparator: \.isNewline)
@@ -270,7 +275,7 @@ func summarizeUFWStatusOutput(_ output: String, sshPort: UInt16?) -> UFWProtecti
 func summarizeUFWStatus(
     active: Bool,
     statusText: String,
-    openRuleTargets: [String],
+    openRules: [UFWOpenRuleExposure],
     sshPort: UInt16?
 ) -> UFWProtectionSummary {
     guard active else {
@@ -282,7 +287,9 @@ func summarizeUFWStatus(
         )
     }
 
-    let extraRules = openRuleTargets.filter { !isAllowedUFWOpenRule($0, sshPort: sshPort) }
+    let extraRules = openRules
+        .filter { isPublicUFWSource($0.source) && !isAllowedUFWOpenRule($0.target, sshPort: sshPort) }
+        .map(\.target)
     return UFWProtectionSummary(
         level: extraRules.isEmpty ? .protected : .open,
         statusText: statusText,
@@ -294,11 +301,12 @@ func summarizeUFWStatus(
 func collectExtraUFWOpenRules(from output: String, sshPort: UInt16?) -> [String] {
     output
         .split(whereSeparator: \.isNewline)
-        .compactMap { extractUFWOpenRuleTarget(from: String($0)) }
-        .filter { !isAllowedUFWOpenRule($0, sshPort: sshPort) }
+        .compactMap { extractUFWOpenRuleExposure(from: String($0)) }
+        .filter { isPublicUFWSource($0.source) && !isAllowedUFWOpenRule($0.target, sshPort: sshPort) }
+        .map(\.target)
 }
 
-func extractUFWOpenRuleTarget(from line: String) -> String? {
+func extractUFWOpenRuleExposure(from line: String) -> UFWOpenRuleExposure? {
     var trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty,
           !trimmed.hasPrefix("Status:"),
@@ -312,16 +320,46 @@ func extractUFWOpenRuleTarget(from line: String) -> String? {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    let allowRange = trimmed.range(of: " ALLOW", options: .caseInsensitive)
-    let limitRange = trimmed.range(of: " LIMIT", options: .caseInsensitive)
-    let actionRange = [allowRange, limitRange]
-        .compactMap { $0 }
-        .min { $0.lowerBound < $1.lowerBound }
+    let pattern = #"^(.+?)\s{2,}(ALLOW(?:\s+(?:IN|OUT))?|LIMIT(?:\s+(?:IN|OUT))?)\s{2,}(.+)$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+          let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+          match.numberOfRanges >= 4,
+          let targetRange = Range(match.range(at: 1), in: trimmed),
+          let sourceRange = Range(match.range(at: 3), in: trimmed)
+    else { return nil }
 
-    guard let actionRange else { return nil }
-    let target = trimmed[..<actionRange.lowerBound]
+    let target = trimmed[targetRange]
         .trimmingCharacters(in: .whitespaces)
-    return target.isEmpty ? nil : target
+    let source = stripUFWRuleComment(String(trimmed[sourceRange]))
+    guard !target.isEmpty, !source.isEmpty else { return nil }
+    return UFWOpenRuleExposure(target: target, source: source)
+}
+
+func isPublicUFWSource(_ source: String) -> Bool {
+    let normalized = stripUFWRuleComment(source)
+        .split(whereSeparator: \.isWhitespace)
+        .joined(separator: " ")
+        .lowercased()
+
+    return [
+        "any",
+        "anyone",
+        "anyone (v6)",
+        "anywhere",
+        "anywhere (v6)",
+        "0.0.0.0/0",
+        "::/0",
+        "::/0 (v6)",
+    ].contains(normalized)
+}
+
+func stripUFWRuleComment(_ source: String) -> String {
+    let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let commentRange = trimmed.range(of: " # ") else {
+        return trimmed
+    }
+    return String(trimmed[..<commentRange.lowerBound])
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 func isAllowedUFWOpenRule(_ rule: String, sshPort: UInt16?) -> Bool {
@@ -792,12 +830,12 @@ struct UFWMonitorView: View {
         return summarizeUFWStatus(
             active: snapshot.active,
             statusText: statusText,
-            openRuleTargets: rules
+            openRules: rules
                 .filter {
                     let action = $0.action.lowercased()
                     return action.contains("allow") || action.contains("limit")
                 }
-                .map(\.target),
+                .map { UFWOpenRuleExposure(target: $0.target, source: $0.source) },
             sshPort: sshPort
         )
     }
@@ -1099,6 +1137,185 @@ private struct SystemdUnit: Identifiable, Hashable {
     var statusSortKey: String { "\(active) \(sub)" }
 }
 
+struct MonitoredSystemdServiceStatus: Identifiable, Equatable {
+    let name: String
+    let active: String
+    let sub: String
+    let uptimeSeconds: UInt64?
+
+    var id: String { name }
+
+    var isRunning: Bool {
+        active.lowercased() == "active"
+    }
+}
+
+struct MonitoredSystemdServicesPane: View {
+    let connectionId: String?
+    let profileId: String?
+    var isActive: Bool = true
+    var onSelectService: (String) -> Void = { _ in }
+
+    @ObservedObject private var connectionStore = ConnectionStoreManager.shared
+    @State private var statuses: [MonitoredSystemdServiceStatus] = []
+    @State private var error: String?
+    @State private var loading = false
+
+    private static let pollInterval: UInt64 = 5_000_000_000
+    private static let unavailableMarker = "__MIDNIGHT_SSH_SYSTEMD_UNAVAILABLE__"
+
+    private var serviceNames: [String] {
+        connectionStore.monitoredSystemdServices(profileId: profileId)
+    }
+
+    private var pollKey: String {
+        "\(connectionId ?? "none"):\(profileId ?? "none"):\(isActive):\(serviceNames.joined(separator: ","))"
+    }
+
+    private var rows: [MonitoredSystemdServiceStatus] {
+        let byName = Dictionary(uniqueKeysWithValues: statuses.map { ($0.name, $0) })
+        return serviceNames.map {
+            byName[$0] ?? MonitoredSystemdServiceStatus(
+                name: $0,
+                active: "unknown",
+                sub: "unknown",
+                uptimeSeconds: nil
+            )
+        }
+    }
+
+    var body: some View {
+        if !serviceNames.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "switch.2")
+                        .foregroundStyle(.secondary)
+                    Text("systemd")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if loading {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                if let error {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+
+                VStack(spacing: 4) {
+                    ForEach(rows) { service in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(service.isRunning ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Text(service.name)
+                                .font(.caption.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            Text(formatServiceUptime(service.uptimeSeconds))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            onSelectService(service.name)
+                        }
+                        .help("\(service.name): \(service.active) \(service.sub)")
+                    }
+                }
+            }
+            .task(id: pollKey) {
+                guard isActive, connectionId != nil else { return }
+                await pollLoop()
+            }
+        }
+    }
+
+    private func pollLoop() async {
+        await refreshStatuses()
+        while !Task.isCancelled && isActive && !serviceNames.isEmpty {
+            try? await Task.sleep(nanoseconds: Self.pollInterval)
+            await refreshStatuses()
+        }
+    }
+
+    private func refreshStatuses() async {
+        guard let connectionId, !serviceNames.isEmpty else {
+            statuses = []
+            error = nil
+            return
+        }
+
+        loading = true
+        defer { loading = false }
+
+        let units = serviceNames.map(RemoteCommandRunner.shellQuote).joined(separator: " ")
+        let script = """
+        command -v systemctl >/dev/null || { echo \(Self.unavailableMarker); exit 0; }
+        now_usec=$(awk '{printf "%.0f", $1 * 1000000}' /proc/uptime 2>/dev/null || echo 0)
+        for unit in \(units); do
+          show=$(systemctl show "$unit" --no-pager -p ActiveState -p SubState -p ActiveEnterTimestampMonotonic 2>/dev/null || true)
+          active=$(printf '%s\\n' "$show" | awk -F= '$1=="ActiveState"{print $2; exit}')
+          sub=$(printf '%s\\n' "$show" | awk -F= '$1=="SubState"{print $2; exit}')
+          mono=$(printf '%s\\n' "$show" | awk -F= '$1=="ActiveEnterTimestampMonotonic"{print $2; exit}')
+          uptime="-"
+          if [ "${active:-unknown}" = "active" ] && [ -n "$mono" ] && [ "$mono" -gt 0 ] 2>/dev/null && [ "$now_usec" -gt "$mono" ] 2>/dev/null; then
+            uptime=$(( (now_usec - mono) / 1000000 ))
+          fi
+          printf '%s\\t%s\\t%s\\t%s\\n' "$unit" "${active:-unknown}" "${sub:-unknown}" "$uptime"
+        done
+        """
+
+        do {
+            let output = try await RemoteCommandRunner.runChecked(connectionId: connectionId, script: script)
+            if output.lines().contains(Self.unavailableMarker) {
+                statuses = []
+                error = "systemd unavailable"
+            } else {
+                statuses = parseMonitoredSystemdServiceStatuses(output)
+                error = nil
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func parseMonitoredSystemdServiceStatuses(_ output: String) -> [MonitoredSystemdServiceStatus] {
+        output.lines().compactMap { line in
+            let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 4 else { return nil }
+            return MonitoredSystemdServiceStatus(
+                name: parts[0],
+                active: parts[1],
+                sub: parts[2],
+                uptimeSeconds: UInt64(parts[3])
+            )
+        }
+    }
+
+    private func formatServiceUptime(_ seconds: UInt64?) -> String {
+        guard let seconds else { return "-" }
+        if seconds < 60 { return "\(seconds)s" }
+
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        let minutes = (seconds % 3_600) / 60
+
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
+    }
+}
+
 private struct SystemdTimer: Identifiable, Hashable {
     let timer: String
     let next: String
@@ -1244,6 +1461,7 @@ private func looksLikeSystemdTime(_ value: String) -> Bool {
 
 struct SystemdMonitorView: View {
     let connectionId: String?
+    let profileId: String?
     let connectionLabel: String
 
     private enum Mode: String, CaseIterable {
@@ -1269,6 +1487,7 @@ struct SystemdMonitorView: View {
     @State private var unitSortOrder: [KeyPathComparator<SystemdUnit>] = [
         .init(\.name)
     ]
+    @ObservedObject private var connectionStore = ConnectionStoreManager.shared
 
     private let logger = Logger(subsystem: "com.r-shell", category: "systemd-monitor")
     private static let pollInterval: UInt64 = 5_000_000_000
@@ -1396,6 +1615,23 @@ struct SystemdMonitorView: View {
             get: { selectedUnit?.id },
             set: { id in selectedUnit = units.first { $0.id == id } }
         ), sortOrder: $unitSortOrder) {
+            TableColumn("Monitor") { unit in
+                Toggle("", isOn: Binding(
+                    get: {
+                        connectionStore.isMonitoringSystemdService(unit.name, profileId: profileId)
+                    },
+                    set: {
+                        connectionStore.setMonitoringSystemdService($0, serviceName: unit.name, profileId: profileId)
+                    }
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .controlSize(.small)
+                .disabled(connectionId == nil)
+                .help("Show \(unit.name) in the monitor pane")
+            }
+            .width(min: 70, ideal: 80, max: 90)
+
             TableColumn("Service", value: \.name) { unit in
                 HStack(spacing: 6) {
                     Circle()

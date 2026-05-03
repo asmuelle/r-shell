@@ -825,8 +825,12 @@ struct FileBrowserView: View {
 
     private func isInlineEditableFile(_ entry: FfiFileEntry) -> Bool {
         guard entry.kind == .file else { return false }
+        if entry.name.hasPrefix("."), entry.name != ".", entry.name != ".." {
+            return true
+        }
+
         switch (entry.name as NSString).pathExtension.lowercased() {
-        case "yaml", "yml", "txt", "sh":
+        case "yaml", "yml", "txt", "sh", "sql", "service":
             return true
         default:
             return false

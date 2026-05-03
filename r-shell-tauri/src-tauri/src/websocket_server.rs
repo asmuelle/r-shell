@@ -1,7 +1,7 @@
 use crate::WEBSOCKET_PORT;
-use r_shell_core::connection_manager::ConnectionManager;
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
+use r_shell_core::connection_manager::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;

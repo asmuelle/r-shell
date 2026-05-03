@@ -128,6 +128,8 @@ final class BridgeManager {
         password: String?,
         keyPath: String? = nil,
         passphrase: String? = nil,
+        useAgent: Bool = false,
+        agentIdentityHint: String? = nil,
         sessionId: String? = nil
     ) async throws -> String {
         let config = FfiConnectConfig(
@@ -137,6 +139,8 @@ final class BridgeManager {
             password: password,
             keyPath: keyPath ?? profile.privateKeyPath,
             passphrase: passphrase,
+            useAgent: useAgent,
+            agentIdentityHint: agentIdentityHint,
             sessionId: sessionId
         )
 

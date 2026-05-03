@@ -50,19 +50,20 @@ struct TerminalView: NSViewRepresentable {
     /// open terminal whose tab doesn't have a `themeOverride`.
     @AppStorage("terminalTheme") private var globalTheme = "system"
     @AppStorage("fontSize") private var fontSize = 12.0
+    @AppStorage("scrollbackLines") private var scrollbackLines = 10_000
+    @AppStorage("terminalCursorStyle") private var terminalCursorStyle = "blinkBlock"
+    @AppStorage("terminalMouseReporting") private var terminalMouseReporting = true
+    @AppStorage("terminalOptionAsMeta") private var terminalOptionAsMeta = true
+    @AppStorage("terminalCopyOnSelect") private var terminalCopyOnSelect = false
 
     private var effectiveTheme: String { themeOverride ?? globalTheme }
 
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
-        let term = SwiftTerm.TerminalView()
-
-        term.terminal?.changeScrollback(10_000)
-        term.terminal?.setCursorStyle(.blinkBlock)
-        term.allowMouseReporting = true
-        term.optionAsMetaKey = true
+        let term = RShellTerminalView()
 
         applyTheme(to: term)
         applyFont(to: term)
+        applyBehavior(to: term)
 
         // The coordinator owns the link to BridgeManager — wire its
         // weak terminalDelegate ref before we register the session, so
@@ -98,6 +99,7 @@ struct TerminalView: NSViewRepresentable {
         // already-open terminals immediately.
         applyTheme(to: term)
         applyFont(to: term)
+        applyBehavior(to: term)
 
         // Grab focus on the false → true transition so a freshly-activated
         // tab is keyboard-ready and Cmd+F goes to the right terminal.
@@ -127,6 +129,15 @@ struct TerminalView: NSViewRepresentable {
         if term.font.pointSize != target.pointSize || term.font.fontName != target.fontName {
             term.font = target
         }
+    }
+
+    private func applyBehavior(to term: SwiftTerm.TerminalView) {
+        let clampedScrollback = min(max(scrollbackLines, 500), 100_000)
+        term.terminal?.changeScrollback(clampedScrollback)
+        term.terminal?.setCursorStyle(CursorStyle.from(string: terminalCursorStyle) ?? .blinkBlock)
+        term.allowMouseReporting = terminalMouseReporting
+        term.optionAsMetaKey = terminalOptionAsMeta
+        (term as? RShellTerminalView)?.copyOnSelect = terminalCopyOnSelect
     }
 
     func makeCoordinator() -> Coordinator {
@@ -231,6 +242,19 @@ struct TerminalView: NSViewRepresentable {
             // Visual updates for accessibility — no-op for now.
             _ = (startY, endY)
         }
+    }
+}
+
+private final class RShellTerminalView: SwiftTerm.TerminalView {
+    var copyOnSelect = false
+
+    override func selectionChanged(source: SwiftTerm.Terminal) {
+        super.selectionChanged(source: source)
+        guard copyOnSelect else { return }
+
+        let range = selectedRange()
+        guard range.location != NSNotFound, range.length > 0 else { return }
+        copy(self)
     }
 }
 

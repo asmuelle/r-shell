@@ -36,7 +36,10 @@ pub fn cached(connection_id: &str) -> Option<OsKind> {
 }
 
 pub fn store(connection_id: &str, os: OsKind) {
-    cache().lock().unwrap().insert(connection_id.to_string(), os);
+    cache()
+        .lock()
+        .unwrap()
+        .insert(connection_id.to_string(), os);
 }
 
 pub fn evict(connection_id: &str) {
@@ -204,7 +207,11 @@ pub mod linux {
         if total == 0 {
             return Err("no MemTotal".into());
         }
-        let avail = if available > 0 { available } else { free + buffers + cached };
+        let avail = if available > 0 {
+            available
+        } else {
+            free + buffers + cached
+        };
         let used = total.saturating_sub(avail);
         let swap_used = swap_total.saturating_sub(swap_free);
         Ok(MemInfo {
@@ -245,13 +252,17 @@ pub mod linux {
 
     pub fn parse_uptime(s: &str) -> Result<u64, String> {
         let token = s.split_whitespace().next().ok_or("empty uptime")?;
-        let secs: f64 = token.parse().map_err(|e: std::num::ParseFloatError| e.to_string())?;
+        let secs: f64 = token
+            .parse()
+            .map_err(|e: std::num::ParseFloatError| e.to_string())?;
         Ok(secs as u64)
     }
 
     pub fn parse_loadavg(s: &str) -> Result<f64, String> {
         let token = s.split_whitespace().next().ok_or("empty loadavg")?;
-        token.parse().map_err(|e: std::num::ParseFloatError| e.to_string())
+        token
+            .parse()
+            .map_err(|e: std::num::ParseFloatError| e.to_string())
     }
 
     /// `ps` invocation that prints a stable, parseable shape for every
@@ -316,7 +327,11 @@ pub mod darwin {
         for token in line.split(',') {
             let trimmed = token.trim();
             if let Some(pct) = trimmed.strip_suffix("% user") {
-                user = pct.trim_start_matches("CPU usage:").trim().parse().unwrap_or(0.0);
+                user = pct
+                    .trim_start_matches("CPU usage:")
+                    .trim()
+                    .parse()
+                    .unwrap_or(0.0);
             } else if let Some(pct) = trimmed.strip_suffix("% sys") {
                 sys = pct.trim().parse().unwrap_or(0.0);
             }
@@ -404,10 +419,7 @@ pub mod darwin {
     /// `vm.loadavg` example: `{ 1.23 0.98 0.76 }`
     pub fn parse_loadavg(s: &str) -> Result<f64, String> {
         let cleaned = s.trim().trim_start_matches('{').trim_end_matches('}');
-        let token = cleaned
-            .split_whitespace()
-            .next()
-            .ok_or("empty loadavg")?;
+        let token = cleaned.split_whitespace().next().ok_or("empty loadavg")?;
         token
             .parse()
             .map_err(|e: std::num::ParseFloatError| e.to_string())
@@ -456,8 +468,7 @@ pub mod darwin {
     /// Field order is identical to Linux so the same parser handles
     /// the body. `-r` sorts by CPU usage so the busiest processes
     /// surface first.
-    pub const PROCESSES_COMMAND: &str =
-        "ps -axo pid,user,pcpu,pmem,comm,args -r | tail -n +2";
+    pub const PROCESSES_COMMAND: &str = "ps -axo pid,user,pcpu,pmem,comm,args -r | tail -n +2";
 
     pub fn parse_processes(s: &str) -> Vec<super::ProcessRow> {
         s.lines()
@@ -508,7 +519,10 @@ mod tests {
     fn classifies_uname_outputs() {
         assert_eq!(classify_uname("Linux\n"), OsKind::Linux);
         assert_eq!(classify_uname("Darwin"), OsKind::Darwin);
-        assert_eq!(classify_uname("FreeBSD"), OsKind::Other("FreeBSD".to_string()));
+        assert_eq!(
+            classify_uname("FreeBSD"),
+            OsKind::Other("FreeBSD".to_string())
+        );
     }
 
     #[test]

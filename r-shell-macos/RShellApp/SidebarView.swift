@@ -13,6 +13,7 @@ struct SidebarView: View {
     var onConnect: ((ConnectionProfile) -> Void)?
 
     @State private var showNewConnection = false
+    @State private var newConnectionKind: ConnectionKind = .ssh
     @State private var showImport = false
     @State private var search = ""
     /// When non-nil, presents the edit sheet for the wrapped profile.
@@ -58,27 +59,26 @@ struct SidebarView: View {
 
     var body: some View {
         VSplitView {
-            connectionList
-            ConnectionDetailsPanel(profile: selectedConnection)
+            VStack(spacing: 0) {
+                connectionsHeader
+                Divider()
+                connectionList
+            }
+            .frame(minHeight: 180)
+
+            ConnectionDetailsPanel(
+                profile: selectedConnection,
+                status: selectedConnection.flatMap(connectionStatus)
+            )
                 .frame(minHeight: 140, idealHeight: 200, maxHeight: 320)
         }
         .frame(minWidth: LayoutConstants.minSidebarWidth)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("New Connection") { showNewConnection = true }
-                    Button("New Folder") {
-                        folderPrompt = FolderPrompt(kind: .createTopLevel)
-                    }
-                    Divider()
-                    Button("Import from Tauri…") { showImport = true }
-                } label: {
-                    Image(systemName: "plus")
-                }
-            }
-        }
         .sheet(isPresented: $showNewConnection) {
-            ConnectionEditView(storeManager: storeManager, existingProfile: nil)
+            ConnectionEditView(
+                storeManager: storeManager,
+                existingProfile: nil,
+                initialKind: newConnectionKind
+            )
         }
         .sheet(item: $editingProfile) { target in
             ConnectionEditView(storeManager: storeManager, existingProfile: target.profile)
@@ -115,6 +115,76 @@ struct SidebarView: View {
 
     // MARK: - Connection list
 
+    private var connectionsHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Connections")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+
+                Spacer(minLength: 0)
+
+                Menu {
+                    Button("New SSH Connection") {
+                        openNewConnection(kind: .ssh)
+                    }
+                    Button("New SFTP Connection") {
+                        openNewConnection(kind: .sftp)
+                    }
+                    Button("New Folder") {
+                        folderPrompt = FolderPrompt(kind: .createTopLevel)
+                    }
+                    Divider()
+                    Button("Import from Tauri…") { showImport = true }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .help("Add connection or folder")
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+
+                TextField("Search connections", text: $search)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+
+                if isSearchActive {
+                    Button {
+                        search = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear search")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.8))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color(NSColor.separatorColor).opacity(0.4), lineWidth: 1)
+            )
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
     @ViewBuilder
     private var connectionList: some View {
         List {
@@ -127,16 +197,12 @@ struct SidebarView: View {
                             .foregroundColor(.secondary)
                             .font(.caption)
                     }
-                } header: {
-                    SidebarSectionHeader(title: "Connections")
                 }
             } else if isSearchActive && !hasAnyMatches {
                 Section {
                     Text("No matches")
                         .foregroundColor(.secondary)
                         .font(.caption)
-                } header: {
-                    SidebarSectionHeader(title: "Connections")
                 }
             } else {
                 Section {
@@ -165,17 +231,11 @@ struct SidebarView: View {
                     if !storeManager.folders.isEmpty {
                         rootDropRow
                     }
-                } header: {
-                    SidebarSectionHeader(title: "Connections")
                 }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        // Search moves to the window toolbar (Finder-style) rather
-        // than living inside the sidebar — keeps the sidebar visually
-        // tighter and matches the platform convention.
-        .searchable(text: $search, placement: .toolbar, prompt: "Search connections")
     }
 
     /// Recursive folder + nested-content renderer. Each folder is a
@@ -285,7 +345,9 @@ struct SidebarView: View {
         ConnectionRow(
             profile: conn,
             isConnecting: isConnecting(conn),
-            isSelected: selectedConnection?.id == conn.id
+            isSelected: selectedConnection?.id == conn.id,
+            connectionStatus: connectionStatus(conn),
+            onDisconnect: { disconnect(conn) }
         )
         .onTapGesture(count: 2) { handleConnect(conn) }
         .onTapGesture { selectConnection(conn) }
@@ -312,11 +374,19 @@ struct SidebarView: View {
 
             HStack(spacing: 6) {
                 Button {
-                    showNewConnection = true
+                    openNewConnection(kind: .ssh)
                 } label: {
-                    Label("New Connection…", systemImage: "plus.circle")
+                    Label("New SSH", systemImage: "terminal.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button {
+                    openNewConnection(kind: .sftp)
+                } label: {
+                    Label("New SFTP", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.bordered)
                 .controlSize(.small)
 
                 Button {
@@ -387,6 +457,12 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func connectionContextMenu(_ conn: ConnectionProfile) -> some View {
+        if openTab(for: conn) != nil {
+            Button("Disconnect", role: .destructive) {
+                disconnect(conn)
+            }
+            Divider()
+        }
         Button(conn.kind.supportsTerminal ? "Connect" : "Connect (SFTP)") {
             handleConnect(conn)
         }
@@ -496,6 +572,27 @@ struct SidebarView: View {
         selectedConnection = conn
         onConnect?(conn)
     }
+
+    private func openNewConnection(kind: ConnectionKind) {
+        newConnectionKind = kind
+        showNewConnection = true
+    }
+
+    private func connectionStatus(_ conn: ConnectionProfile) -> TerminalConnectionStatus? {
+        if isConnecting(conn) {
+            return .connecting
+        }
+        return tabsStore.tabs.first { $0.profile.id == conn.id }?.status
+    }
+
+    private func openTab(for conn: ConnectionProfile) -> TerminalTab? {
+        tabsStore.tabs.first { $0.profile.id == conn.id }
+    }
+
+    private func disconnect(_ conn: ConnectionProfile) {
+        guard let tab = openTab(for: conn) else { return }
+        tabsStore.closeTab(tab.id)
+    }
 }
 
 // MARK: - Connection details panel
@@ -505,6 +602,7 @@ struct SidebarView: View {
 /// renders a hint instead of an empty form.
 private struct ConnectionDetailsPanel: View {
     let profile: ConnectionProfile?
+    let status: TerminalConnectionStatus?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -528,8 +626,15 @@ private struct ConnectionDetailsPanel: View {
                         detailRow("Host", profile.host)
                         detailRow("Port", "\(profile.port)")
                         detailRow("User", profile.username)
+                        if let status {
+                            statusRow(status)
+                        }
                         detailRow("Protocol", profile.kind.displayName)
                         detailRow("Auth", profile.authMethod.displayName)
+                        detailRow("Key", profile.sshKeyReference != nil ? "Configured" : "Not configured")
+                        if let folderPath = profile.folderPath {
+                            detailRow("Folder", folderPath)
+                        }
                         if let last = profile.lastConnected {
                             detailRow(
                                 "Last Connected",
@@ -575,6 +680,25 @@ private struct ConnectionDetailsPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    private func statusRow(_ status: TerminalConnectionStatus) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("State")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 78, alignment: .leading)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(status.sidebarColor)
+                    .frame(width: 7, height: 7)
+                Text(status.sidebarLabel)
+                    .font(.caption.monospacedDigit())
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 }
 
 // MARK: - Row
@@ -593,6 +717,10 @@ struct ConnectionRow: View {
     /// List selection highlight so a selected connection reads as blue
     /// text on a soft gray rounded background.
     var isSelected: Bool = false
+    /// Live state for an already-open tab that belongs to this profile.
+    /// Nil means the profile is saved but not currently open.
+    var connectionStatus: TerminalConnectionStatus?
+    var onDisconnect: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -629,6 +757,24 @@ struct ConnectionRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+
+            if connectionStatus == .connected, let onDisconnect {
+                Button(action: onDisconnect) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Disconnect")
+                .accessibilityLabel("Disconnect \(profile.name)")
+            }
+
+            if let connectionStatus {
+                Circle()
+                    .fill(connectionStatus.sidebarColor)
+                    .frame(width: 7, height: 7)
+                    .help(connectionStatus.sidebarLabel)
+            }
         }
         // Tighter vertical density to match Finder's ~24pt row
         // height. Two-line layouts pushed the rows closer to 36pt;
@@ -673,7 +819,30 @@ struct ConnectionRow: View {
 
     private var accessibilityLabel: String {
         let base = "\(profile.name), \(profile.username)@\(profile.host):\(profile.port)"
+        if let connectionStatus {
+            return "\(base), \(connectionStatus.sidebarLabel.lowercased())"
+        }
         return isConnecting ? "\(base), connecting" : base
+    }
+}
+
+private extension TerminalConnectionStatus {
+    var sidebarLabel: String {
+        switch self {
+        case .connected: return "Connected"
+        case .connecting: return "Connecting"
+        case .disconnected: return "Disconnected"
+        case .error: return "Connection error"
+        }
+    }
+
+    var sidebarColor: Color {
+        switch self {
+        case .connected: return .green
+        case .connecting: return .yellow
+        case .disconnected: return Color(NSColor.tertiaryLabelColor)
+        case .error: return .red
+        }
     }
 }
 

@@ -197,34 +197,34 @@ pub async fn discover_log_sources(
                         let path = parts[1].trim();
                         if let Some(src) = sources.iter_mut().find(|s| s.path == path) {
                             src.size_human = Some(size.to_string());
-            }
-    }
+                        }
+                    }
+                }
             }
         }
-    }
 
-    if let Ok(output) = journals {
-        for line in output.lines() {
-            let unit = line.trim().to_string();
-            if unit.is_empty() || unit.starts_with("UNIT") {
-                continue;
+        if let Ok(output) = journals {
+            for line in output.lines() {
+                let unit = line.trim().to_string();
+                if unit.is_empty() || unit.starts_with("UNIT") {
+                    continue;
+                }
+                let name = unit.strip_suffix(".service").unwrap_or(&unit).to_string();
+                sources.push(LogSource {
+                    id: format!("journal:{}", unit),
+                    name,
+                    source_type: LogSourceKind::Journal,
+                    path: unit,
+                    category: "service".to_string(),
+                    size_human: None,
+                });
             }
-            let name = unit.strip_suffix(".service").unwrap_or(&unit).to_string();
-            sources.push(LogSource {
-                id: format!("journal:{}", unit),
-                name,
-                source_type: LogSourceKind::Journal,
-                path: unit,
-                category: "service".to_string(),
-                size_human: None,
-            });
         }
-    }
 
-    if let Ok(output) = dockers
-        && !output.contains("command not found")
-        && !output.contains("Cannot connect")
-    {
+        if let Ok(output) = dockers
+            && !output.contains("command not found")
+            && !output.contains("Cannot connect")
+        {
             for line in output.lines() {
                 let parts: Vec<&str> = line.trim().splitn(2, '\t').collect();
                 if parts.is_empty() || parts[0].is_empty() {

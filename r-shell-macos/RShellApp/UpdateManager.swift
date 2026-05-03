@@ -1,25 +1,31 @@
+import AppKit
 import Foundation
 import OSLog
 
-/// Minimal Sparkle-compatible updater integration.
-///
-/// Sparkle is the de-facto standard for macOS app updates. This module
-/// manages the appcast feed URL, version comparison, and download trigger.
-///
-/// To fully integrate Sparkle:
-///   1. Add Sparkle as an SPM dependency in project.yml
-///   2. Call `SUUpdater.shared().checkForUpdates(nil)` from the menu
-///   3. Host an appcast.xml at the `feedURL` below
-///
-/// Until Sparkle is added as a dependency, this provides the metadata
-/// and a placeholder for the check-for-updates action.
+#if canImport(Sparkle)
+import Sparkle
+#endif
+
 @MainActor
-class UpdateManager {
+final class UpdateManager: ObservableObject {
     static let shared = UpdateManager()
     private let logger = Logger(subsystem: "com.r-shell", category: "updater")
 
-    /// URL to the appcast feed (hosted on GitHub Releases).
-    let feedURL = URL(string: "https://github.com/asmuelle/r-shell/releases/latest/download/appcast.xml")!
+    @Published private(set) var status: UpdateIntegrationStatus
+
+    #if canImport(Sparkle)
+    private var updaterController: SPUStandardUpdaterController?
+    #endif
+
+    /// URL to the appcast feed. Sparkle reads the same value through
+    /// `SUFeedURL`; exposing it here keeps Settings and diagnostics typed.
+    var feedURL: URL {
+        if let raw = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+           let url = URL(string: raw) {
+            return url
+        }
+        return URL(string: "https://github.com/asmuelle/r-shell/releases/latest/download/appcast.xml")!
+    }
 
     /// Current app version from Info.plist.
     var currentVersion: String {
@@ -31,18 +37,51 @@ class UpdateManager {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
     }
 
-    private init() {}
+    var publicKeyConfigured: Bool {
+        Self.publicKeyConfiguredInBundle
+    }
+
+    private static var publicKeyConfiguredInBundle: Bool {
+        guard let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
+            return false
+        }
+        return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canCheckForUpdates: Bool {
+        status == .ready
+    }
+
+    private init() {
+        #if canImport(Sparkle)
+        if Self.publicKeyConfiguredInBundle {
+            updaterController = SPUStandardUpdaterController(
+                startingUpdater: true,
+                updaterDelegate: nil,
+                userDriverDelegate: nil
+            )
+            status = .ready
+        } else {
+            status = .missingPublicKey
+        }
+        #else
+        status = .frameworkUnavailable
+        #endif
+    }
 
     /// Check for updates manually (menu item action).
     func checkForUpdates() {
-        logger.info("Checking for updates (feed: \(self.feedURL))")
+        logger.info("Checking for updates (feed: \(self.feedURL.absoluteString, privacy: .public))")
 
-        // Once Sparkle is linked:
-        //   SUUpdater.shared().feedURL = feedURL
-        //   SUUpdater.shared().checkForUpdates(nil)
-
-        // Placeholder: log the current version
-        logger.info("Current version: \(self.currentVersion) (build \(self.currentBuild))")
+        #if canImport(Sparkle)
+        guard let updaterController else {
+            presentConfigurationAlert()
+            return
+        }
+        updaterController.checkForUpdates(nil)
+        #else
+        presentConfigurationAlert()
+        #endif
     }
 
     // MARK: - Appcast generation helper
@@ -71,5 +110,63 @@ class UpdateManager {
             </channel>
         </rss>
         """
+    }
+
+    private func presentConfigurationAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Updates are not configured"
+        alert.informativeText = status.userMessage
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+}
+
+enum UpdateIntegrationStatus: Equatable {
+    case ready
+    case missingPublicKey
+    case frameworkUnavailable
+
+    var label: String {
+        switch self {
+        case .ready:
+            return "Ready"
+        case .missingPublicKey:
+            return "Sparkle key missing"
+        case .frameworkUnavailable:
+            return "Sparkle not linked"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .ready:
+            return "checkmark.circle.fill"
+        case .missingPublicKey:
+            return "key.slash"
+        case .frameworkUnavailable:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var tint: NSColor {
+        switch self {
+        case .ready:
+            return .systemGreen
+        case .missingPublicKey:
+            return .systemOrange
+        case .frameworkUnavailable:
+            return .systemRed
+        }
+    }
+
+    var userMessage: String {
+        switch self {
+        case .ready:
+            return "Sparkle is linked and the app has a public EdDSA key."
+        case .missingPublicKey:
+            return "Sparkle is linked, but SUPublicEDKey is empty. Run `just mac-sparkle-keygen`, add the printed public key to Info.plist, and keep the private key safe."
+        case .frameworkUnavailable:
+            return "The Sparkle framework is not linked in this build. Regenerate the Xcode project and build the macOS app target."
+        }
     }
 }

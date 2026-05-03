@@ -137,6 +137,7 @@ private struct DetailColumn: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
     @State private var bottomHeightDebounce: Task<Void, Never>?
     @State private var inspectorWidthDebounce: Task<Void, Never>?
+    @State private var dashboardVisible = false
 
     /// Connection utility panels are shown only for the selected, open SSH
     /// workspace. SFTP-only tabs, no tab, and disconnected SSH tabs hide
@@ -150,58 +151,76 @@ private struct DetailColumn: View {
         layoutManager.layout.inspectorVisible && tabsStore.activeOpenSSHTab != nil
     }
 
+    private var dashboardShouldRender: Bool {
+        dashboardVisible && tabsStore.connectedSSHTabs.count >= 2
+    }
+
+    private var connectedSSHTabIds: [UUID] {
+        tabsStore.connectedSSHTabs.map(\.id)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if !tabsStore.tabs.isEmpty {
-                ConnectionTabBar()
+                ConnectionTabBar(dashboardVisible: $dashboardVisible)
                 Divider()
             }
 
-            HSplitView {
-                VSplitView {
-                    MainPanel()
-                        .frame(minWidth: 320, minHeight: 320)
+            if dashboardShouldRender {
+                DashboardPanel()
+                    .frame(minWidth: 320, minHeight: 320)
+            } else {
+                HSplitView {
+                    VSplitView {
+                        MainPanel()
+                            .frame(minWidth: 320, minHeight: 320)
 
-                    if bottomShouldRender {
-                        BottomPanel()
+                        if bottomShouldRender {
+                            BottomPanel()
+                                .frame(
+                                    minHeight: LayoutConstants.minBottomHeight,
+                                    idealHeight: layoutManager.layout.bottomHeight,
+                                    maxHeight: LayoutConstants.maxBottomHeight
+                                )
+                                .background(
+                                    GeometryReader { proxy in
+                                        Color.clear
+                                            .preference(key: BottomHeightKey.self,
+                                                        value: proxy.size.height)
+                                    }
+                                )
+                                .materialBackground(.contentBackground,
+                                                    blendingMode: .withinWindow)
+                        }
+                    }
+                    .onPreferenceChange(BottomHeightKey.self, perform: persistBottomHeight)
+
+                    if inspectorShouldRender {
+                        InspectorPanel()
                             .frame(
-                                minHeight: LayoutConstants.minBottomHeight,
-                                idealHeight: layoutManager.layout.bottomHeight,
-                                maxHeight: LayoutConstants.maxBottomHeight
+                                minWidth: LayoutConstants.minInspectorWidth,
+                                idealWidth: layoutManager.layout.inspectorWidth,
+                                maxWidth: LayoutConstants.maxInspectorWidth
                             )
                             .background(
                                 GeometryReader { proxy in
                                     Color.clear
-                                        .preference(key: BottomHeightKey.self,
-                                                    value: proxy.size.height)
+                                        .preference(key: InspectorWidthKey.self,
+                                                    value: proxy.size.width)
                                 }
                             )
                             .materialBackground(.contentBackground,
                                                 blendingMode: .withinWindow)
                     }
                 }
-                .onPreferenceChange(BottomHeightKey.self, perform: persistBottomHeight)
-
-                if inspectorShouldRender {
-                    InspectorPanel()
-                        .frame(
-                            minWidth: LayoutConstants.minInspectorWidth,
-                            idealWidth: layoutManager.layout.inspectorWidth,
-                            maxWidth: LayoutConstants.maxInspectorWidth
-                        )
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear
-                                    .preference(key: InspectorWidthKey.self,
-                                                value: proxy.size.width)
-                            }
-                        )
-                        .materialBackground(.contentBackground,
-                                            blendingMode: .withinWindow)
-                }
             }
         }
         .onPreferenceChange(InspectorWidthKey.self, perform: persistInspectorWidth)
+        .onChange(of: connectedSSHTabIds) { ids in
+            if ids.count < 2 {
+                dashboardVisible = false
+            }
+        }
     }
 
     /// Debounce drag updates: split views fire preference changes on every

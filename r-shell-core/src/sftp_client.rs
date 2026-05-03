@@ -112,7 +112,10 @@ impl StandaloneSftpClient {
                 key_path,
                 passphrase,
             } => crate::ssh::ResolvedAuth::Key {
-                key: Box::new(crate::ssh::load_private_key(key_path, passphrase.as_deref())?),
+                key: Box::new(crate::ssh::load_private_key(
+                    key_path,
+                    passphrase.as_deref(),
+                )?),
                 key_path_hint: Some(key_path),
             },
         };

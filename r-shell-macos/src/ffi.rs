@@ -20,6 +20,10 @@ pub struct FfiConnectConfig {
     pub key_path: Option<String>,
     /// Optional passphrase to decrypt the private key.
     pub passphrase: Option<String>,
+    /// Use identities from SSH_AUTH_SOCK instead of a password or key file.
+    pub use_agent: bool,
+    /// Optional public-key-base64 substring used to select one agent identity.
+    pub agent_identity_hint: Option<String>,
     /// Optional unique suffix that lets the same `(user, host, port)` triple
     /// be opened more than once (e.g., one terminal tab per session). When
     /// `Some("abc")`, the connection is keyed as `"user@host:port#abc"` in
@@ -319,11 +323,12 @@ pub fn rshell_connect(config: FfiConnectConfig) -> Result<String, ConnectError> 
         }
     }
 
-    let ssh_config = r_shell_core::ssh::SshConfig {
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        auth_method: match (config.password, config.key_path) {
+    let auth_method = if config.use_agent {
+        r_shell_core::ssh::AuthMethod::Agent {
+            identity_hint: config.agent_identity_hint,
+        }
+    } else {
+        match (config.password, config.key_path) {
             (Some(password), _) => r_shell_core::ssh::AuthMethod::Password { password },
             (None, Some(key_path)) => r_shell_core::ssh::AuthMethod::PublicKey {
                 key_path,
@@ -331,10 +336,17 @@ pub fn rshell_connect(config: FfiConnectConfig) -> Result<String, ConnectError> 
             },
             (None, None) => {
                 return Err(ConnectError::ConfigInvalid {
-                    detail: "Either password or key_path is required".into(),
+                    detail: "Either password, key_path, or SSH agent authentication is required".into(),
                 });
             }
-        },
+        }
+    };
+
+    let ssh_config = r_shell_core::ssh::SshConfig {
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        auth_method,
     };
 
     let cm = bridge.connection_manager.clone();
@@ -1770,11 +1782,17 @@ mod tests {
             password: None,
             key_path: None,
             passphrase: None,
+            use_agent: false,
+            agent_identity_hint: None,
             session_id: None,
         });
         match result {
             Err(ConnectError::ConfigInvalid { detail }) => {
-                assert!(detail.contains("password or key_path"));
+                assert!(
+                    detail.contains("password")
+                        && detail.contains("key_path")
+                        && detail.contains("agent")
+                );
             }
             other => panic!("expected ConfigInvalid, got {:?}", other),
         }

@@ -583,6 +583,14 @@ public struct FfiConnectConfig {
      */
     public var passphrase: String?
     /**
+     * Use identities from SSH_AUTH_SOCK instead of a password or key file.
+     */
+    public var useAgent: Bool
+    /**
+     * Optional public-key-base64 substring used to select one agent identity.
+     */
+    public var agentIdentityHint: String?
+    /**
      * Optional unique suffix that lets the same `(user, host, port)` triple
      * be opened more than once (e.g., one terminal tab per session). When
      * `Some("abc")`, the connection is keyed as `"user@host:port#abc"` in
@@ -593,17 +601,23 @@ public struct FfiConnectConfig {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(host: String, port: UInt16, username: String, 
+    public init(host: String, port: UInt16, username: String,
         /**
          * Password for password-based auth. May be `None` when using key-based auth.
-         */password: String?, 
+         */password: String?,
         /**
          * Filesystem path to a private key for key-based auth. May be `None`
          * when using password auth.
-         */keyPath: String?, 
+         */keyPath: String?,
         /**
          * Optional passphrase to decrypt the private key.
-         */passphrase: String?, 
+         */passphrase: String?,
+        /**
+         * Use identities from SSH_AUTH_SOCK instead of a password or key file.
+         */useAgent: Bool,
+        /**
+         * Optional public-key-base64 substring used to select one agent identity.
+         */agentIdentityHint: String?,
         /**
          * Optional unique suffix that lets the same `(user, host, port)` triple
          * be opened more than once (e.g., one terminal tab per session). When
@@ -617,6 +631,8 @@ public struct FfiConnectConfig {
         self.password = password
         self.keyPath = keyPath
         self.passphrase = passphrase
+        self.useAgent = useAgent
+        self.agentIdentityHint = agentIdentityHint
         self.sessionId = sessionId
     }
 }
@@ -643,6 +659,12 @@ extension FfiConnectConfig: Equatable, Hashable {
         if lhs.passphrase != rhs.passphrase {
             return false
         }
+        if lhs.useAgent != rhs.useAgent {
+            return false
+        }
+        if lhs.agentIdentityHint != rhs.agentIdentityHint {
+            return false
+        }
         if lhs.sessionId != rhs.sessionId {
             return false
         }
@@ -656,6 +678,8 @@ extension FfiConnectConfig: Equatable, Hashable {
         hasher.combine(password)
         hasher.combine(keyPath)
         hasher.combine(passphrase)
+        hasher.combine(useAgent)
+        hasher.combine(agentIdentityHint)
         hasher.combine(sessionId)
     }
 }
@@ -668,12 +692,14 @@ public struct FfiConverterTypeFfiConnectConfig: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiConnectConfig {
         return
             try FfiConnectConfig(
-                host: FfiConverterString.read(from: &buf), 
-                port: FfiConverterUInt16.read(from: &buf), 
-                username: FfiConverterString.read(from: &buf), 
-                password: FfiConverterOptionString.read(from: &buf), 
-                keyPath: FfiConverterOptionString.read(from: &buf), 
-                passphrase: FfiConverterOptionString.read(from: &buf), 
+                host: FfiConverterString.read(from: &buf),
+                port: FfiConverterUInt16.read(from: &buf),
+                username: FfiConverterString.read(from: &buf),
+                password: FfiConverterOptionString.read(from: &buf),
+                keyPath: FfiConverterOptionString.read(from: &buf),
+                passphrase: FfiConverterOptionString.read(from: &buf),
+                useAgent: FfiConverterBool.read(from: &buf),
+                agentIdentityHint: FfiConverterOptionString.read(from: &buf),
                 sessionId: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -685,6 +711,8 @@ public struct FfiConverterTypeFfiConnectConfig: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.password, into: &buf)
         FfiConverterOptionString.write(value.keyPath, into: &buf)
         FfiConverterOptionString.write(value.passphrase, into: &buf)
+        FfiConverterBool.write(value.useAgent, into: &buf)
+        FfiConverterOptionString.write(value.agentIdentityHint, into: &buf)
         FfiConverterOptionString.write(value.sessionId, into: &buf)
     }
 }

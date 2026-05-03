@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust workspace
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Check
+        run: cargo check --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+  tauri-frontend:
+    name: Tauri frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: r-shell-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: r-shell-tauri/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  macos-app:
+    name: Native macOS app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-${{ runner.os }}-
+
+      - name: Install macOS build tools
+        run: brew install just xcodegen
+
+      - name: Generate project
+        run: just mac-gen
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project r-shell-macos/R-Shell.xcodeproj \
+            -scheme RShellApp \
+            -destination 'platform=macOS' \
+            -derivedDataPath /tmp/rshell-dd \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+  ios-app:
+    name: Native iOS/iPadOS app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ios-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ios-cargo-${{ runner.os }}-
+
+      - name: Install iOS build tools
+        run: brew install just xcodegen
+
+      - name: Build simulator app
+        run: just ios-ci-build

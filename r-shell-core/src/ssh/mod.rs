@@ -4,6 +4,7 @@ use crate::sftp_client::{
 use anyhow::Result;
 use russh::*;
 use russh_keys::*;
+use russh_keys::PublicKeyBase64;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -89,6 +90,9 @@ pub enum AuthMethod {
         key_path: String,
         passphrase: Option<String>,
     },
+    Agent {
+        identity_hint: Option<String>,
+    },
 }
 
 impl std::fmt::Debug for AuthMethod {
@@ -111,6 +115,10 @@ impl std::fmt::Debug for AuthMethod {
                         .map(|_| "<redacted>")
                         .unwrap_or("<none>"),
                 )
+                .finish(),
+            AuthMethod::Agent { identity_hint } => f
+                .debug_struct("AuthMethod::Agent")
+                .field("identity_hint", identity_hint)
                 .finish(),
         }
     }
@@ -307,6 +315,9 @@ pub(crate) enum ResolvedAuth<'a> {
         /// user asked us to load). Not used for the authentication itself.
         key_path_hint: Option<&'a str>,
     },
+    Agent {
+        identity_hint: Option<&'a str>,
+    },
 }
 
 /// Perform the full SSH connect + authenticate sequence with host-key
@@ -387,6 +398,12 @@ pub(crate) async fn connect_authenticated(
     let key_hint_for_error = match &auth {
         ResolvedAuth::Password { .. } => None,
         ResolvedAuth::Key { key_path_hint, .. } => key_path_hint.map(String::from),
+        ResolvedAuth::Agent { identity_hint } => Some(
+            identity_hint
+                .filter(|hint| !hint.is_empty())
+                .unwrap_or("SSH agent")
+                .to_string(),
+        ),
     };
 
     let authenticated = match auth {
@@ -403,6 +420,31 @@ pub(crate) async fn connect_authenticated(
                     e
                 )
             })?,
+        ResolvedAuth::Agent { identity_hint } => {
+            let mut agent = russh_keys::agent::client::AgentClient::connect_env()
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "SSH agent authentication is enabled, but r-shell could not connect to SSH_AUTH_SOCK: {}",
+                        e
+                    )
+                })?;
+            let identities = agent.request_identities().await.map_err(|e| {
+                anyhow::anyhow!("SSH agent did not return identities: {}", e)
+            })?;
+            let key = select_agent_identity(identities, identity_hint).ok_or_else(|| {
+                if let Some(hint) = identity_hint.filter(|hint| !hint.is_empty()) {
+                    anyhow::anyhow!(
+                        "SSH agent has no identity matching '{}'. Add the key to your agent or clear the identity hint.",
+                        hint
+                    )
+                } else {
+                    anyhow::anyhow!("SSH agent has no identities. Add a key to your agent and try again.")
+                }
+            })?;
+            let (_agent, result) = session.authenticate_future(username.to_string(), key, agent).await;
+            result.map_err(|e| anyhow::anyhow!("SSH agent authentication failed: {}", e))?
+        }
     };
 
     if !authenticated {
@@ -422,6 +464,23 @@ pub(crate) async fn connect_authenticated(
     }
 
     Ok(session)
+}
+
+fn select_agent_identity(
+    identities: Vec<key::PublicKey>,
+    identity_hint: Option<&str>,
+) -> Option<key::PublicKey> {
+    let hint = identity_hint
+        .map(str::trim)
+        .filter(|hint| !hint.is_empty());
+
+    match hint {
+        None => identities.into_iter().next(),
+        Some(hint) => identities.into_iter().find(|identity| {
+            let encoded = identity.public_key_base64();
+            encoded.contains(hint) || hint.contains(&encoded)
+        }),
+    }
 }
 
 /// Render a mismatch into a user-facing error message.
@@ -576,6 +635,9 @@ impl SshClient {
             } => ResolvedAuth::Key {
                 key: Box::new(load_private_key(key_path, passphrase.as_deref())?),
                 key_path_hint: Some(key_path),
+            },
+            AuthMethod::Agent { identity_hint } => ResolvedAuth::Agent {
+                identity_hint: identity_hint.as_deref(),
             },
         };
 

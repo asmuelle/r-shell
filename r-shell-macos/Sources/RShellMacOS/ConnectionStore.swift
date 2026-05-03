@@ -14,6 +14,46 @@ public enum AuthMethod: String, Codable, Sendable, CaseIterable {
     }
 }
 
+// MARK: - SSH key reference
+
+public enum SSHKeyReference: Codable, Hashable, Sendable {
+    case plainPath(String)
+    case securityScopedBookmark(Data)
+    case importedVaultKey(id: String)
+    case generatedVaultKey(id: String)
+    case agent(identityHint: String?)
+
+    public var displayName: String {
+        switch self {
+        case .plainPath(let path):
+            return path
+        case .securityScopedBookmark:
+            return "External key"
+        case .importedVaultKey(let id):
+            return "Imported key \(String(id.prefix(8)))"
+        case .generatedVaultKey(let id):
+            return "Generated key \(String(id.prefix(8)))"
+        case .agent(let identityHint):
+            guard let identityHint, !identityHint.isEmpty else { return "SSH agent" }
+            return "SSH agent (\(identityHint))"
+        }
+    }
+
+    public var legacyPath: String? {
+        switch self {
+        case .plainPath(let path):
+            return path
+        default:
+            return nil
+        }
+    }
+
+    public var isAgent: Bool {
+        if case .agent = self { return true }
+        return false
+    }
+}
+
 // MARK: - Connection kind
 
 /// What this profile is used for. Both kinds share the underlying
@@ -61,8 +101,17 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var kind: ConnectionKind
     public var folderPath: String?
 
-    // Non-credential auth details (key paths are safe to store, passwords go to Keychain)
-    public var privateKeyPath: String?
+    // Non-credential auth details. New saves use `sshKeyReference`; the
+    // computed `privateKeyPath` keeps older call sites and imported JSON
+    // working while profiles migrate away from raw paths.
+    public var sshKeyReference: SSHKeyReference?
+    public var privateKeyPath: String? {
+        get { sshKeyReference?.legacyPath }
+        set {
+            let trimmed = newValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            sshKeyReference = trimmed?.isEmpty == false ? .plainPath(trimmed!) : nil
+        }
+    }
 
     public var createdAt: Date
     public var lastConnected: Date?
@@ -70,6 +119,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var tags: [String]
     public var color: String?
     public var notes: String?
+    public var monitoredSystemdServices: [String]
 
     public init(
         id: String = UUID().uuidString,
@@ -81,12 +131,14 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         kind: ConnectionKind = .ssh,
         folderPath: String? = nil,
         privateKeyPath: String? = nil,
+        sshKeyReference: SSHKeyReference? = nil,
         createdAt: Date = Date(),
         lastConnected: Date? = nil,
         favorite: Bool = false,
         tags: [String] = [],
         color: String? = nil,
-        notes: String? = nil
+        notes: String? = nil,
+        monitoredSystemdServices: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -96,13 +148,21 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         self.authMethod = authMethod
         self.kind = kind
         self.folderPath = folderPath
-        self.privateKeyPath = privateKeyPath
+        if let sshKeyReference {
+            self.sshKeyReference = sshKeyReference
+        } else if let privateKeyPath,
+                  !privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.sshKeyReference = .plainPath(privateKeyPath)
+        } else {
+            self.sshKeyReference = nil
+        }
         self.createdAt = createdAt
         self.lastConnected = lastConnected
         self.favorite = favorite
         self.tags = tags
         self.color = color
         self.notes = notes
+        self.monitoredSystemdServices = monitoredSystemdServices
     }
 
     /// Keychain account string derived from this profile.
@@ -112,7 +172,8 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     // (no `kind` field) round-trip cleanly.
     private enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, authMethod, kind, folderPath
-        case privateKeyPath, createdAt, lastConnected, favorite, tags, color, notes
+        case privateKeyPath, sshKeyReference, createdAt, lastConnected, favorite, tags, color, notes
+        case monitoredSystemdServices
     }
 
     public init(from decoder: Decoder) throws {
@@ -125,13 +186,42 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         self.authMethod = try c.decode(AuthMethod.self, forKey: .authMethod)
         self.kind = try c.decodeIfPresent(ConnectionKind.self, forKey: .kind) ?? .ssh
         self.folderPath = try c.decodeIfPresent(String.self, forKey: .folderPath)
-        self.privateKeyPath = try c.decodeIfPresent(String.self, forKey: .privateKeyPath)
+        if let reference = try c.decodeIfPresent(SSHKeyReference.self, forKey: .sshKeyReference) {
+            self.sshKeyReference = reference
+        } else if let legacyPath = try c.decodeIfPresent(String.self, forKey: .privateKeyPath),
+                  !legacyPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.sshKeyReference = .plainPath(legacyPath)
+        } else {
+            self.sshKeyReference = nil
+        }
         self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         self.lastConnected = try c.decodeIfPresent(Date.self, forKey: .lastConnected)
         self.favorite = try c.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
         self.tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         self.color = try c.decodeIfPresent(String.self, forKey: .color)
         self.notes = try c.decodeIfPresent(String.self, forKey: .notes)
+        self.monitoredSystemdServices = try c.decodeIfPresent([String].self, forKey: .monitoredSystemdServices) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(host, forKey: .host)
+        try c.encode(port, forKey: .port)
+        try c.encode(username, forKey: .username)
+        try c.encode(authMethod, forKey: .authMethod)
+        try c.encode(kind, forKey: .kind)
+        try c.encodeIfPresent(folderPath, forKey: .folderPath)
+        try c.encodeIfPresent(privateKeyPath, forKey: .privateKeyPath)
+        try c.encodeIfPresent(sshKeyReference, forKey: .sshKeyReference)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(lastConnected, forKey: .lastConnected)
+        try c.encode(favorite, forKey: .favorite)
+        try c.encode(tags, forKey: .tags)
+        try c.encodeIfPresent(color, forKey: .color)
+        try c.encodeIfPresent(notes, forKey: .notes)
+        try c.encode(monitoredSystemdServices, forKey: .monitoredSystemdServices)
     }
 }
 

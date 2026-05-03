@@ -35,6 +35,8 @@ final class RShellAppFFITests: XCTestCase {
             password: nil,
             keyPath: nil,
             passphrase: nil,
+            useAgent: false,
+            agentIdentityHint: nil,
             sessionId: nil
         )
 
@@ -66,6 +68,8 @@ final class RShellAppFFITests: XCTestCase {
             password: "wrong",
             keyPath: nil,
             passphrase: nil,
+            useAgent: false,
+            agentIdentityHint: nil,
             sessionId: "test-bad-host"
         )
 

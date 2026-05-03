@@ -20,14 +20,23 @@ final class RShellBetaSmokeTests: XCTestCase {
         )
         XCTAssertEqual(profile.name, "Test Server")
         XCTAssertEqual(profile.keychainAccount, "admin@test.example.com:22")
+        XCTAssertEqual(profile.sshKeyReference, .plainPath("~/.ssh/id_ed25519"))
+        XCTAssertEqual(profile.privateKeyPath, "~/.ssh/id_ed25519")
         XCTAssertFalse(profile.favorite)
+        XCTAssertTrue(profile.monitoredSystemdServices.isEmpty)
     }
 
     func testConnectionProfileStoreRoundTrip() {
         let store = ConnectionStoreData(
             connections: [
                 ConnectionProfile(name: "A", host: "a.com", port: 22, username: "u"),
-                ConnectionProfile(name: "B", host: "b.com", port: 22, username: "u"),
+                ConnectionProfile(
+                    name: "B",
+                    host: "b.com",
+                    port: 22,
+                    username: "u",
+                    monitoredSystemdServices: ["nginx.service", "postgresql.service"]
+                ),
             ],
             folders: []
         )
@@ -38,6 +47,7 @@ final class RShellBetaSmokeTests: XCTestCase {
         XCTAssertEqual(decoded.connections.count, 2)
         XCTAssertEqual(decoded.connections[0].host, "a.com")
         XCTAssertEqual(decoded.connections[1].host, "b.com")
+        XCTAssertEqual(decoded.connections[1].monitoredSystemdServices, ["nginx.service", "postgresql.service"])
     }
 
     // MARK: - Layout persistence

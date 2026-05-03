@@ -13,7 +13,9 @@ pub struct MacOsBridge {
 
 impl MacOsBridge {
     pub fn global() -> &'static Self {
-        BRIDGE.get().expect("MacOsBridge not initialized — call rshell_init() first")
+        BRIDGE
+            .get()
+            .expect("MacOsBridge not initialized — call rshell_init() first")
     }
 
     pub fn init() -> &'static Self {

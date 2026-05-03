@@ -7,12 +7,15 @@ struct RShellApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var layoutManager = LayoutManager()
     @StateObject private var tabsStore = TerminalTabsStore()
+    @StateObject private var updateManager = UpdateManager.shared
+    @StateObject private var entitlementsStore = EntitlementsStore.shared
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(layoutManager)
                 .environmentObject(tabsStore)
+                .environmentObject(entitlementsStore)
                 .frame(minWidth: 900, minHeight: 600)
         }
         .windowStyle(.titleBar)
@@ -93,13 +96,23 @@ struct RShellApp: App {
 
             CommandMenu("Help") {
                 Button("Check for Updates…") {
-                    UpdateManager.shared.checkForUpdates()
+                    updateManager.checkForUpdates()
+                }
+
+                Button("Export Diagnostics…") {
+                    DiagnosticsBundleExporter.export(
+                        connectionStore: ConnectionStoreManager.shared,
+                        tabsStore: tabsStore,
+                        layoutManager: layoutManager
+                    )
                 }
             }
         }
 
         Settings {
             SettingsView()
+                .environmentObject(updateManager)
+                .environmentObject(entitlementsStore)
         }
     }
 

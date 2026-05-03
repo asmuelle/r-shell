@@ -37,6 +37,7 @@ let package = Package(
     name: "r-shell-macos",
     platforms: [
         .macOS(.v11),
+        .iOS(.v17),
     ],
     products: [
         .library(

@@ -24,6 +24,11 @@ struct SidebarPanel: View {
 /// the selected tab together.
 struct ConnectionTabBar: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
+    @Binding var dashboardVisible: Bool
+
+    private var connectedSSHTabs: [TerminalTab] {
+        tabsStore.connectedSSHTabs
+    }
 
     var body: some View {
         TabBarView(
@@ -51,8 +56,18 @@ struct ConnectionTabBar: View {
             ),
             statuses: Dictionary(
                 uniqueKeysWithValues: tabsStore.tabs.map { ($0.id, $0.status) }
-            )
+            ),
+            showsDashboardButton: connectedSSHTabs.count >= 2,
+            dashboardVisible: dashboardVisible,
+            onToggleDashboard: {
+                dashboardVisible.toggle()
+            }
         )
+        .onChange(of: connectedSSHTabs.map(\.id)) { ids in
+            if ids.count < 2 {
+                dashboardVisible = false
+            }
+        }
     }
 }
 
@@ -340,6 +355,7 @@ struct BottomPanel: View {
                     case 5:
                         SystemdMonitorView(
                             connectionId: activeTab.connectionId,
+                            profileId: activeTab.profile.id,
                             connectionLabel: activeTab.profile.name
                         )
                     case 6:
@@ -534,6 +550,7 @@ struct InspectorPanel: View {
                     SystemMonitorView(
                         connectionId: tab.connectionId,
                         connectionLabel: tab.profile.name,
+                        profileId: tab.profile.id,
                         sshPort: tab.profile.port,
                         isActive: isActive
                     )
@@ -543,6 +560,123 @@ struct InspectorPanel: View {
                 }
             }
             .frame(minWidth: LayoutConstants.minInspectorWidth)
+        }
+    }
+}
+
+// MARK: - Multi-host dashboard
+
+/// Full-width monitor desktop. Each connected SSH workspace renders the
+/// same view used by the right inspector panel, with polling enabled for
+/// every visible host.
+struct DashboardPanel: View {
+    @EnvironmentObject var tabsStore: TerminalTabsStore
+    @State private var sort = DashboardSort.order
+
+    private var tabs: [TerminalTab] {
+        let tabs = tabsStore.connectedSSHTabs
+        switch sort {
+        case .order:
+            return tabs
+        case .name:
+            return tabs.sorted {
+                $0.profile.name.localizedCaseInsensitiveCompare($1.profile.name) == .orderedAscending
+            }
+        case .host:
+            return tabs.sorted {
+                let lhs = "\($0.profile.host):\($0.profile.port)"
+                let rhs = "\($1.profile.host):\($1.profile.port)"
+                return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+            }
+        }
+    }
+
+    var body: some View {
+        if tabs.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 28, weight: .light))
+                    .foregroundStyle(.tertiary)
+                Text("Connect to two or more SSH hosts to open the dashboard.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(spacing: 0) {
+                dashboardToolbar
+                Divider()
+
+                GeometryReader { proxy in
+                    let columnWidth = max(
+                        LayoutConstants.minInspectorWidth,
+                        proxy.size.width / CGFloat(max(tabs.count, 1))
+                    )
+
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 0) {
+                            ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                                SystemMonitorView(
+                                    connectionId: tab.connectionId,
+                                    connectionLabel: tab.profile.name,
+                                    profileId: tab.profile.id,
+                                    sshPort: tab.profile.port,
+                                    isActive: true
+                                )
+                                .frame(width: columnWidth)
+
+                                if index < tabs.count - 1 {
+                                    Divider()
+                                }
+                            }
+                        }
+                        .frame(
+                            minWidth: proxy.size.width,
+                            maxHeight: .infinity,
+                            alignment: .leading
+                        )
+                    }
+                }
+            }
+            .materialBackground(.contentBackground, blendingMode: .withinWindow)
+        }
+    }
+
+    private var dashboardToolbar: some View {
+        HStack(spacing: 10) {
+            Label("\(tabs.count) hosts", systemImage: "server.rack")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+
+            Picker("Sort", selection: $sort) {
+                ForEach(DashboardSort.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 220)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+}
+
+private enum DashboardSort: String, CaseIterable, Identifiable {
+    case order
+    case name
+    case host
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .order: return "Opened"
+        case .name: return "Name"
+        case .host: return "Host"
         }
     }
 }
