@@ -85,10 +85,25 @@ final class MobileSessionStore: ObservableObject {
                 switch result {
                 case .success(let connectionId):
                     self.statuses[profile.id] = .connected(connectionId: connectionId)
+                    MobileActivityLogStore.shared.record(
+                        title: "Connected",
+                        detail: "\(profile.username)@\(profile.host):\(profile.port)",
+                        profileId: profile.id,
+                        connectionId: connectionId,
+                        systemImage: profile.kind.supportsTerminal ? "terminal" : "folder",
+                        severity: .ok
+                    )
                     onSuccess()
                 case .failure(let error):
                     let message = Self.describeConnectFailure(error, profile: profile)
                     self.statuses[profile.id] = .failed(message)
+                    MobileActivityLogStore.shared.record(
+                        title: "Connection failed",
+                        detail: "\(profile.name): \(message)",
+                        profileId: profile.id,
+                        systemImage: "exclamationmark.triangle.fill",
+                        severity: .critical
+                    )
                     onFailure?(message)
                 }
             }
@@ -104,9 +119,25 @@ final class MobileSessionStore: ObservableObject {
         let result = rshellDisconnect(connectionId: connectionId)
         if result.success {
             statuses[profile.id] = .disconnected
+            MobileActivityLogStore.shared.record(
+                title: "Disconnected",
+                detail: profile.name,
+                profileId: profile.id,
+                connectionId: connectionId,
+                systemImage: "xmark.circle",
+                severity: .info
+            )
         } else {
             let message = MobileDiagnosticsRedactor.redactSecrets(result.error ?? "Disconnect failed")
             statuses[profile.id] = .failed(message)
+            MobileActivityLogStore.shared.record(
+                title: "Disconnect failed",
+                detail: "\(profile.name): \(message)",
+                profileId: profile.id,
+                connectionId: connectionId,
+                systemImage: "exclamationmark.triangle.fill",
+                severity: .warning
+            )
         }
     }
 

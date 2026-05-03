@@ -14,6 +14,7 @@ struct FileEditView: View {
     @State private var isModified = false
     @State private var isSaving = false
     @State private var saveError: String?
+    @State private var showingDiffReview = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,8 +38,8 @@ struct FileEditView: View {
                         .scaleEffect(0.75)
                 }
 
-                Button("Save") {
-                    save()
+                Button("Review & Save") {
+                    showingDiffReview = true
                 }
                 .disabled(!isModified || isSaving)
                 .keyboardShortcut("s", modifiers: .command)
@@ -50,6 +51,10 @@ struct FileEditView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Color(NSColor.controlBackgroundColor))
+
+            Divider()
+
+            editorStatusBar
 
             Divider()
 
@@ -79,6 +84,20 @@ struct FileEditView: View {
                 }
         }
         .frame(width: 560, height: 420)
+        .sheet(isPresented: $showingDiffReview) {
+            FileDiffReviewSheet(
+                path: path,
+                original: originalContent,
+                revised: content,
+                isSaving: isSaving,
+                onCancel: {
+                    showingDiffReview = false
+                },
+                onConfirm: {
+                    save()
+                }
+            )
+        }
         .onAppear {
             originalContent = content
         }
@@ -89,16 +108,90 @@ struct FileEditView: View {
         isSaving = true
         Task { @MainActor in
             do {
+                let backup = try await MacSafeConfigSave.prepareIfNeeded(
+                    connectionId: connectionId,
+                    remotePath: path
+                )
                 try await onSave(content)
+                if let backup {
+                    _ = try await MacSafeConfigSave.validate(
+                        connectionId: connectionId,
+                        backup: backup
+                    )
+                }
+                ActivityLogStore.shared.record(
+                    title: "File saved",
+                    detail: path,
+                    connectionId: connectionId,
+                    icon: "doc.text",
+                    severity: .success
+                )
                 originalContent = content
                 isModified = false
                 isSaving = false
+                showingDiffReview = false
                 dismiss()
             } catch {
+                ActivityLogStore.shared.record(
+                    title: "File save failed",
+                    detail: path,
+                    connectionId: connectionId,
+                    icon: "exclamationmark.triangle.fill",
+                    severity: .critical
+                )
                 saveError = error.localizedDescription
                 isSaving = false
             }
         }
+    }
+
+    private var editorStatusBar: some View {
+        HStack(spacing: 12) {
+            Label(FileSyntax(path: path).displayName, systemImage: "curlybraces")
+            Label("\(lineCount) lines", systemImage: "number")
+            if isModified {
+                Label("\(changedLineCount) changed", systemImage: "plus.forwardslash.minus")
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+            Label(safetySummary, systemImage: "checkmark.shield")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var lineCount: Int {
+        max(1, content.split(separator: "\n", omittingEmptySubsequences: false).count)
+    }
+
+    private var changedLineCount: Int {
+        let original = originalContent.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let revised = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let maxCount = max(original.count, revised.count)
+        guard maxCount > 0 else { return 0 }
+        return (0..<maxCount).reduce(into: 0) { count, index in
+            let lhs = index < original.count ? original[index] : nil
+            let rhs = index < revised.count ? revised[index] : nil
+            if lhs != rhs {
+                count += 1
+            }
+        }
+    }
+
+    private var safetySummary: String {
+        let fileName = (path as NSString).lastPathComponent
+        let ext = (path as NSString).pathExtension.lowercased()
+        if path.hasPrefix("/etc/")
+            || path.hasPrefix("/usr/local/etc/")
+            || (fileName.hasPrefix(".") && fileName != "." && fileName != "..")
+            || ["service", "sh", "yaml", "yml", "sql"].contains(ext) {
+            return "Backup before save; validation when available"
+        }
+        return "Diff review before save"
     }
 }
 
@@ -121,6 +214,16 @@ private enum FileSyntax: Equatable {
             self = .yaml
         default:
             self = .plain
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .plain: return "Plain text"
+        case .shell: return "Shell"
+        case .sql: return "SQL"
+        case .systemdUnit: return "systemd unit"
+        case .yaml: return "YAML"
         }
     }
 }

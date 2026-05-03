@@ -32,6 +32,8 @@ struct ContentView: View {
     @StateObject private var connectionStore = ConnectionStoreManager.shared
     @StateObject private var transfersStore = TransferQueueStore()
     @State private var selectedConnection: ConnectionProfile?
+    @State private var dashboardVisible = false
+    @State private var showingCommandPalette = false
 
     var body: some View {
         HSplitView {
@@ -46,10 +48,62 @@ struct ContentView: View {
                 )
             }
 
-            DetailColumn(layoutManager: layoutManager)
+            DetailColumn(
+                layoutManager: layoutManager,
+                dashboardVisible: $dashboardVisible
+            )
         }
         .environmentObject(transfersStore)
         .frame(minWidth: 900, minHeight: 600)
+        .sheet(isPresented: $showingCommandPalette) {
+            CommandPaletteView(
+                connections: connectionStore.connections,
+                selectedConnection: selectedConnection,
+                activeTab: tabsStore.activeTab,
+                connectedHostCount: tabsStore.connectedSSHTabs.count,
+                onConnect: { profile in
+                    selectedConnection = profile
+                    Task { await tabsStore.openConnection(profile) }
+                },
+                onReconnectActive: {
+                    if let activeTab = tabsStore.activeTab {
+                        Task { await tabsStore.reconnect(tabId: activeTab.id) }
+                    }
+                },
+                onCloseActive: {
+                    tabsStore.closeActiveTab()
+                },
+                onOpenDashboard: {
+                    dashboardVisible = tabsStore.connectedSSHTabs.count >= 2
+                },
+                onToggleSidebar: {
+                    layoutManager.toggleSidebar()
+                },
+                onToggleBottom: {
+                    layoutManager.toggleBottom()
+                },
+                onToggleInspector: {
+                    layoutManager.toggleInspector()
+                },
+                onExportDiagnostics: {
+                    DiagnosticsBundleExporter.export(
+                        connectionStore: connectionStore,
+                        tabsStore: tabsStore,
+                        layoutManager: layoutManager
+                    )
+                }
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showCommandPalette)) { _ in
+            showingCommandPalette = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showDashboard)) { _ in
+            dashboardVisible = tabsStore.connectedSSHTabs.count >= 2
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showRunbooks)) { _ in
+            dashboardVisible = false
+            layoutManager.layout.bottomVisible = true
+        }
         .alert("Connection error", isPresented: Binding(
             get: { tabsStore.lastError != nil },
             set: { if !$0 { tabsStore.lastError = nil } }
@@ -134,6 +188,7 @@ private struct SidebarColumn: View {
 
 private struct DetailColumn: View {
     @ObservedObject var layoutManager: LayoutManager
+    @Binding var dashboardVisible: Bool
     @EnvironmentObject var tabsStore: TerminalTabsStore
     @State private var bottomHeightDebounce: Task<Void, Never>?
     @State private var inspectorWidthDebounce: Task<Void, Never>?
@@ -216,7 +271,7 @@ private struct DetailColumn: View {
             }
         }
         .onPreferenceChange(InspectorWidthKey.self, perform: persistInspectorWidth)
-        .onChange(of: connectedSSHTabIds) { ids in
+        .onChange(of: connectedSSHTabIds) { _, ids in
             if ids.count < 2 {
                 dashboardVisible = false
             }

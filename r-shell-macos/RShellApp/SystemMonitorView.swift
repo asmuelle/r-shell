@@ -3,6 +3,75 @@ import Foundation
 import MapKit
 import SwiftUI
 import OSLog
+import RShellMacOS
+
+fileprivate enum MonitorDrillDown: Identifiable {
+    case cpu
+    case memory
+    case disk(FfiDiskMount)
+    case systemdService(String)
+    case ufw
+
+    var id: String {
+        switch self {
+        case .cpu:
+            return "cpu"
+        case .memory:
+            return "memory"
+        case .disk(let disk):
+            return "disk:\(disk.mount):\(disk.source)"
+        case .systemdService(let unit):
+            return "systemd:\(unit)"
+        case .ufw:
+            return "ufw"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .cpu:
+            return "CPU Analysis"
+        case .memory:
+            return "Memory Analysis"
+        case .disk(let disk):
+            return "Recent Large Files: \(disk.mount)"
+        case .systemdService(let unit):
+            return unit
+        case .ufw:
+            return "UFW Details"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .cpu:
+            return "CPU-heavy processes, thread hot spots, and current load."
+        case .memory:
+            return "Memory-heavy processes, pressure signals, and allocation summary."
+        case .disk(let disk):
+            return "\(disk.source) - files changed in the last 14 days, sorted by size."
+        case .systemdService:
+            return "Unit identity, environment, service files, recent logs, and actions."
+        case .ufw:
+            return "Firewall status, numbered rules, defaults, recent blocks, and raw rules."
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .cpu:
+            return "cpu"
+        case .memory:
+            return "memorychip"
+        case .disk:
+            return "internaldrive"
+        case .systemdService:
+            return "switch.2"
+        case .ufw:
+            return "shield"
+        }
+    }
+}
 
 fileprivate enum MonitorDrillDown: Identifiable {
     case cpu
@@ -88,6 +157,8 @@ struct SystemMonitorView: View {
     let connectionLabel: String
     var profileId: String? = nil
     var sshPort: UInt16? = nil
+    var profile: ConnectionProfile? = nil
+    var connectionStatus: TerminalConnectionStatus? = nil
     var isActive: Bool = true
 
     @State private var stats: FfiSystemStats?
@@ -274,6 +345,13 @@ struct SystemMonitorView: View {
                 let contentHeight = max(0, proxy.size.height - 32)
 
                 VStack(alignment: .leading, spacing: 16) {
+                    if let profile {
+                        ConnectionConfidenceView(
+                            profile: profile,
+                            status: connectionStatus
+                        )
+                    }
+
                     metricBlock(
                         title: "CPU",
                         icon: "cpu",
@@ -328,6 +406,12 @@ struct SystemMonitorView: View {
                         onSelectService: { unit in
                             drillDown = .systemdService(unit)
                         }
+                    )
+
+                    ActivityTimelineView(
+                        profileId: profileId,
+                        connectionId: connectionId,
+                        maxEvents: 6
                     )
 
                     Spacer(minLength: 16)
@@ -842,6 +926,13 @@ private struct MonitorDrillDownSheet: View {
             rawOutput = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
             snapshot = MonitorDiagnosticParser.parse(rawOutput, kind: drillDown)
             applyDefaultSelections()
+            ActivityLogStore.shared.record(
+                title: "Deep dive opened",
+                detail: drillDown.title,
+                connectionId: connectionId,
+                icon: drillDown.icon,
+                severity: result.succeeded ? .info : .warning
+            )
             if result.succeeded {
                 error = nil
             } else {
@@ -883,9 +974,23 @@ private struct MonitorDrillDownSheet: View {
             rawOutput = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
             if result.succeeded {
                 let message = "\(verb.capitalized) completed for \(unit)."
+                ActivityLogStore.shared.record(
+                    title: "Service \(verb)",
+                    detail: unit,
+                    connectionId: connectionId,
+                    icon: "switch.2",
+                    severity: .success
+                )
                 await refresh()
                 notice = message
             } else {
+                ActivityLogStore.shared.record(
+                    title: "Service \(verb) failed",
+                    detail: unit,
+                    connectionId: connectionId,
+                    icon: "exclamationmark.triangle.fill",
+                    severity: .critical
+                )
                 error = "\(verb.capitalized) exited with code \(result.exitCode)."
             }
         } catch {

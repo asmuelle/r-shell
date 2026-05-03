@@ -43,6 +43,13 @@ struct MobileTerminalAccessoryBar: View {
                 Divider()
                     .frame(height: 24)
 
+                keyButton("tmux") { send(.tmuxPrefix) }
+                keyButton("Split") { send(.tmuxSplitVertical) }
+                keyButton("Pane") { send(.tmuxNextPane) }
+
+                Divider()
+                    .frame(height: 24)
+
                 keyButton("C") { send(.text("c")) }
                 keyButton("D") { send(.text("d")) }
                 keyButton("L") { send(.text("l")) }
@@ -129,6 +136,9 @@ private enum MobileTerminalAccessoryKey {
     case up
     case down
     case text(String)
+    case tmuxPrefix
+    case tmuxSplitVertical
+    case tmuxNextPane
 
     func data(control: Bool, alt: Bool) -> Data {
         var bytes: [UInt8] = []
@@ -153,6 +163,12 @@ private enum MobileTerminalAccessoryKey {
             bytes.append(contentsOf: control ? [0x1B, 0x5B, 0x31, 0x3B, 0x35, 0x42] : [0x1B, 0x5B, 0x42])
         case .text(let value):
             bytes.append(contentsOf: textBytes(value, control: control))
+        case .tmuxPrefix:
+            bytes.append(0x02)
+        case .tmuxSplitVertical:
+            bytes.append(contentsOf: [0x02, 0x25])
+        case .tmuxNextPane:
+            bytes.append(contentsOf: [0x02, 0x6F])
         }
 
         return Data(bytes)

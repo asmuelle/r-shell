@@ -367,7 +367,7 @@ struct MobileFileBrowserView: View {
         }
 
         switch (entry.name as NSString).pathExtension.lowercased() {
-        case "yaml", "yml", "txt", "sh", "sql":
+        case "yaml", "yml", "txt", "sh", "sql", "service":
             return true
         default:
             return false

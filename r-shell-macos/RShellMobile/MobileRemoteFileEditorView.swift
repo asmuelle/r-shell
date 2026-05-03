@@ -24,6 +24,8 @@ struct MobileRemoteFileEditorView: View {
     @State private var originalContent: String
     @State private var isSaving = false
     @State private var saveError: String?
+    @State private var safetyMessage: String?
+    @State private var showingDiffReview = false
 
     init(
         document: MobileRemoteFileDocument,
@@ -66,10 +68,25 @@ struct MobileRemoteFileEditorView: View {
                 .padding(.vertical, 8)
                 .background(Color(.secondarySystemGroupedBackground))
 
+                editorStatusBar
+
+                Divider()
+
                 if let saveError {
                     Label(saveError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+
+                    Divider()
+                }
+
+                if let safetyMessage {
+                    Label(safetyMessage, systemImage: "checkmark.shield")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
                         .padding(.vertical, 8)
@@ -93,12 +110,26 @@ struct MobileRemoteFileEditorView: View {
                     .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        save()
+                    Button("Review") {
+                        showingDiffReview = true
                     }
                     .disabled(!isModified || isSaving)
                 }
             }
+        }
+        .sheet(isPresented: $showingDiffReview) {
+            MobileFileDiffReviewSheet(
+                path: document.remotePath,
+                original: originalContent,
+                revised: content,
+                isSaving: isSaving,
+                onCancel: {
+                    showingDiffReview = false
+                },
+                onConfirm: {
+                    save()
+                }
+            )
         }
     }
 
@@ -108,14 +139,79 @@ struct MobileRemoteFileEditorView: View {
 
         Task { @MainActor in
             do {
+                let backup = try await MobileSafeConfigSave.prepare(
+                    connectionId: document.connectionId,
+                    remotePath: document.remotePath,
+                    fileName: document.fileName
+                )
                 try await onSave(content)
+                if let validation = try await MobileSafeConfigSave.validate(
+                    connectionId: document.connectionId,
+                    backup: backup
+                ) {
+                    safetyMessage = "\(validation.title) passed. Backup: \(backup.backupPath)"
+                } else {
+                    safetyMessage = "Backup created: \(backup.backupPath)"
+                }
                 originalContent = content
                 isSaving = false
+                showingDiffReview = false
+                MobileActivityLogStore.shared.record(
+                    title: "File saved",
+                    detail: document.remotePath,
+                    connectionId: document.connectionId,
+                    systemImage: "doc.text",
+                    severity: .ok
+                )
                 onSaved()
                 dismiss()
             } catch {
+                MobileActivityLogStore.shared.record(
+                    title: "File save failed",
+                    detail: document.remotePath,
+                    connectionId: document.connectionId,
+                    systemImage: "exclamationmark.triangle.fill",
+                    severity: .critical
+                )
                 saveError = error.localizedDescription
                 isSaving = false
+            }
+        }
+    }
+
+    private var editorStatusBar: some View {
+        HStack(spacing: 12) {
+            Label(document.syntax.displayName, systemImage: "curlybraces")
+            Label("\(lineCount) lines", systemImage: "number")
+            if isModified {
+                Label("\(changedLineCount) changed", systemImage: "plus.forwardslash.minus")
+                    .foregroundStyle(.orange)
+            }
+            Spacer(minLength: 0)
+            Label("Backup + review", systemImage: "checkmark.shield")
+                .lineLimit(1)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal)
+        .padding(.vertical, 7)
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private var lineCount: Int {
+        max(1, content.split(separator: "\n", omittingEmptySubsequences: false).count)
+    }
+
+    private var changedLineCount: Int {
+        let original = originalContent.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let revised = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let maxCount = max(original.count, revised.count)
+        guard maxCount > 0 else { return 0 }
+        return (0..<maxCount).reduce(into: 0) { count, index in
+            let lhs = index < original.count ? original[index] : nil
+            let rhs = index < revised.count ? revised[index] : nil
+            if lhs != rhs {
+                count += 1
             }
         }
     }
@@ -125,6 +221,7 @@ enum MobileFileSyntax: Equatable {
     case plain
     case shell
     case sql
+    case systemd
     case yaml
 
     init(fileName: String) {
@@ -133,10 +230,22 @@ enum MobileFileSyntax: Equatable {
             self = .shell
         case "sql":
             self = .sql
+        case "service":
+            self = .systemd
         case "yaml", "yml":
             self = .yaml
         default:
             self = .plain
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .plain: return "Plain text"
+        case .shell: return "Shell"
+        case .sql: return "SQL"
+        case .systemd: return "systemd unit"
+        case .yaml: return "YAML"
         }
     }
 }
@@ -280,6 +389,8 @@ private enum MobileSyntaxHighlighter {
             highlightShell(storage, range: fullRange)
         case .sql:
             highlightSQL(storage, range: fullRange)
+        case .systemd:
+            highlightSystemd(storage, range: fullRange)
         case .yaml:
             highlightYAML(storage, range: fullRange)
         }
@@ -342,6 +453,36 @@ private enum MobileSyntaxHighlighter {
             options: [.dotMatchesLineSeparators],
             attributes: commentAttributes
         )
+    }
+
+    private static func highlightSystemd(_ storage: NSMutableAttributedString, range: NSRange) {
+        applyRegex(
+            #"(?m)^\[[A-Za-z0-9_. -]+\]"#,
+            to: storage,
+            range: range,
+            attributes: keywordAttributes
+        )
+        applyRegex(
+            #"(?m)^([A-Za-z][A-Za-z0-9]+)(=)"#,
+            to: storage,
+            range: range,
+            captureGroup: 1,
+            attributes: variableAttributes
+        )
+        applyRegex(
+            #"(?<![A-Za-z0-9_])(?:true|false|yes|no|on|off|always|no|on-failure|simple|forking|oneshot|notify|idle)(?![A-Za-z0-9_])"#,
+            to: storage,
+            range: range,
+            options: [.caseInsensitive],
+            attributes: numberAttributes
+        )
+        applyRegex(
+            #""(?:\\.|[^"\\])*"|'[^'\n]*'"#,
+            to: storage,
+            range: range,
+            attributes: stringAttributes
+        )
+        applyCommentHighlighting(to: storage)
     }
 
     private static func highlightYAML(_ storage: NSMutableAttributedString, range: NSRange) {

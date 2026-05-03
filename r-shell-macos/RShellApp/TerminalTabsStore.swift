@@ -342,11 +342,25 @@ final class TerminalTabsStore: ObservableObject {
             }
 
             lastError = msg
+            ActivityLogStore.shared.record(
+                title: "Connection failed",
+                detail: "\(profile.name): \(msg)",
+                profileId: profile.id,
+                icon: "exclamationmark.triangle.fill",
+                severity: .critical
+            )
             logger.error("Connect failed: \(msg, privacy: .public)")
             return
         } catch {
             let msg = error.localizedDescription
             lastError = msg
+            ActivityLogStore.shared.record(
+                title: "Connection failed",
+                detail: "\(profile.name): \(msg)",
+                profileId: profile.id,
+                icon: "exclamationmark.triangle.fill",
+                severity: .critical
+            )
             logger.error("Connect failed: \(msg, privacy: .public)")
             return
         }
@@ -406,6 +420,20 @@ final class TerminalTabsStore: ObservableObject {
         )
         tabs.append(tab)
         activeTabId = tab.id
+        ActivityLogStore.shared.record(
+            title: "Connected",
+            detail: "\(profile.username)@\(profile.host):\(profile.port)",
+            profileId: profile.id,
+            connectionId: connectionId,
+            icon: profile.kind.supportsTerminal ? "terminal" : "folder",
+            severity: .success
+        )
+    }
+
+    private func keyPromptLabel(for profile: ConnectionProfile) -> String {
+        SSHKeyVault.shared.metadata(for: profile.sshKeyReference)?.label
+            ?? profile.sshKeyReference?.displayName
+            ?? profile.keychainAccount
     }
 
     private func keyPromptLabel(for profile: ConnectionProfile) -> String {
@@ -502,9 +530,25 @@ final class TerminalTabsStore: ObservableObject {
                 }
             }
             tabs[idx].status = .connected
+            ActivityLogStore.shared.record(
+                title: "Reconnected",
+                detail: tab.profile.name,
+                profileId: tab.profile.id,
+                connectionId: tab.connectionId,
+                icon: "arrow.clockwise",
+                severity: .success
+            )
 
         } catch {
             lastError = error.localizedDescription
+            ActivityLogStore.shared.record(
+                title: "Reconnect failed",
+                detail: "\(tab.profile.name): \(error.localizedDescription)",
+                profileId: tab.profile.id,
+                connectionId: tab.connectionId,
+                icon: "exclamationmark.triangle.fill",
+                severity: .critical
+            )
             logger.error("Reconnect failed: \(error.localizedDescription, privacy: .public)")
             tabs[idx].status = .error
         }
@@ -525,6 +569,14 @@ final class TerminalTabsStore: ObservableObject {
             )
         }
         BridgeManager.shared.disconnect(connectionId: tab.connectionId)
+        ActivityLogStore.shared.record(
+            title: "Disconnected",
+            detail: tab.profile.name,
+            profileId: tab.profile.id,
+            connectionId: tab.connectionId,
+            icon: "xmark.circle",
+            severity: .info
+        )
 
         tabs.remove(at: index)
         for i in tabs.indices {
@@ -546,6 +598,11 @@ final class TerminalTabsStore: ObservableObject {
     func closeActiveTab() {
         guard let activeTabId else { return }
         closeTab(activeTabId)
+    }
+
+    func reconnectActive() async {
+        guard let activeTabId else { return }
+        await reconnect(tabId: activeTabId)
     }
 
     func setActive(_ tabId: UUID) {

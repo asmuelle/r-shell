@@ -16,6 +16,9 @@ struct MobileContentView: View {
     @State private var editorTarget: MobileConnectionProfile?
     @State private var creatingConnection = false
     @State private var showingProUpgrade = false
+    @State private var showingFleetDashboard = false
+    @State private var showingSecurityVault = false
+    @State private var showingCommandPalette = false
     @State private var exportingDiagnostics = false
     @State private var diagnosticsDocument = MobileDiagnosticsDocument()
     @State private var diagnosticsFilename = MobileDiagnosticsBundleFactory.defaultFilename()
@@ -79,6 +82,37 @@ struct MobileContentView: View {
         .sheet(isPresented: $showingProUpgrade) {
             MobileProUpgradeView(currentSavedHosts: connectionStore.connections.count)
         }
+        .sheet(isPresented: $showingFleetDashboard) {
+            MobileFleetDashboardView(profiles: connectionStore.connections)
+        }
+        .sheet(isPresented: $showingSecurityVault) {
+            MobileSecurityVaultView(profiles: connectionStore.connections)
+        }
+        .sheet(isPresented: $showingCommandPalette) {
+            MobileGlobalCommandPaletteView(
+                profiles: connectionStore.connections,
+                selectedProfileId: selectedConnectionId,
+                onSelectProfile: { profile in
+                    selectedConnectionId = profile.id
+                    if horizontalSizeClass == .compact {
+                        compactPath = NavigationPath()
+                        compactPath.append(profile.id)
+                    }
+                },
+                onAddConnection: {
+                    beginCreateConnection()
+                },
+                onOpenFleet: {
+                    showingFleetDashboard = true
+                },
+                onOpenSecurityVault: {
+                    showingSecurityVault = true
+                },
+                onExportDiagnostics: {
+                    exportDiagnostics()
+                }
+            )
+        }
         .sheet(item: $editorTarget) { profile in
             MobileConnectionEditorView(profile: profile) { updated in
                 connectionStore.upsert(updated)
@@ -133,6 +167,15 @@ struct MobileContentView: View {
         }
         .onAppear {
             bridgeManager.initialize()
+        }
+        .background {
+            Button("Command Palette") {
+                showingCommandPalette = true
+            }
+            .keyboardShortcut("k", modifiers: .command)
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
         }
     }
 
@@ -275,6 +318,24 @@ struct MobileContentView: View {
                         entitlementsStore.isPro ? "Pro Active" : "Upgrade to Pro",
                         systemImage: entitlementsStore.isPro ? "checkmark.seal.fill" : "sparkles"
                     )
+                }
+
+                Button {
+                    showingCommandPalette = true
+                } label: {
+                    Label("Command Palette", systemImage: "command")
+                }
+
+                Button {
+                    showingFleetDashboard = true
+                } label: {
+                    Label("Fleet Dashboard", systemImage: "rectangle.grid.2x2")
+                }
+
+                Button {
+                    showingSecurityVault = true
+                } label: {
+                    Label("Security Vault", systemImage: "lock.shield")
                 }
 
                 Button {

@@ -39,6 +39,34 @@ struct RShellApp: App {
             }
 
             CommandMenu("View") {
+                Button("Command Palette…") {
+                    NotificationCenter.default.post(name: .showCommandPalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
+
+                Divider()
+
+                Button("Reconnect Active Connection") {
+                    Task { await tabsStore.reconnectActive() }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(tabsStore.activeTab == nil)
+
+                Button("Show Dashboard") {
+                    NotificationCenter.default.post(name: .showDashboard, object: nil)
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(tabsStore.connectedSSHTabs.count < 2)
+
+                Button("Show Runbooks") {
+                    layoutManager.layout.bottomVisible = true
+                    NotificationCenter.default.post(name: .showRunbooks, object: nil)
+                }
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+                .disabled(tabsStore.activeOpenSSHTab == nil)
+
+                Divider()
+
                 Button("Zen Mode") {
                     layoutManager.applyPreset(.zen)
                 }

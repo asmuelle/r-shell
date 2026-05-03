@@ -54,6 +54,13 @@ struct MobileServerDashboardView: View {
             }
 
             processSection
+            MobileServerDoctorView(
+                connectionId: connectionId,
+                profileName: profileName,
+                sshPort: sshPort
+            )
+            MobileServiceInspectorView(connectionId: connectionId)
+            MobileRunbooksView(connectionId: connectionId)
             MobileDevOpsPanelsView(connectionId: connectionId)
             MobileRuntimePanelsView(connectionId: connectionId)
             MobileConnectionMapView(connectionId: connectionId)

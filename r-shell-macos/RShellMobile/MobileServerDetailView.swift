@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 
 struct MobileServerDetailView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var connectionStore: MobileConnectionStore
     @EnvironmentObject private var keychainManager: MobileKeychainManager
     @EnvironmentObject private var sessionStore: MobileSessionStore
@@ -14,6 +16,10 @@ struct MobileServerDetailView: View {
     @State private var quickActionRunningId: String?
     @State private var quickActionResult: MobileQuickActionResult?
     @State private var publicKeyCopied = false
+    @State private var detailMode: MobileServerDetailMode = .inspect
+    @State private var showingKeyboardShortcuts = false
+    @State private var wasBackgroundedWhileConnected = false
+    @State private var showingResumeBanner = false
 
     private var status: MobileSessionStatus {
         sessionStore.status(for: profile)
@@ -23,15 +29,25 @@ struct MobileServerDetailView: View {
         ScrollViewReader { scrollProxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    modePicker
+                    compactIncidentBanner
+                    resumeBanner
                     connectionStatusBanner
-                    dashboardSection
-                        .id(MobileServerDetailSection.dashboard)
-                    snippetsSection
-                        .id(MobileServerDetailSection.snippets)
-                    terminalSection
-                        .id(MobileServerDetailSection.terminal)
-                    fileBrowserSection
-                        .id(MobileServerDetailSection.files)
+                    switch detailMode {
+                    case .inspect:
+                        MobileConnectionConfidenceView(profile: profile, status: status)
+                        activitySection
+                        dashboardSection
+                            .id(MobileServerDetailSection.dashboard)
+                    case .work:
+                        snippetsSection
+                            .id(MobileServerDetailSection.snippets)
+                        sessionResilienceCard
+                        terminalSection
+                            .id(MobileServerDetailSection.terminal)
+                        fileBrowserSection
+                            .id(MobileServerDetailSection.files)
+                    }
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -43,8 +59,22 @@ struct MobileServerDetailView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .background(Color(.systemGroupedBackground))
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingKeyboardShortcuts = true
+                } label: {
+                    Image(systemName: "keyboard")
+                }
+                .accessibilityLabel("Keyboard shortcuts")
+            }
+        }
+        .background(keyboardShortcutLayer)
         .sheet(item: $quickActionResult) { result in
             MobileQuickActionResultView(result: result)
+        }
+        .sheet(isPresented: $showingKeyboardShortcuts) {
+            MobileKeyboardShortcutsSheet()
         }
         .alert(
             "Connection Needs Attention",
@@ -68,6 +98,153 @@ struct MobileServerDetailView: View {
         .onChange(of: keychainManager.credentialRevision) { _, _ in
             refreshStoredCredentialState()
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            handleScenePhaseChange(newPhase)
+        }
+    }
+
+    private var modePicker: some View {
+        Picker("Mode", selection: $detailMode) {
+            Label("Inspect", systemImage: "chart.xyaxis.line").tag(MobileServerDetailMode.inspect)
+            Label("Work", systemImage: "terminal").tag(MobileServerDetailMode.work)
+        }
+        .pickerStyle(.segmented)
+    }
+
+    @ViewBuilder
+    private var compactIncidentBanner: some View {
+        if horizontalSizeClass == .compact {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Incident Mode", systemImage: "bolt.horizontal.circle")
+                    .font(.headline)
+                HStack(spacing: 8) {
+                    Button {
+                        detailMode = .inspect
+                    } label: {
+                        Label("Doctor", systemImage: "stethoscope")
+                    }
+                    .buttonStyle(.bordered)
+
+                    if case .connected(let connectionId) = status {
+                        Button {
+                            Task { await tailLogs(connectionId: connectionId) }
+                        } label: {
+                            Label("Logs", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button {
+                            detailMode = .work
+                        } label: {
+                            Label("Files", systemImage: "folder")
+                        }
+                        .buttonStyle(.bordered)
+                    } else {
+                        Button {
+                            Task { await connectOrReconnectFromQuickAction() }
+                        } label: {
+                            Label("Connect", systemImage: "bolt.horizontal.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .controlSize(.small)
+            }
+            .padding()
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private var resumeBanner: some View {
+        if showingResumeBanner {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "ipad.and.arrow.forward")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Session resumed")
+                        .font(.subheadline.weight(.semibold))
+                    Text("iPadOS may suspend sockets while the app is in the background. Reconnect if the terminal or file browser feels stale.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Reconnect") {
+                    showingResumeBanner = false
+                    Task { await connectOrReconnectFromQuickAction() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button {
+                    showingResumeBanner = false
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+            }
+            .padding()
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private var sessionResilienceCard: some View {
+        if profile.kind.supportsTerminal {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Resilient Sessions", systemImage: "rectangle.connected.to.line.below")
+                    .font(.headline)
+                Text("For long-running commands from iPad, use tmux or screen on the server so work survives app backgrounding and network changes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button {
+                        UIPasteboard.general.string = "tmux new -As midnight"
+                    } label: {
+                        Label("Copy tmux attach", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        UIPasteboard.general.string = "screen -R midnight"
+                    } label: {
+                        Label("Copy screen attach", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .controlSize(.small)
+            }
+            .padding()
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var keyboardShortcutLayer: some View {
+        Group {
+            Button("Inspect Mode") {
+                detailMode = .inspect
+            }
+            .keyboardShortcut("1", modifiers: .command)
+
+            Button("Work Mode") {
+                detailMode = .work
+            }
+            .keyboardShortcut("2", modifiers: .command)
+
+            Button("Reconnect") {
+                Task { await connectOrReconnectFromQuickAction() }
+            }
+            .keyboardShortcut("r", modifiers: .command)
+
+            if case .connected(let connectionId) = status {
+                Button("Tail Logs") {
+                    Task { await tailLogs(connectionId: connectionId) }
+                }
+                .keyboardShortcut("l", modifiers: .command)
+            }
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     private func quickActionsToolbar(scrollProxy: ScrollViewProxy) -> some View {
@@ -257,6 +434,24 @@ struct MobileServerDetailView: View {
     }
 
     @ViewBuilder
+    private var activitySection: some View {
+        switch status {
+        case .connected(let connectionId):
+            MobileActivityTimelineView(
+                profileId: profile.id,
+                connectionId: connectionId,
+                maxEvents: 6
+            )
+        default:
+            MobileActivityTimelineView(
+                profileId: profile.id,
+                connectionId: nil,
+                maxEvents: 6
+            )
+        }
+    }
+
+    @ViewBuilder
     private var fileBrowserSection: some View {
         if case .connected(let connectionId) = status {
             MobileFileBrowserView(
@@ -391,8 +586,11 @@ struct MobileServerDetailView: View {
     }
 
     private func scroll(to section: MobileServerDetailSection, with scrollProxy: ScrollViewProxy) {
-        withAnimation(.snappy) {
-            scrollProxy.scrollTo(section, anchor: .top)
+        detailMode = section.mode
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation(.snappy) {
+                scrollProxy.scrollTo(section, anchor: .top)
+            }
         }
     }
 
@@ -412,6 +610,20 @@ struct MobileServerDetailView: View {
             account: profile.keychainAccount
         )
     }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            if wasBackgroundedWhileConnected {
+                showingResumeBanner = true
+                wasBackgroundedWhileConnected = false
+            }
+        case .background, .inactive:
+            wasBackgroundedWhileConnected = isConnected
+        @unknown default:
+            break
+        }
+    }
 }
 
 private enum MobileServerDetailSection: Hashable {
@@ -419,6 +631,20 @@ private enum MobileServerDetailSection: Hashable {
     case snippets
     case terminal
     case files
+
+    var mode: MobileServerDetailMode {
+        switch self {
+        case .dashboard:
+            return .inspect
+        case .snippets, .terminal, .files:
+            return .work
+        }
+    }
+}
+
+private enum MobileServerDetailMode: String, Hashable {
+    case inspect
+    case work
 }
 
 private struct MobileQuickActionResult: Identifiable {
@@ -427,6 +653,39 @@ private struct MobileQuickActionResult: Identifiable {
     let command: String
     let output: String
     let error: String?
+}
+
+private struct MobileKeyboardShortcutsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                shortcut("Inspect mode", keys: "⌘1")
+                shortcut("Work mode", keys: "⌘2")
+                shortcut("Reconnect", keys: "⌘R")
+                shortcut("Tail logs", keys: "⌘L")
+            }
+            .navigationTitle("Keyboard Shortcuts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func shortcut(_ title: String, keys: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(keys)
+                .font(.body.monospaced())
+                .foregroundStyle(.secondary)
+        }
+    }
 }
 
 private struct MobileQuickActionResultView: View {

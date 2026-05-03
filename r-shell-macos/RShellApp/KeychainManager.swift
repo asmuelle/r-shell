@@ -58,6 +58,10 @@ class KeychainManager {
         rshellKeychainList(kind: kind)
     }
 
+    func hasPassword(kind: FfiCredentialKind, account: String) -> Bool {
+        listAccounts(kind: kind).contains(account)
+    }
+
     // MARK: - Prompt (native dialog wrapper)
 
     /// Show a system dialog prompting the user for a password. Returns nil if cancelled.

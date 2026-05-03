@@ -333,6 +333,7 @@ struct BottomPanel: View {
                     Text("Docker").tag(6)
                     Text("PostgreSQL").tag(7)
                     Text("UFW").tag(8)
+                    Text("Runbooks").tag(9)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -374,12 +375,20 @@ struct BottomPanel: View {
                             connectionLabel: activeTab.profile.name,
                             sshPort: activeTab.profile.port
                         )
+                    case 9:
+                        RunbooksPanelView(
+                            connectionId: activeTab.connectionId,
+                            connectionLabel: activeTab.profile.name
+                        )
                     default: EmptyView()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(minHeight: LayoutConstants.minBottomHeight)
+            .onReceive(NotificationCenter.default.publisher(for: .showRunbooks)) { _ in
+                selectedSegment = 9
+            }
         } else {
             EmptyView()
         }
@@ -552,6 +561,8 @@ struct InspectorPanel: View {
                         connectionLabel: tab.profile.name,
                         profileId: tab.profile.id,
                         sshPort: tab.profile.port,
+                        profile: tab.profile,
+                        connectionStatus: tab.status,
                         isActive: isActive
                     )
                     .opacity(isActive ? 1 : 0)
@@ -571,6 +582,7 @@ struct InspectorPanel: View {
 /// every visible host.
 struct DashboardPanel: View {
     @EnvironmentObject var tabsStore: TerminalTabsStore
+    @ObservedObject private var activityLog = ActivityLogStore.shared
     @State private var sort = DashboardSort.order
 
     private var tabs: [TerminalTab] {
@@ -606,6 +618,10 @@ struct DashboardPanel: View {
             VStack(spacing: 0) {
                 dashboardToolbar
                 Divider()
+                problemStrip
+                Divider()
+                comparisonStrip
+                Divider()
 
                 GeometryReader { proxy in
                     let columnWidth = max(
@@ -621,6 +637,8 @@ struct DashboardPanel: View {
                                     connectionLabel: tab.profile.name,
                                     profileId: tab.profile.id,
                                     sshPort: tab.profile.port,
+                                    profile: tab.profile,
+                                    connectionStatus: tab.status,
                                     isActive: true
                                 )
                                 .frame(width: columnWidth)
@@ -640,6 +658,132 @@ struct DashboardPanel: View {
             }
             .materialBackground(.contentBackground, blendingMode: .withinWindow)
         }
+    }
+
+    private var problemEvents: [ActivityLogEvent] {
+        activityLog.recentProblems(limit: 5)
+    }
+
+    private var nonHealthyTabs: [TerminalTab] {
+        tabsStore.tabs.filter { $0.status != .connected }
+    }
+
+    private var comparisonStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(tabs, id: \.id) { tab in
+                    dashboardHostCard(tab)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+
+    private func dashboardHostCard(_ tab: TerminalTab) -> some View {
+        let issueCount = activityLog.events.filter {
+            ($0.profileId == tab.profile.id || $0.connectionId == tab.connectionId)
+                && ($0.severity == .warning || $0.severity == .critical)
+        }.count
+
+        return Button {
+            tabsStore.setActive(tab.id)
+        } label: {
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(tab.status == .connected ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tab.profile.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("\(tab.profile.username)@\(tab.profile.host):\(tab.profile.port)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if issueCount > 0 {
+                    Text("\(issueCount)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Activate Host") { tabsStore.setActive(tab.id) }
+            Button("Reconnect") { Task { await tabsStore.reconnect(tabId: tab.id) } }
+            Button("Copy SSH Command") {
+                RemoteCommandRunner.copy("ssh -p \(tab.profile.port) \(tab.profile.username)@\(tab.profile.host)")
+            }
+        }
+    }
+
+    private var problemStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                if problemEvents.isEmpty && nonHealthyTabs.isEmpty {
+                    Label("No active problems recorded in this workspace", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    ForEach(nonHealthyTabs, id: \.id) { tab in
+                        dashboardProblemCard(
+                            title: tab.profile.name,
+                            detail: tab.status.rawValue.capitalized,
+                            icon: "wifi.slash",
+                            color: .orange
+                        )
+                    }
+                    ForEach(problemEvents, id: \.id) { event in
+                        dashboardProblemCard(
+                            title: event.title,
+                            detail: event.detail,
+                            icon: event.icon,
+                            color: event.severity.color
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func dashboardProblemCard(
+        title: String,
+        detail: String,
+        icon: String,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var dashboardToolbar: some View {
