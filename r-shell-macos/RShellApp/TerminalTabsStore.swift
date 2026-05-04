@@ -436,12 +436,6 @@ final class TerminalTabsStore: ObservableObject {
             ?? profile.keychainAccount
     }
 
-    private func keyPromptLabel(for profile: ConnectionProfile) -> String {
-        SSHKeyVault.shared.metadata(for: profile.sshKeyReference)?.label
-            ?? profile.sshKeyReference?.displayName
-            ?? profile.keychainAccount
-    }
-
     /// Re-establish a dead session in place. Called from the Reconnect
     /// button overlay on disconnected tabs. Reuses the original
     /// connection id (so the SwiftTerm view, registered against this

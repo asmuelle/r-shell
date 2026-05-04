@@ -182,7 +182,6 @@ private struct DetailColumn: View {
     @Binding var dashboardVisible: Bool
     @EnvironmentObject var tabsStore: TerminalTabsStore
     @State private var inspectorWidthDebounce: Task<Void, Never>?
-    @State private var dashboardVisible = false
 
     private var inspectorShouldRender: Bool {
         layoutManager.layout.inspectorVisible && tabsStore.activeOpenSSHTab != nil
