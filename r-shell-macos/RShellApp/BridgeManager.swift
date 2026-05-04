@@ -379,6 +379,7 @@ final class BridgeManager {
     /// Resize a running PTY. Currently called only from explicit resize
     /// triggers; per-frame resize is deferred to Sprint 8 with debouncing.
     func resize(connectionId: String, cols: Int, rows: Int) {
+        guard cols > 0, rows > 0 else { return }
         dispatchQueue.async {
             _ = rshellPtyResize(
                 connectionId: connectionId,

@@ -1155,13 +1155,19 @@ struct MonitoredSystemdServicesPane: View {
     let profileId: String?
     var isActive: Bool = true
     var onSelectService: (String) -> Void = { _ in }
+    var onOpenSystemd: () -> Void = {}
+    var onOpenDocker: () -> Void = {}
+    var onOpenPostgres: () -> Void = {}
 
     @ObservedObject private var connectionStore = ConnectionStoreManager.shared
     @State private var statuses: [MonitoredSystemdServiceStatus] = []
     @State private var error: String?
     @State private var loading = false
+    @State private var hasDocker = false
+    @State private var hasPostgres = false
 
     private static let pollInterval: UInt64 = 5_000_000_000
+    private static let detectInterval: UInt64 = 30_000_000_000
     private static let unavailableMarker = "__MIDNIGHT_SSH_SYSTEMD_UNAVAILABLE__"
 
     private var serviceNames: [String] {
@@ -1170,6 +1176,10 @@ struct MonitoredSystemdServicesPane: View {
 
     private var pollKey: String {
         "\(connectionId ?? "none"):\(profileId ?? "none"):\(isActive):\(serviceNames.joined(separator: ","))"
+    }
+
+    private var detectKey: String {
+        "\(connectionId ?? "none"):\(isActive)"
     }
 
     private var rows: [MonitoredSystemdServiceStatus] {
@@ -1185,20 +1195,33 @@ struct MonitoredSystemdServicesPane: View {
     }
 
     var body: some View {
-        if !serviceNames.isEmpty {
+        if connectionId != nil {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "switch.2")
-                        .foregroundStyle(.secondary)
-                    Text("systemd")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if loading {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
+                if hasDocker {
+                    shortcutHeader(
+                        icon: "shippingbox",
+                        label: "Docker",
+                        help: "Open Docker inspector",
+                        action: onOpenDocker
+                    )
                 }
+
+                if hasPostgres {
+                    shortcutHeader(
+                        icon: "cylinder.split.1x2",
+                        label: "PostgreSQL",
+                        help: "Open PostgreSQL inspector",
+                        action: onOpenPostgres
+                    )
+                }
+
+                shortcutHeader(
+                    icon: "switch.2",
+                    label: "systemd",
+                    help: "Open systemd inspector",
+                    showsProgress: loading,
+                    action: onOpenSystemd
+                )
 
                 if let error {
                     Text(error)
@@ -1207,29 +1230,31 @@ struct MonitoredSystemdServicesPane: View {
                         .lineLimit(2)
                 }
 
-                VStack(spacing: 4) {
-                    ForEach(rows) { service in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(service.isRunning ? Color.green : Color.red)
-                                .frame(width: 8, height: 8)
-                            Text(service.name)
-                                .font(.caption.monospaced())
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer(minLength: 8)
-                            Text(formatServiceUptime(service.uptimeSeconds))
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                if !serviceNames.isEmpty {
+                    VStack(spacing: 4) {
+                        ForEach(rows) { service in
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(service.isRunning ? Color.green : Color.red)
+                                    .frame(width: 8, height: 8)
+                                Text(service.name)
+                                    .font(.caption.monospaced())
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 8)
+                                Text(formatServiceUptime(service.uptimeSeconds))
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                onSelectService(service.name)
+                            }
+                            .help("\(service.name): \(service.active) \(service.sub)")
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            onSelectService(service.name)
-                        }
-                        .help("\(service.name): \(service.active) \(service.sub)")
                     }
                 }
             }
@@ -1237,7 +1262,44 @@ struct MonitoredSystemdServicesPane: View {
                 guard isActive, connectionId != nil else { return }
                 await pollLoop()
             }
+            .task(id: detectKey) {
+                guard isActive, connectionId != nil else { return }
+                await detectLoop()
+            }
         }
+    }
+
+    @ViewBuilder
+    private func shortcutHeader(
+        icon: String,
+        label: String,
+        help: String,
+        showsProgress: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .foregroundStyle(.secondary)
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private func pollLoop() async {
@@ -1313,6 +1375,43 @@ struct MonitoredSystemdServicesPane: View {
         if days > 0 { return "\(days)d \(hours)h" }
         if hours > 0 { return "\(hours)h \(minutes)m" }
         return "\(minutes)m"
+    }
+
+    private func detectLoop() async {
+        await detectAvailability()
+        while !Task.isCancelled && isActive && connectionId != nil {
+            try? await Task.sleep(nanoseconds: Self.detectInterval)
+            await detectAvailability()
+        }
+    }
+
+    private func detectAvailability() async {
+        guard let connectionId else { return }
+        let script = """
+        docker_ok=0
+        psql_ok=0
+        if command -v docker >/dev/null 2>&1; then docker_ok=1; fi
+        if command -v psql >/dev/null 2>&1 || command -v pg_isready >/dev/null 2>&1; then psql_ok=1; fi
+        printf 'DOCKER=%s\\nPSQL=%s\\n' "$docker_ok" "$psql_ok"
+        """
+        do {
+            let output = try await RemoteCommandRunner.runChecked(
+                connectionId: connectionId,
+                script: script
+            )
+            var docker = false
+            var psql = false
+            for line in output.lines() {
+                if line == "DOCKER=1" { docker = true }
+                if line == "PSQL=1" { psql = true }
+            }
+            hasDocker = docker
+            hasPostgres = psql
+        } catch {
+            // Probe failure shouldn't poison the pane — keep last-known
+            // detection so a transient SSH hiccup doesn't make the icons
+            // flicker away.
+        }
     }
 }
 
@@ -1483,7 +1582,38 @@ struct SystemdMonitorView: View {
     @State private var error: String?
     @State private var loading = false
     @State private var liveJournal = false
+    @State private var journalPriority: JournalPriority = .all
+    @State private var journalTail: Int = 200
+    @State private var journalScope: JournalScope = .selectedUnit
     @State private var pendingAction: UnitAction?
+
+    private static let journalTailOptions: [Int] = [100, 200, 500, 1000, 2000]
+
+    fileprivate enum JournalPriority: String, CaseIterable, Identifiable {
+        case all = "All"
+        case info = "Info+"
+        case notice = "Notice+"
+        case warning = "Warning+"
+        case error = "Error+"
+        case critical = "Critical+"
+        var id: String { rawValue }
+        var flagValue: String? {
+            switch self {
+            case .all: return nil
+            case .info: return "info"
+            case .notice: return "notice"
+            case .warning: return "warning"
+            case .error: return "err"
+            case .critical: return "crit"
+            }
+        }
+    }
+
+    fileprivate enum JournalScope: String, CaseIterable, Identifiable {
+        case selectedUnit = "Selected Unit"
+        case system = "System"
+        var id: String { rawValue }
+    }
     @State private var unitSortOrder: [KeyPathComparator<SystemdUnit>] = [
         .init(\.name)
     ]
@@ -1731,24 +1861,184 @@ struct SystemdMonitorView: View {
 
     private var journalPane: some View {
         VStack(spacing: 0) {
-            if let selectedUnit {
-                HStack {
-                    Text(selectedUnit.name)
-                        .font(.caption.monospaced())
-                    Spacer()
-                    Button("Copy") { RemoteCommandRunner.copy(journal) }
-                        .disabled(journal.isEmpty)
+            journalToolbar
+            Divider()
+            if journalScope == .selectedUnit && selectedUnit == nil {
+                VStack(spacing: 8) {
+                    placeholderView(
+                        icon: "doc.text.magnifyingglass",
+                        title: "Select a unit",
+                        message: "Pick a service in the Services or Failed tab, or switch the scope to System to view the full journal."
+                    )
+                    Button("View System Journal") {
+                        journalScope = .system
+                        Task { await loadJournal() }
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                Divider()
-                logText(journal)
-            } else {
+            } else if journal.isEmpty {
                 placeholderView(
-                    icon: "doc.text.magnifyingglass",
-                    title: "Select a unit",
-                    message: "Pick a service in the Services or Failed tab, then switch back to Journal."
+                    icon: "tray",
+                    title: "No journal entries",
+                    message: priorityFilteredEmptyMessage
                 )
+            } else {
+                journalEntriesList
+            }
+        }
+    }
+
+    private var journalToolbar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                Image(systemName: "scope")
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $journalScope) {
+                    ForEach(JournalScope.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 150)
+            }
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $journalPriority) {
+                    ForEach(JournalPriority.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 110)
+            }
+            HStack(spacing: 4) {
+                Image(systemName: "list.number")
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $journalTail) {
+                    ForEach(Self.journalTailOptions, id: \.self) { Text("\($0) lines").tag($0) }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 110)
+            }
+            if let selectedUnit, journalScope == .selectedUnit {
+                Text(selectedUnit.name)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Text("\(filteredJournalLines.count) of \(rawJournalLines.count)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button("Copy") { RemoteCommandRunner.copy(filteredJournalLines.joined(separator: "\n")) }
+                .disabled(filteredJournalLines.isEmpty)
+                .controlSize(.small)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .onChange(of: journalScope) { _ in Task { await loadJournal() } }
+        .onChange(of: journalPriority) { _ in Task { await loadJournal() } }
+        .onChange(of: journalTail) { _ in Task { await loadJournal() } }
+    }
+
+    private var rawJournalLines: [String] {
+        journal.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    private var filteredJournalLines: [String] {
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let lines = rawJournalLines.filter { !$0.isEmpty }
+        guard !needle.isEmpty else { return lines }
+        return lines.filter { $0.lowercased().contains(needle) }
+    }
+
+    private var priorityFilteredEmptyMessage: String {
+        switch journalPriority {
+        case .all: return "journalctl returned nothing for this scope."
+        case .info, .notice, .warning, .error, .critical:
+            return "No entries at \(journalPriority.rawValue) or higher. Try lowering the priority filter."
+        }
+    }
+
+    private var journalEntriesList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(filteredJournalLines.enumerated()), id: \.offset) { index, line in
+                        journalLineRow(line)
+                            .id(index)
+                    }
+                }
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: filteredJournalLines.count) { count in
+                if liveJournal {
+                    proxy.scrollTo(max(count - 1, 0), anchor: .bottom)
+                }
+            }
+        }
+        .background(Color(NSColor.textBackgroundColor))
+    }
+
+    private func journalLineRow(_ line: String) -> some View {
+        let severity = journalSeverity(line)
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Rectangle()
+                .fill(severity.accentColor)
+                .frame(width: 3)
+            Text(line)
+                .font(.caption.monospaced())
+                .foregroundStyle(severity.foreground)
+                .textSelection(.enabled)
+                .lineLimit(nil)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 1)
+        .padding(.horizontal, 8)
+        .background(severity.background)
+    }
+
+    private func journalSeverity(_ line: String) -> JournalSeverity {
+        let upper = line.uppercased()
+        if upper.contains(" CRIT") || upper.contains("CRITICAL") || upper.contains(" EMERG") || upper.contains(" ALERT") {
+            return .critical
+        }
+        if upper.contains(" ERR") || upper.contains("ERROR") || upper.contains("FAILED") || upper.contains("FATAL") {
+            return .error
+        }
+        if upper.contains(" WARN") || upper.contains("WARNING") {
+            return .warning
+        }
+        if upper.contains(" NOTICE") {
+            return .notice
+        }
+        return .info
+    }
+
+    fileprivate enum JournalSeverity {
+        case info, notice, warning, error, critical
+        var accentColor: Color {
+            switch self {
+            case .info: return .clear
+            case .notice: return .blue.opacity(0.6)
+            case .warning: return .orange
+            case .error: return .red
+            case .critical: return .purple
+            }
+        }
+        var foreground: Color {
+            switch self {
+            case .info, .notice: return .primary
+            case .warning: return .orange
+            case .error: return .red
+            case .critical: return .purple
+            }
+        }
+        var background: Color {
+            switch self {
+            case .info, .notice: return .clear
+            case .warning: return Color.orange.opacity(0.06)
+            case .error: return Color.red.opacity(0.07)
+            case .critical: return Color.purple.opacity(0.1)
             }
         }
     }
@@ -1798,7 +2088,7 @@ struct SystemdMonitorView: View {
         case .timers:
             await loadTimers()
         case .journal:
-            await loadSelectedUnitDetail()
+            await loadJournal()
         }
     }
 
@@ -1932,8 +2222,46 @@ struct SystemdMonitorView: View {
 
     private func journalLoop() async {
         while !Task.isCancelled && liveJournal {
-            await loadSelectedUnitDetail()
+            await loadJournal()
             try? await Task.sleep(nanoseconds: Self.pollInterval)
+        }
+    }
+
+    private func loadJournal() async {
+        guard let connectionId else { return }
+        let unitArg: String
+        switch journalScope {
+        case .selectedUnit:
+            guard let selectedUnit else {
+                journal = ""
+                return
+            }
+            unitArg = "-u \(RemoteCommandRunner.shellQuote(selectedUnit.name))"
+        case .system:
+            unitArg = ""
+        }
+        let priorityArg = journalPriority.flagValue.map { "-p \($0)" } ?? ""
+        loading = true
+        defer { loading = false }
+        let script = """
+        command -v journalctl >/dev/null || { echo journalctl not found; exit 127; }
+        run_journalctl() {
+          out=$(journalctl "$@" 2>&1)
+          rc=$?
+          if [ "$rc" -ne 0 ] && command -v sudo >/dev/null; then
+            sudo -n journalctl "$@" 2>&1
+          else
+            printf '%s\\n' "$out"
+            return "$rc"
+          fi
+        }
+        run_journalctl \(unitArg) \(priorityArg) -n \(journalTail) --no-pager -o short-iso || true
+        """
+        do {
+            journal = try await RemoteCommandRunner.runChecked(connectionId: connectionId, script: script)
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
@@ -1993,9 +2321,13 @@ struct DockerMonitorView: View {
     @State private var mode: Mode = .containers
     @State private var containers: [DockerContainer] = []
     @State private var selectedContainerId: String?
+    @State private var checkedContainerIds: Set<String> = []
     @State private var images: [DockerAsset] = []
+    @State private var checkedImageIds: Set<String> = []
     @State private var volumes: [DockerAsset] = []
+    @State private var checkedVolumeIds: Set<String> = []
     @State private var networks: [DockerAsset] = []
+    @State private var checkedNetworkIds: Set<String> = []
     @State private var events: String = ""
     @State private var diskUsage: String = ""
     @State private var logs: String = ""
@@ -2004,6 +2336,7 @@ struct DockerMonitorView: View {
     @State private var loading = false
     @State private var liveLogs = false
     @State private var pendingAction: DockerAction?
+    @State private var pendingBatch: DockerBatch?
 
     private static let pollInterval: UInt64 = 5_000_000_000
 
@@ -2014,6 +2347,19 @@ struct DockerMonitorView: View {
         var destructive: Bool {
             ["stop", "restart", "kill", "rm", "pause"].contains(verb)
         }
+    }
+
+    fileprivate enum BatchScope {
+        case containers, images, volumes, networks
+    }
+
+    fileprivate struct DockerBatch: Identifiable {
+        let id = UUID()
+        let title: String
+        let summary: String
+        let command: String
+        let destructive: Bool
+        let scope: BatchScope
     }
 
     var body: some View {
@@ -2049,14 +2395,25 @@ struct DockerMonitorView: View {
         } message: { _ in
             Text("This runs on \(connectionLabel).")
         }
+        .confirmationDialog(
+            "Confirm batch action",
+            isPresented: Binding(
+                get: { pendingBatch != nil },
+                set: { if !$0 { pendingBatch = nil } }
+            ),
+            presenting: pendingBatch
+        ) { batch in
+            Button(batch.title, role: batch.destructive ? .destructive : nil) {
+                Task { await runBatch(batch) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { batch in
+            Text("\(batch.summary)\n\nRuns on \(connectionLabel).")
+        }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "shippingbox")
-                .foregroundStyle(.secondary)
-            Text("Docker")
-                .font(.subheadline.weight(.medium))
             Picker("", selection: $mode) {
                 ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
@@ -2090,11 +2447,35 @@ struct DockerMonitorView: View {
         case .logs:
             logsPane
         case .images:
-            assetList(images, headers: ["Image", "ID", "Size", "Created"])
+            assetList(
+                images,
+                headers: ["Image", "ID", "Size", "Created"],
+                targetColumn: 1,
+                selection: $checkedImageIds,
+                scope: .images
+            ) {
+                imageBatchActions
+            }
         case .volumes:
-            assetList(volumes, headers: ["Volume", "Driver"])
+            assetList(
+                volumes,
+                headers: ["Volume", "Driver"],
+                targetColumn: 0,
+                selection: $checkedVolumeIds,
+                scope: .volumes
+            ) {
+                volumeBatchActions
+            }
         case .networks:
-            assetList(networks, headers: ["Network", "Driver", "Scope"])
+            assetList(
+                networks,
+                headers: ["Network", "Driver", "Scope"],
+                targetColumn: 0,
+                selection: $checkedNetworkIds,
+                scope: .networks
+            ) {
+                networkBatchActions
+            }
         case .events:
             logText(events)
         case .disk:
@@ -2113,29 +2494,188 @@ struct DockerMonitorView: View {
     }
 
     private var containerList: some View {
-        List(selection: $selectedContainerId) {
-            ForEach(groupedContainers.keys.sorted(), id: \.self) { group in
-                Section(group.isEmpty ? "Standalone" : group) {
-                    ForEach(groupedContainers[group] ?? []) { container in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(statusColor(container.status + container.health))
-                                .frame(width: 8, height: 8)
-                            monoCell(container.name, width: 170)
-                            monoCell(container.image, width: 180, color: .secondary)
-                            monoCell(container.status, width: 170, color: statusColor(container.status))
-                            monoCell(container.health, width: 70, color: statusColor(container.health))
-                            monoCell(container.cpu, width: 70)
-                            monoCell(container.memory, width: 140)
-                            monoCell(container.netIO)
+        VStack(spacing: 0) {
+            batchToolbar(
+                count: checkedContainerIds.count,
+                clear: { checkedContainerIds.removeAll() }
+            ) {
+                Button("Start") { pendingBatch = containerBatch(verb: "start", destructive: false) }
+                    .disabled(checkedContainerIds.isEmpty)
+                Button("Stop") { pendingBatch = containerBatch(verb: "stop", destructive: true) }
+                    .disabled(checkedContainerIds.isEmpty)
+                Button("Restart") { pendingBatch = containerBatch(verb: "restart", destructive: true) }
+                    .disabled(checkedContainerIds.isEmpty)
+                Button("Pause") { pendingBatch = containerBatch(verb: "pause", destructive: true) }
+                    .disabled(checkedContainerIds.isEmpty)
+                Button("Unpause") { pendingBatch = containerBatch(verb: "unpause", destructive: false) }
+                    .disabled(checkedContainerIds.isEmpty)
+                Button("Remove") { pendingBatch = containerBatch(verb: "rm", destructive: true) }
+                    .disabled(checkedContainerIds.isEmpty)
+            }
+            Divider()
+            List(selection: $selectedContainerId) {
+                ForEach(groupedContainers.keys.sorted(), id: \.self) { group in
+                    Section(group.isEmpty ? "Standalone" : group) {
+                        ForEach(groupedContainers[group] ?? []) { container in
+                            HStack(spacing: 8) {
+                                rowCheckbox(
+                                    isOn: Binding(
+                                        get: { checkedContainerIds.contains(container.id) },
+                                        set: { isOn in
+                                            if isOn { checkedContainerIds.insert(container.id) }
+                                            else { checkedContainerIds.remove(container.id) }
+                                        }
+                                    )
+                                )
+                                Circle()
+                                    .fill(statusColor(container.status + container.health))
+                                    .frame(width: 8, height: 8)
+                                monoCell(container.name, width: 170)
+                                monoCell(container.image, width: 180, color: .secondary)
+                                monoCell(container.status, width: 170, color: statusColor(container.status))
+                                monoCell(container.health, width: 70, color: statusColor(container.health))
+                                monoCell(container.cpu, width: 70)
+                                monoCell(container.memory, width: 140)
+                                monoCell(container.netIO)
+                            }
+                            .tag(container.id)
+                            .contextMenu { dockerActions(container) }
                         }
-                        .tag(container.id)
-                        .contextMenu { dockerActions(container) }
                     }
                 }
             }
+            .listStyle(.plain)
         }
-        .listStyle(.plain)
+    }
+
+    private func rowCheckbox(isOn: Binding<Bool>) -> some View {
+        Toggle("", isOn: isOn)
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+            .frame(width: 18)
+    }
+
+    private func batchToolbar<Actions: View>(
+        count: Int,
+        clear: @escaping () -> Void,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(count > 0 ? "\(count) selected" : "No selection")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if count > 0 {
+                Button("Clear", action: clear)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+            Spacer()
+            actions()
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+    }
+
+    private func containerBatch(verb: String, destructive: Bool) -> DockerBatch? {
+        let ids = Array(checkedContainerIds)
+        guard !ids.isEmpty else { return nil }
+        let quoted = ids.map(RemoteCommandRunner.shellQuote).joined(separator: " ")
+        return DockerBatch(
+            title: "docker \(verb) \(ids.count) container\(ids.count == 1 ? "" : "s")",
+            summary: "\(verb.capitalized) \(ids.count) container\(ids.count == 1 ? "" : "s").",
+            command: "docker \(verb) \(quoted)",
+            destructive: destructive,
+            scope: .containers
+        )
+    }
+
+    @ViewBuilder
+    private var imageBatchActions: some View {
+        Button("Remove") {
+            pendingBatch = assetBatch(
+                ids: Array(checkedImageIds),
+                command: "docker rmi -f",
+                noun: "image",
+                destructive: true,
+                scope: .images
+            )
+        }
+        .disabled(checkedImageIds.isEmpty)
+        Button("Prune Unused") {
+            pendingBatch = DockerBatch(
+                title: "docker image prune",
+                summary: "Remove all dangling images.",
+                command: "docker image prune -f",
+                destructive: true,
+                scope: .images
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var volumeBatchActions: some View {
+        Button("Remove") {
+            pendingBatch = assetBatch(
+                ids: Array(checkedVolumeIds),
+                command: "docker volume rm",
+                noun: "volume",
+                destructive: true,
+                scope: .volumes
+            )
+        }
+        .disabled(checkedVolumeIds.isEmpty)
+        Button("Prune Unused") {
+            pendingBatch = DockerBatch(
+                title: "docker volume prune",
+                summary: "Remove all unused volumes.",
+                command: "docker volume prune -f",
+                destructive: true,
+                scope: .volumes
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var networkBatchActions: some View {
+        Button("Remove") {
+            pendingBatch = assetBatch(
+                ids: Array(checkedNetworkIds),
+                command: "docker network rm",
+                noun: "network",
+                destructive: true,
+                scope: .networks
+            )
+        }
+        .disabled(checkedNetworkIds.isEmpty)
+        Button("Prune Unused") {
+            pendingBatch = DockerBatch(
+                title: "docker network prune",
+                summary: "Remove all unused networks.",
+                command: "docker network prune -f",
+                destructive: true,
+                scope: .networks
+            )
+        }
+    }
+
+    private func assetBatch(
+        ids: [String],
+        command: String,
+        noun: String,
+        destructive: Bool,
+        scope: BatchScope
+    ) -> DockerBatch? {
+        guard !ids.isEmpty else { return nil }
+        let quoted = ids.map(RemoteCommandRunner.shellQuote).joined(separator: " ")
+        let plural = ids.count == 1 ? noun : "\(noun)s"
+        return DockerBatch(
+            title: "\(command) \(ids.count) \(plural)",
+            summary: "Remove \(ids.count) \(plural).",
+            command: "\(command) \(quoted)",
+            destructive: destructive,
+            scope: scope
+        )
     }
 
     private var groupedContainers: [String: [DockerContainer]] {
@@ -2172,9 +2712,35 @@ struct DockerMonitorView: View {
         return containers.first { $0.id == selectedContainerId }
     }
 
-    private func assetList(_ assets: [DockerAsset], headers: [String]) -> some View {
-        VStack(spacing: 0) {
+    private func assetList<Actions: View>(
+        _ assets: [DockerAsset],
+        headers: [String],
+        targetColumn: Int,
+        selection: Binding<Set<String>>,
+        scope: BatchScope,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        let allTargets = Set(assets.compactMap { assetTarget($0, column: targetColumn) })
+        let allSelected = !allTargets.isEmpty && allTargets.isSubset(of: selection.wrappedValue)
+        let toggleAll = Binding(
+            get: { allSelected },
+            set: { isOn in
+                if isOn { selection.wrappedValue.formUnion(allTargets) }
+                else { selection.wrappedValue.subtract(allTargets) }
+            }
+        )
+        return VStack(spacing: 0) {
+            batchToolbar(
+                count: selection.wrappedValue.count,
+                clear: { selection.wrappedValue.removeAll() },
+                actions: actions
+            )
+            Divider()
             HStack(spacing: 10) {
+                Toggle("", isOn: toggleAll)
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+                    .frame(width: 18)
                 ForEach(headers, id: \.self) { header in
                     Text(header)
                         .font(.caption.weight(.semibold))
@@ -2187,6 +2753,17 @@ struct DockerMonitorView: View {
             Divider()
             List(assets) { asset in
                 HStack(spacing: 10) {
+                    let target = assetTarget(asset, column: targetColumn)
+                    rowCheckbox(
+                        isOn: Binding(
+                            get: { target.map { selection.wrappedValue.contains($0) } ?? false },
+                            set: { isOn in
+                                guard let target else { return }
+                                if isOn { selection.wrappedValue.insert(target) }
+                                else { selection.wrappedValue.remove(target) }
+                            }
+                        )
+                    )
                     ForEach(Array(asset.columns.enumerated()), id: \.offset) { _, column in
                         monoCell(column)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2195,6 +2772,12 @@ struct DockerMonitorView: View {
             }
             .listStyle(.plain)
         }
+    }
+
+    private func assetTarget(_ asset: DockerAsset, column: Int) -> String? {
+        guard asset.columns.indices.contains(column) else { return nil }
+        let value = asset.columns[column].trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
     }
 
     private func logText(_ value: String) -> some View {
@@ -2379,6 +2962,26 @@ struct DockerMonitorView: View {
                 script: "docker \(action.verb) \(RemoteCommandRunner.shellQuote(action.target)) 2>&1"
             )
             await loadContainers()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func runBatch(_ batch: DockerBatch) async {
+        guard let connectionId else { return }
+        pendingBatch = nil
+        do {
+            _ = try await RemoteCommandRunner.runChecked(
+                connectionId: connectionId,
+                script: "\(batch.command) 2>&1"
+            )
+            switch batch.scope {
+            case .containers: checkedContainerIds.removeAll()
+            case .images: checkedImageIds.removeAll()
+            case .volumes: checkedVolumeIds.removeAll()
+            case .networks: checkedNetworkIds.removeAll()
+            }
+            await refresh()
         } catch {
             self.error = error.localizedDescription
         }

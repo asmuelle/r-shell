@@ -11,6 +11,7 @@ struct MobileTerminalView: UIViewRepresentable {
     let cursorStyleId: String
     let mouseReporting: Bool
     let optionAsMeta: Bool
+    let copyOnSelect: Bool
     @Binding var commandRequest: MobileTerminalViewCommand?
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
@@ -19,6 +20,8 @@ struct MobileTerminalView: UIViewRepresentable {
 
         term.terminalDelegate = context.coordinator
         context.coordinator.term = term
+
+        term.addPointerInteraction()
 
         MobileTerminalSessionManager.shared.registerSession(
             connectionId: connectionId,
@@ -159,5 +162,12 @@ struct MobileTerminalView: UIViewRepresentable {
         func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {
             _ = (startY, endY)
         }
+    }
+}
+
+extension SwiftTerm.TerminalView {
+    func addPointerInteraction() {
+        let interaction = UIPointerInteraction(delegate: nil)
+        addInteraction(interaction)
     }
 }

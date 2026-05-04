@@ -5,6 +5,14 @@ import SwiftUI
 import OSLog
 import RShellMacOS
 
+fileprivate enum ServiceModalKind: String, Identifiable {
+    case systemd
+    case docker
+    case postgres
+
+    var id: String { rawValue }
+}
+
 fileprivate enum MonitorDrillDown: Identifiable {
     case cpu
     case memory
@@ -175,6 +183,11 @@ struct SystemMonitorView: View {
     @State private var history: [StatSample] = []
     @State private var lastConnectionId: String?
     @State private var drillDown: MonitorDrillDown?
+    @State private var serviceModal: ServiceModalKind?
+    @State private var showingConfidence = false
+    /// Distro / kernel / arch summary shown under the connection label.
+    /// `nil` until the probe finishes; reset on `connectionId` change.
+    @State private var osInfo: String?
 
     private let logger = Logger(subsystem: "com.r-shell", category: "monitor")
     private static let pollInterval: UInt64 = 3_000_000_000  // 3 s
@@ -218,12 +231,30 @@ struct SystemMonitorView: View {
             }
             await ufwPollLoop(connectionId: connectionId)
         }
+        .task(id: connectionId ?? "none") {
+            osInfo = nil
+            guard isActive, connectionId != nil else { return }
+            await loadOsInfo()
+        }
         .sheet(item: $drillDown) { item in
             MonitorDrillDownSheet(
                 connectionId: connectionId,
                 drillDown: item,
                 sshPort: sshPort
             )
+        }
+        .sheet(item: $serviceModal) { kind in
+            ServiceModalSheet(
+                kind: kind,
+                connectionId: connectionId,
+                profileId: profileId,
+                connectionLabel: connectionLabel
+            )
+        }
+        .sheet(isPresented: $showingConfidence) {
+            if let profile {
+                ConnectionConfidenceSheet(profile: profile, status: connectionStatus)
+            }
         }
     }
 
@@ -238,23 +269,60 @@ struct SystemMonitorView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "chart.bar.xaxis")
-                .foregroundStyle(.secondary)
-            Text(connectionLabel)
-                .font(.headline)
-            if connectionId != nil {
-                ufwStatusBadge
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                connectionStatusIcon
+                Text(connectionLabel)
+                    .font(.headline)
+                if connectionId != nil {
+                    ufwStatusBadge
+                }
+                Spacer()
+                if stats != nil {
+                    Text("Updated \(Date().formatted(.dateTime.hour().minute().second()))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
-            Spacer()
-            if stats != nil {
-                Text("Updated \(Date().formatted(.dateTime.hour().minute().second()))")
+            if let osInfo {
+                Text(osInfo)
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(osInfo)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var connectionStatusIcon: some View {
+        let color = connectionStatusColor
+        if profile != nil {
+            Button {
+                showingConfidence = true
+            } label: {
+                Image(systemName: "chart.bar.xaxis")
+                    .foregroundStyle(color)
+            }
+            .buttonStyle(.plain)
+            .help("Show connection details and credential confidence")
+        } else {
+            Image(systemName: "chart.bar.xaxis")
+                .foregroundStyle(color)
+        }
+    }
+
+    private var connectionStatusColor: Color {
+        switch connectionStatus {
+        case .connected:    return .green
+        case .connecting:   return .orange
+        case .disconnected: return Color(nsColor: .tertiaryLabelColor)
+        case .error:        return .red
+        case nil:           return .secondary
+        }
     }
 
     private var ufwStatusBadge: some View {
@@ -266,8 +334,10 @@ struct SystemMonitorView: View {
                 Circle()
                     .fill(color)
                     .frame(width: 6, height: 6)
-                Text("UFW \(ufwSummary.badgeText)")
+                Text("UFW")
                     .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .foregroundStyle(color)
             .padding(.horizontal, 6)
@@ -278,6 +348,7 @@ struct SystemMonitorView: View {
             )
         }
         .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
         .help(ufwSummary.helpText)
     }
 
@@ -345,13 +416,6 @@ struct SystemMonitorView: View {
                 let contentHeight = max(0, proxy.size.height - 32)
 
                 VStack(alignment: .leading, spacing: 16) {
-                    if let profile {
-                        ConnectionConfidenceView(
-                            profile: profile,
-                            status: connectionStatus
-                        )
-                    }
-
                     metricBlock(
                         title: "CPU",
                         icon: "cpu",
@@ -405,7 +469,10 @@ struct SystemMonitorView: View {
                         isActive: isActive,
                         onSelectService: { unit in
                             drillDown = .systemdService(unit)
-                        }
+                        },
+                        onOpenSystemd: { serviceModal = .systemd },
+                        onOpenDocker: { serviceModal = .docker },
+                        onOpenPostgres: { serviceModal = .postgres }
                     )
 
                     ActivityTimelineView(
@@ -615,6 +682,47 @@ struct SystemMonitorView: View {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: Self.ufwPollInterval)
             await fetchUFWStatus(connectionId: connectionId)
+        }
+    }
+
+    /// One-shot probe for distro / kernel / arch. We only re-run on
+    /// connection change — host identity doesn't shift between polls,
+    /// and kernel upgrades require a reconnect to take effect anyway.
+    private func loadOsInfo() async {
+        guard let connectionId else { return }
+        let script = """
+        pretty=""
+        if [ -r /etc/os-release ]; then
+          pretty=$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-${NAME:+$NAME ${VERSION:-}}}")
+        fi
+        if [ -z "$pretty" ] && command -v sw_vers >/dev/null 2>&1; then
+          pretty="$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+        fi
+        if [ -z "$pretty" ] && command -v lsb_release >/dev/null 2>&1; then
+          pretty=$(lsb_release -ds 2>/dev/null)
+        fi
+        if [ -z "$pretty" ]; then
+          pretty=$(uname -s 2>/dev/null)
+        fi
+        kernel=$(uname -sr 2>/dev/null)
+        arch=$(uname -m 2>/dev/null)
+        printf '%s\\n%s\\n%s\\n' "${pretty:-Unknown}" "${kernel:-}" "${arch:-}"
+        """
+        do {
+            let output = try await RemoteCommandRunner.runChecked(
+                connectionId: connectionId,
+                script: script
+            )
+            let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            let parts = [
+                lines.indices.contains(0) ? lines[0] : "",
+                lines.indices.contains(1) ? lines[1] : "",
+                lines.indices.contains(2) ? lines[2] : "",
+            ].filter { !$0.isEmpty }
+            osInfo = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        } catch {
+            osInfo = nil
         }
     }
 
@@ -1444,11 +1552,12 @@ private struct MonitorDrillDownSheet: View {
             keyValuePane(diagnostic.properties)
                 .padding(12)
                 .frame(minWidth: 340)
-            sectionBox("Recent Journal") {
-                rawText(diagnostic.journalLines.joined(separator: "\n"))
-            }
+            JournalLogView(
+                rawLines: diagnostic.journalLines,
+                fallbackHints: diagnostic.warnings
+            )
             .padding(12)
-            .frame(minWidth: 440)
+            .frame(minWidth: 460)
         }
     }
 
@@ -2187,6 +2296,583 @@ private struct MonitorDrillDownSheet: View {
           echo "No log source found."
         fi
         """
+    }
+}
+
+// MARK: - Journal log view
+
+private enum JournalSeverity: String, CaseIterable, Hashable, Identifiable {
+    case error
+    case warn
+    case info
+    case debug
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .error: return "Errors"
+        case .warn:  return "Warnings"
+        case .info:  return "Info"
+        case .debug: return "Debug"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .error: return "xmark.octagon.fill"
+        case .warn:  return "exclamationmark.triangle.fill"
+        case .info:  return "circle.fill"
+        case .debug: return "ladybug.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .error: return .red
+        case .warn:  return .orange
+        case .info:  return .secondary
+        case .debug: return .secondary
+        }
+    }
+}
+
+private struct JournalLine: Identifiable {
+    let id: Int
+    let timestamp: String?
+    let prefix: String
+    let message: String
+    let severity: JournalSeverity
+    let raw: String
+
+    static func parseAll(_ rawLines: [String]) -> [JournalLine] {
+        rawLines.enumerated().map { idx, raw in parse(raw: raw, id: idx) }
+    }
+
+    private static func parse(raw: String, id: Int) -> JournalLine {
+        let chars = Array(raw)
+        let isShortIso = chars.count >= 19
+            && chars[4] == "-" && chars[7] == "-" && chars[10] == "T"
+            && chars[13] == ":" && chars[16] == ":"
+
+        var timestamp: String? = nil
+        var prefix = ""
+        var message = raw
+
+        if isShortIso, let firstSpace = raw.firstIndex(of: " ") {
+            let isoPart = raw[..<firstSpace]
+            timestamp = formatTimestamp(String(isoPart))
+            let rest = String(raw[raw.index(after: firstSpace)...])
+            if let colonRange = rest.range(of: ": ") {
+                prefix = String(rest[..<colonRange.lowerBound])
+                message = String(rest[colonRange.upperBound...])
+            } else {
+                message = rest
+            }
+        }
+
+        return JournalLine(
+            id: id,
+            timestamp: timestamp,
+            prefix: prefix,
+            message: message,
+            severity: severity(for: message),
+            raw: raw
+        )
+    }
+
+    private static func formatTimestamp(_ iso: String) -> String {
+        guard let tIndex = iso.firstIndex(of: "T") else { return iso }
+        let timePart = iso[iso.index(after: tIndex)...]
+        let stopIdx = timePart.firstIndex { $0 == "+" || $0 == "-" || $0 == "Z" || $0 == "." }
+        if let stopIdx { return String(timePart[..<stopIdx]) }
+        return String(timePart)
+    }
+
+    private static let errorRegex = try? NSRegularExpression(
+        pattern: #"\b(error|errors|fatal|panic|crit|critical|emerg|alert|denied|fail|failed|failure)\b"#,
+        options: [.caseInsensitive]
+    )
+    private static let warnRegex = try? NSRegularExpression(
+        pattern: #"\b(warn|warning|deprecated|timeout|timed\s*out|retry|retrying|deferred|refused|rejected)\b"#,
+        options: [.caseInsensitive]
+    )
+    private static let debugRegex = try? NSRegularExpression(
+        pattern: #"\b(debug|trace)\b"#,
+        options: [.caseInsensitive]
+    )
+
+    private static func severity(for message: String) -> JournalSeverity {
+        let range = NSRange(message.startIndex..<message.endIndex, in: message)
+        if errorRegex?.firstMatch(in: message, range: range) != nil { return .error }
+        if warnRegex?.firstMatch(in: message, range: range) != nil { return .warn }
+        if debugRegex?.firstMatch(in: message, range: range) != nil { return .debug }
+        return .info
+    }
+
+    private static let ipv4Regex = try? NSRegularExpression(
+        pattern: #"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"#
+    )
+
+    var extractedIPv4: String? {
+        guard let regex = JournalLine.ipv4Regex else { return nil }
+        let range = NSRange(message.startIndex..<message.endIndex, in: message)
+        guard let match = regex.firstMatch(in: message, range: range),
+              let r = Range(match.range, in: message) else { return nil }
+        return String(message[r])
+    }
+}
+
+private struct JournalLogView: View {
+    let rawLines: [String]
+    var fallbackHints: [String] = []
+
+    @State private var searchText = ""
+    @State private var enabledSeverities: Set<JournalSeverity> = Set(JournalSeverity.allCases)
+    @State private var pinnedIDs: Set<Int> = []
+    @State private var jumpCursor: Int?
+
+    private var lines: [JournalLine] { JournalLine.parseAll(rawLines) }
+
+    private var counts: [JournalSeverity: Int] {
+        var c: [JournalSeverity: Int] = [:]
+        for line in lines { c[line.severity, default: 0] += 1 }
+        return c
+    }
+
+    private var filtered: [JournalLine] {
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lines.filter { line in
+            guard enabledSeverities.contains(line.severity) else { return false }
+            if needle.isEmpty { return true }
+            return line.raw.lowercased().contains(needle)
+        }
+    }
+
+    private var pinnedLines: [JournalLine] {
+        lines.filter { pinnedIDs.contains($0.id) }
+    }
+
+    private var issueIDs: [Int] {
+        filtered
+            .filter { $0.severity == .error || $0.severity == .warn }
+            .map(\.id)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            header
+            controls
+            Group {
+                if filtered.isEmpty && pinnedLines.isEmpty {
+                    placeholder
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                if !pinnedLines.isEmpty {
+                                    pinnedSection
+                                }
+                                ForEach(Array(filtered.enumerated()), id: \.element.id) { index, line in
+                                    row(line, isPinned: pinnedIDs.contains(line.id))
+                                        .id(line.id)
+                                    if index < filtered.count - 1 {
+                                        Divider().opacity(0.18)
+                                    }
+                                }
+                            }
+                        }
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                        .onChange(of: jumpCursor) { newValue in
+                            guard let target = newValue else { return }
+                            withAnimation(.snappy) {
+                                proxy.scrollTo(target, anchor: .center)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Recent Journal")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("(\(filtered.count) of \(lines.count))")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+            Spacer(minLength: 8)
+            issueNavigator
+            exportMenu
+        }
+    }
+
+    @ViewBuilder
+    private var issueNavigator: some View {
+        if !issueIDs.isEmpty {
+            HStack(spacing: 2) {
+                Button {
+                    jumpToIssue(forward: false)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.caption2.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+                .help("Previous issue (error or warning)")
+
+                Text("\(issueIDs.count)")
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.orange)
+                    .frame(minWidth: 18)
+
+                Button {
+                    jumpToIssue(forward: true)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+                .help("Next issue (error or warning)")
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.orange.opacity(0.10), in: Capsule())
+            .overlay(Capsule().stroke(Color.orange.opacity(0.30), lineWidth: 0.5))
+        }
+    }
+
+    private var exportMenu: some View {
+        Menu {
+            Button {
+                copyFiltered()
+            } label: {
+                Label("Copy filtered (\(filtered.count) lines)", systemImage: "doc.on.doc")
+            }
+            .disabled(filtered.isEmpty)
+
+            Button {
+                copyAll()
+            } label: {
+                Label("Copy all (\(lines.count) lines)", systemImage: "doc.on.doc.fill")
+            }
+            .disabled(lines.isEmpty)
+
+            Divider()
+
+            Button {
+                saveFiltered()
+            } label: {
+                Label("Save filtered as .log…", systemImage: "square.and.arrow.down")
+            }
+            .disabled(filtered.isEmpty)
+
+            if !pinnedIDs.isEmpty {
+                Divider()
+                Button(role: .destructive) {
+                    pinnedIDs.removeAll()
+                } label: {
+                    Label("Unpin all (\(pinnedIDs.count))", systemImage: "pin.slash")
+                }
+            }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.caption.weight(.semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Copy or export journal lines")
+    }
+
+    // MARK: Controls
+
+    private var controls: some View {
+        HStack(spacing: 8) {
+            severityPills
+            Spacer(minLength: 8)
+            searchField
+        }
+    }
+
+    private var severityPills: some View {
+        HStack(spacing: 6) {
+            ForEach(JournalSeverity.allCases) { severity in
+                let count = counts[severity] ?? 0
+                let isOn = enabledSeverities.contains(severity)
+                Button {
+                    toggle(severity)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: severity.symbol)
+                            .font(.caption2)
+                            .foregroundStyle(isOn ? severity.color : .secondary)
+                        Text("\(count)")
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(isOn ? severity.color : .secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        (isOn ? severity.color.opacity(0.14) : Color.gray.opacity(0.10)),
+                        in: Capsule()
+                    )
+                    .overlay(
+                        Capsule().stroke(
+                            isOn ? severity.color.opacity(0.35) : Color.clear,
+                            lineWidth: 0.5
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("\(severity.label): \(count) — click to toggle")
+            }
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.tertiary)
+                .font(.caption)
+            TextField("Search", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(.caption)
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .frame(minWidth: 160, idealWidth: 220, maxWidth: 260)
+    }
+
+    // MARK: Pinned section
+
+    private var pinnedSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                Image(systemName: "pin.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+                Text("Pinned (\(pinnedLines.count))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+
+            ForEach(Array(pinnedLines.enumerated()), id: \.element.id) { index, line in
+                row(line, isPinned: true)
+                if index < pinnedLines.count - 1 {
+                    Divider().opacity(0.18)
+                }
+            }
+            Divider()
+                .overlay(Color.yellow.opacity(0.40))
+        }
+        .background(Color.yellow.opacity(0.06))
+    }
+
+    // MARK: Placeholder
+
+    private var placeholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: lines.isEmpty ? "tray" : "text.magnifyingglass")
+                .font(.title3)
+                .foregroundStyle(.tertiary)
+            Text(placeholderText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if lines.isEmpty, !fallbackHints.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(fallbackHints.enumerated()), id: \.offset) { _, hint in
+                        Label(hint, systemImage: "info.circle")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(20)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var placeholderText: String {
+        if lines.isEmpty { return "No journal entries." }
+        if !searchText.isEmpty { return "No matches for \"\(searchText)\"." }
+        return "All severities are filtered out — re-enable one above."
+    }
+
+    // MARK: Row
+
+    private func row(_ line: JournalLine, isPinned: Bool) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Button {
+                togglePin(line.id)
+            } label: {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.caption2)
+                    .foregroundStyle(isPinned ? Color.yellow : Color.gray.opacity(0.35))
+            }
+            .buttonStyle(.plain)
+            .frame(width: 12, alignment: .center)
+            .padding(.top, 3)
+            .help(isPinned ? "Unpin" : "Pin")
+
+            Image(systemName: line.severity.symbol)
+                .font(.caption2)
+                .foregroundStyle(line.severity.color)
+                .frame(width: 12, alignment: .center)
+                .padding(.top, 3)
+
+            if let timestamp = line.timestamp {
+                Text(timestamp)
+                    .font(.system(.caption2, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 56, alignment: .leading)
+                    .padding(.top, 2)
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                if !line.prefix.isEmpty {
+                    Text(line.prefix)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text(highlightedMessage(line.message))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(messageColor(for: line.severity))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(jumpCursor == line.id ? Color.accentColor.opacity(0.14) : Color.clear)
+        .contextMenu {
+            Button(isPinned ? "Unpin line" : "Pin line") {
+                togglePin(line.id)
+            }
+            Button("Copy line") {
+                RemoteCommandRunner.copy(line.raw)
+            }
+            if let ip = line.extractedIPv4 {
+                Button("Copy IP \(ip)") {
+                    RemoteCommandRunner.copy(ip)
+                }
+            }
+            if let timestamp = line.timestamp {
+                Button("Copy timestamp \(timestamp)") {
+                    RemoteCommandRunner.copy(timestamp)
+                }
+            }
+        }
+    }
+
+    private func messageColor(for severity: JournalSeverity) -> Color {
+        switch severity {
+        case .error, .warn: return severity.color
+        case .info:         return .primary
+        case .debug:        return .secondary
+        }
+    }
+
+    private func highlightedMessage(_ message: String) -> AttributedString {
+        var attributed = AttributedString(message)
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return attributed }
+        var searchRange = attributed.startIndex..<attributed.endIndex
+        while let found = attributed[searchRange].range(of: needle, options: .caseInsensitive) {
+            attributed[found].backgroundColor = Color.yellow.opacity(0.45)
+            attributed[found].foregroundColor = Color.black
+            searchRange = found.upperBound..<attributed.endIndex
+        }
+        return attributed
+    }
+
+    // MARK: Actions
+
+    private func toggle(_ severity: JournalSeverity) {
+        if enabledSeverities.contains(severity) {
+            if enabledSeverities.count == 1 {
+                enabledSeverities = Set(JournalSeverity.allCases)
+            } else {
+                enabledSeverities.remove(severity)
+            }
+        } else {
+            enabledSeverities.insert(severity)
+        }
+    }
+
+    private func togglePin(_ id: Int) {
+        if pinnedIDs.contains(id) {
+            pinnedIDs.remove(id)
+        } else {
+            pinnedIDs.insert(id)
+        }
+    }
+
+    private func jumpToIssue(forward: Bool) {
+        guard !issueIDs.isEmpty else { return }
+        if let cursor = jumpCursor, let idx = issueIDs.firstIndex(of: cursor) {
+            let next = forward
+                ? (idx + 1) % issueIDs.count
+                : (idx - 1 + issueIDs.count) % issueIDs.count
+            jumpCursor = issueIDs[next]
+        } else {
+            jumpCursor = forward ? issueIDs.first : issueIDs.last
+        }
+    }
+
+    private func copyFiltered() {
+        RemoteCommandRunner.copy(filtered.map(\.raw).joined(separator: "\n"))
+    }
+
+    private func copyAll() {
+        RemoteCommandRunner.copy(lines.map(\.raw).joined(separator: "\n"))
+    }
+
+    private func saveFiltered() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.log, .plainText]
+        panel.nameFieldStringValue = "journal-\(Self.nowSlug()).log"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let body = filtered.map(\.raw).joined(separator: "\n")
+            try? body.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private static func nowSlug() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
     }
 }
 
@@ -3304,5 +3990,109 @@ private enum RemoteIPParser {
         if lower.hasPrefix("ff") { return false }
         if lower.hasPrefix("2001:db8") { return false }
         return true
+    }
+}
+
+private struct ConnectionConfidenceSheet: View {
+    let profile: ConnectionProfile
+    let status: TerminalConnectionStatus?
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Connection Details")
+                    .font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                ConnectionConfidenceView(profile: profile, status: status)
+                    .padding(16)
+            }
+        }
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 360, idealHeight: 460)
+    }
+}
+
+// MARK: - Service modal sheet
+
+fileprivate struct ServiceModalSheet: View {
+    let kind: ServiceModalKind
+    let connectionId: String?
+    let profileId: String?
+    let connectionLabel: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.headline)
+                Text(connectionLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Close", systemImage: "xmark")
+                }
+                .labelStyle(.iconOnly)
+                .keyboardShortcut(.cancelAction)
+                .help("Close")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+            content
+        }
+        .frame(minWidth: 980, idealWidth: 1100, minHeight: 660, idealHeight: 760)
+    }
+
+    private var title: String {
+        switch kind {
+        case .systemd: return "systemd"
+        case .docker: return "Docker"
+        case .postgres: return "PostgreSQL"
+        }
+    }
+
+    private var icon: String {
+        switch kind {
+        case .systemd: return "switch.2"
+        case .docker: return "shippingbox"
+        case .postgres: return "cylinder.split.1x2"
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch kind {
+        case .systemd:
+            SystemdMonitorView(
+                connectionId: connectionId,
+                profileId: profileId,
+                connectionLabel: connectionLabel
+            )
+        case .docker:
+            DockerMonitorView(
+                connectionId: connectionId,
+                connectionLabel: connectionLabel
+            )
+        case .postgres:
+            PostgresMonitorView(
+                connectionId: connectionId,
+                connectionLabel: connectionLabel
+            )
+        }
     }
 }

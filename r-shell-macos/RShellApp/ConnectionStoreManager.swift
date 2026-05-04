@@ -27,6 +27,8 @@ class ConnectionStoreManager: ObservableObject {
 
     func saveOrUpdate(_ profile: ConnectionProfile) {
         if let idx = connections.firstIndex(where: { $0.id == profile.id }) {
+            let previous = connections[idx]
+            deleteStaleCredentials(previous: previous, updated: profile)
             connections[idx] = profile
         } else {
             connections.append(profile)
@@ -36,9 +38,7 @@ class ConnectionStoreManager: ObservableObject {
 
     func delete(_ profile: ConnectionProfile) {
         connections.removeAll { $0.id == profile.id }
-        // Also remove keychain entries
-        KeychainManager.shared.deletePassword(kind: .sshPassword, account: profile.keychainAccount)
-        KeychainManager.shared.deletePassword(kind: .sshKeyPassphrase, account: profile.keychainAccount)
+        deleteCredentials(for: profile)
         save()
     }
 
@@ -103,6 +103,28 @@ class ConnectionStoreManager: ObservableObject {
         updated[idx].monitoredSystemdServices = sortedServiceNames(services)
         connections = updated
         save()
+    }
+
+    private func deleteStaleCredentials(previous: ConnectionProfile, updated: ConnectionProfile) {
+        if previous.keychainAccount != updated.keychainAccount {
+            deleteCredentials(for: previous)
+            return
+        }
+
+        switch updated.authMethod {
+        case .password:
+            KeychainManager.shared.deletePassword(kind: .sshKeyPassphrase, account: updated.keychainAccount)
+        case .publicKey:
+            KeychainManager.shared.deletePassword(kind: .sshPassword, account: updated.keychainAccount)
+            if previous.sshKeyReference != updated.sshKeyReference || updated.sshKeyReference?.isAgent == true {
+                KeychainManager.shared.deletePassword(kind: .sshKeyPassphrase, account: updated.keychainAccount)
+            }
+        }
+    }
+
+    private func deleteCredentials(for profile: ConnectionProfile) {
+        KeychainManager.shared.deletePassword(kind: .sshPassword, account: profile.keychainAccount)
+        KeychainManager.shared.deletePassword(kind: .sshKeyPassphrase, account: profile.keychainAccount)
     }
 
     // MARK: - Folder CRUD

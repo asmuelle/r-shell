@@ -3,20 +3,15 @@ import SwiftUI
 import OSLog
 import RShellMacOS
 
-/// AppKit split-view controller implementing the VS Code-like four-panel layout.
+/// AppKit split-view controller implementing the three-panel layout.
 ///
-/// Panels (left to right, top to bottom):
+/// Panels (left to right):
 ///   ┌─────────┬──────────────────┬────────────┐
 ///   │         │                  │            │
 ///   │ Sidebar │  Main Workspace  │ Inspector  │
 ///   │         │  (tabs/splits)   │            │
-///   │         ├──────────────────┤            │
-///   │         │   Bottom Panel   │            │
-///   │         │   (logs/output)  │            │
+///   │         │                  │            │
 ///   └─────────┴──────────────────┴────────────┘
-///
-/// The vertical divider between sidebar/workspace/inspector is the outer split.
-/// The horizontal divider between workspace/bottom is nested inside the center panel.
 @MainActor
 final class WorkspaceSplitController: NSSplitViewController {
     private let logger = Logger(subsystem: "com.r-shell", category: "splitview")
@@ -26,18 +21,12 @@ final class WorkspaceSplitController: NSSplitViewController {
 
     let sidebarController: NSViewController
     let mainController: NSViewController
-    let bottomController: NSViewController
     let inspectorController: NSViewController
-
-    // MARK: - Nested split (main + bottom)
-
-    private let mainVerticalSplit: NSSplitViewController
 
     // MARK: - Init
 
     init(layoutManager: LayoutManager) {
         self.layoutManager = layoutManager
-        self.mainVerticalSplit = NSSplitViewController()
 
         // Build panel view controllers with hosting views
         let storeManager = ConnectionStoreManager.shared
@@ -48,7 +37,6 @@ final class WorkspaceSplitController: NSSplitViewController {
         )
         self.sidebarController = NSHostingController(rootView: sidebar)
         self.mainController = NSHostingController(rootView: MainPanel())
-        self.bottomController = NSHostingController(rootView: BottomPanel())
         self.inspectorController = NSHostingController(rootView: InspectorPanel())
 
         super.init(nibName: nil, bundle: nil)
@@ -64,7 +52,7 @@ final class WorkspaceSplitController: NSSplitViewController {
         splitView.isVertical = true
         splitView.dividerStyle = .thin
 
-        // --- Outer split: sidebar | center column | inspector ---
+        // --- Outer split: sidebar | main | inspector ---
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
         sidebarItem.minimumThickness = LayoutConstants.minSidebarWidth
@@ -74,25 +62,9 @@ final class WorkspaceSplitController: NSSplitViewController {
         sidebarItem.holdingPriority = .init(200)
         addSplitViewItem(sidebarItem)
 
-        // Center column = nested vertical split: main workspace | bottom panel
-        let mainVerticalItem = NSSplitViewItem(viewController: mainVerticalSplit)
-        mainVerticalItem.canCollapse = false
-        addSplitViewItem(mainVerticalItem)
-
-        mainVerticalSplit.splitView.isVertical = false
-        mainVerticalSplit.splitView.dividerStyle = .thin
-
         let mainItem = NSSplitViewItem(viewController: mainController)
         mainItem.canCollapse = false
-        mainVerticalSplit.addSplitViewItem(mainItem)
-
-        let bottomItem = NSSplitViewItem(viewController: bottomController)
-        bottomItem.minimumThickness = LayoutConstants.minBottomHeight
-        bottomItem.maximumThickness = LayoutConstants.maxBottomHeight
-        bottomItem.canCollapse = true
-        bottomItem.isCollapsed = !layoutManager.layout.bottomVisible
-        bottomItem.holdingPriority = .init(150)
-        mainVerticalSplit.addSplitViewItem(bottomItem)
+        addSplitViewItem(mainItem)
 
         // Inspector (right)
         let inspectorItem = NSSplitViewItem(viewController: inspectorController)
@@ -117,15 +89,6 @@ final class WorkspaceSplitController: NSSplitViewController {
             if layout.sidebarVisible {
                 sidebarItem.animator().animations
                 splitView.setPosition(layout.sidebarWidth, ofDividerAt: 0)
-            }
-        }
-
-        if let bottomItem = mainVerticalSplit.splitViewItems[safe: 1] {
-            bottomItem.isCollapsed = !layout.bottomVisible
-            if layout.bottomVisible {
-                let dividerIndex = mainVerticalSplit.splitViewItems.count - 1
-                let totalHeight = mainVerticalSplit.splitView.bounds.height
-                mainVerticalSplit.splitView.setPosition(totalHeight - layout.bottomHeight, ofDividerAt: dividerIndex - 1)
             }
         }
 

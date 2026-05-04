@@ -3,8 +3,7 @@ import Foundation
 import OSLog
 
 /// Owns the list of in-flight and completed SFTP transfers. The
-/// `BottomPanel` renders this; the `FileBrowserView` enqueues from
-/// download / upload actions.
+/// `FileBrowserView` enqueues from download / upload actions.
 ///
 /// Architecture: each enqueue spawns a `Task.detached` that calls the
 /// FFI synchronously (the Rust side blocks on its Tokio runtime). The

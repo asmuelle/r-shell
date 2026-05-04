@@ -27,11 +27,6 @@ struct RShellApp: App {
                 }
                 .keyboardShortcut("b", modifiers: .command)
 
-                Button("Toggle Bottom Panel") {
-                    layoutManager.toggleBottom()
-                }
-                .keyboardShortcut("j", modifiers: .command)
-
                 Button("Toggle Inspector") {
                     layoutManager.toggleInspector()
                 }
@@ -57,13 +52,6 @@ struct RShellApp: App {
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
                 .disabled(tabsStore.connectedSSHTabs.count < 2)
-
-                Button("Show Runbooks") {
-                    layoutManager.layout.bottomVisible = true
-                    NotificationCenter.default.post(name: .showRunbooks, object: nil)
-                }
-                .keyboardShortcut("u", modifiers: [.command, .shift])
-                .disabled(tabsStore.activeOpenSSHTab == nil)
 
                 Divider()
 

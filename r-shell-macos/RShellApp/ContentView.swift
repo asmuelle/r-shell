@@ -1,7 +1,7 @@
 import SwiftUI
 import RShellMacOS
 
-/// Native macOS workspace — mirrors the Tauri 4-region layout.
+/// Native macOS workspace.
 ///
 ///   ┌────────────────┬───────────────────┬────────────┐
 ///   │ Connections    │ Terminal tabs     │            │
@@ -10,20 +10,18 @@ import RShellMacOS
 ///   │ Connection     ├───────────────────┤  Monitor   │
 ///   │ Details        │ File browser      │  (always)  │
 ///   │                │ (always-visible)  │            │
-///   ├────────────────┴───────────────────┤            │
-///   │ Bottom: transfers / logs           │            │
-///   └────────────────────────────────────┴────────────┘
+///   └────────────────┴───────────────────┴────────────┘
 ///
 /// Layout is an explicit outer `HSplitView` (sidebar | detail). The
-/// detail column nests `HSplitView` + `VSplitView` so the three regions
-/// (terminal-pane / file-pane / bottom / inspector) collapse and resize
-/// independently. The three-column `NavigationSplitView` form can only
-/// express `(all / doubleColumn / detailOnly)`, which doesn't allow
+/// detail column is itself an `HSplitView` so the main workspace and
+/// the inspector collapse and resize independently. The three-column
+/// `NavigationSplitView` form can only express
+/// `(all / doubleColumn / detailOnly)`, which doesn't allow
 /// "sidebar visible, inspector hidden" — so the inspector lives inside
 /// the detail column.
 ///
 /// `LayoutManager` is the source of truth for which panels are visible
-/// and at what size. The bottom-panel and inspector dividers are observed via
+/// and at what size. The inspector divider is observed via
 /// `GeometryReader` preferences and persisted through a 250 ms debounced
 /// write.
 struct ContentView: View {
@@ -79,9 +77,6 @@ struct ContentView: View {
                 onToggleSidebar: {
                     layoutManager.toggleSidebar()
                 },
-                onToggleBottom: {
-                    layoutManager.toggleBottom()
-                },
                 onToggleInspector: {
                     layoutManager.toggleInspector()
                 },
@@ -99,10 +94,6 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .showDashboard)) { _ in
             dashboardVisible = tabsStore.connectedSSHTabs.count >= 2
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showRunbooks)) { _ in
-            dashboardVisible = false
-            layoutManager.layout.bottomVisible = true
         }
         .alert("Connection error", isPresented: Binding(
             get: { tabsStore.lastError != nil },
@@ -190,17 +181,8 @@ private struct DetailColumn: View {
     @ObservedObject var layoutManager: LayoutManager
     @Binding var dashboardVisible: Bool
     @EnvironmentObject var tabsStore: TerminalTabsStore
-    @State private var bottomHeightDebounce: Task<Void, Never>?
     @State private var inspectorWidthDebounce: Task<Void, Never>?
     @State private var dashboardVisible = false
-
-    /// Connection utility panels are shown only for the selected, open SSH
-    /// workspace. SFTP-only tabs, no tab, and disconnected SSH tabs hide
-    /// these command-driven panels while preserving the user's persisted
-    /// visible/size preferences for the next connected SSH tab.
-    private var bottomShouldRender: Bool {
-        layoutManager.layout.bottomVisible && tabsStore.activeOpenSSHTab != nil
-    }
 
     private var inspectorShouldRender: Bool {
         layoutManager.layout.inspectorVisible && tabsStore.activeOpenSSHTab != nil
@@ -226,29 +208,8 @@ private struct DetailColumn: View {
                     .frame(minWidth: 320, minHeight: 320)
             } else {
                 HSplitView {
-                    VSplitView {
-                        MainPanel()
-                            .frame(minWidth: 320, minHeight: 320)
-
-                        if bottomShouldRender {
-                            BottomPanel()
-                                .frame(
-                                    minHeight: LayoutConstants.minBottomHeight,
-                                    idealHeight: layoutManager.layout.bottomHeight,
-                                    maxHeight: LayoutConstants.maxBottomHeight
-                                )
-                                .background(
-                                    GeometryReader { proxy in
-                                        Color.clear
-                                            .preference(key: BottomHeightKey.self,
-                                                        value: proxy.size.height)
-                                    }
-                                )
-                                .materialBackground(.contentBackground,
-                                                    blendingMode: .withinWindow)
-                        }
-                    }
-                    .onPreferenceChange(BottomHeightKey.self, perform: persistBottomHeight)
+                    MainPanel()
+                        .frame(minWidth: 320, minHeight: 320)
 
                     if inspectorShouldRender {
                         InspectorPanel()
@@ -271,7 +232,7 @@ private struct DetailColumn: View {
             }
         }
         .onPreferenceChange(InspectorWidthKey.self, perform: persistInspectorWidth)
-        .onChange(of: connectedSSHTabIds) { _, ids in
+        .onChange(of: connectedSSHTabIds) { ids in
             if ids.count < 2 {
                 dashboardVisible = false
             }
@@ -290,22 +251,6 @@ private struct DetailColumn: View {
     /// the trade-off for keeping the persistence path simple — there is
     /// no reliable "drag began / drag ended" callback on `HSplitView` /
     /// `VSplitView` to differentiate user drag from system reflow.
-    private func persistBottomHeight(_ measured: CGFloat) {
-        bottomHeightDebounce?.cancel()
-        bottomHeightDebounce = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-
-            let clamped = min(
-                max(measured, LayoutConstants.minBottomHeight),
-                LayoutConstants.maxBottomHeight
-            )
-            if abs(clamped - layoutManager.layout.bottomHeight) > 1 {
-                layoutManager.layout.bottomHeight = clamped
-            }
-        }
-    }
-
     private func persistInspectorWidth(_ measured: CGFloat) {
         inspectorWidthDebounce?.cancel()
         inspectorWidthDebounce = Task { @MainActor in
@@ -324,13 +269,6 @@ private struct DetailColumn: View {
 }
 
 // MARK: - Preference keys for split-pane dimensions
-
-private struct BottomHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
 
 private struct InspectorWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0

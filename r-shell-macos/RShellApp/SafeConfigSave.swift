@@ -49,7 +49,7 @@ enum MacSafeConfigSave {
         return result
     }
 
-    private static func shouldBackup(_ remotePath: String) -> Bool {
+    static func shouldBackup(_ remotePath: String) -> Bool {
         let fileName = (remotePath as NSString).lastPathComponent
         let ext = (remotePath as NSString).pathExtension.lowercased()
         if fileName.hasPrefix("."), fileName != ".", fileName != ".." { return true }

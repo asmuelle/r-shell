@@ -116,28 +116,35 @@ final class MobileSessionStore: ObservableObject {
             return
         }
 
-        let result = rshellDisconnect(connectionId: connectionId)
-        if result.success {
-            statuses[profile.id] = .disconnected
-            MobileActivityLogStore.shared.record(
-                title: "Disconnected",
-                detail: profile.name,
-                profileId: profile.id,
-                connectionId: connectionId,
-                systemImage: "xmark.circle",
-                severity: .info
-            )
-        } else {
-            let message = MobileDiagnosticsRedactor.redactSecrets(result.error ?? "Disconnect failed")
-            statuses[profile.id] = .failed(message)
-            MobileActivityLogStore.shared.record(
-                title: "Disconnect failed",
-                detail: "\(profile.name): \(message)",
-                profileId: profile.id,
-                connectionId: connectionId,
-                systemImage: "exclamationmark.triangle.fill",
-                severity: .warning
-            )
+        statuses[profile.id] = .disconnected
+        disconnectInBackground(connectionId: connectionId) { [weak self] success, error in
+            Task { @MainActor in
+                guard let self else { return }
+                let stillDisconnected = self.status(for: profile) == .disconnected
+                if success {
+                    MobileActivityLogStore.shared.record(
+                        title: "Disconnected",
+                        detail: profile.name,
+                        profileId: profile.id,
+                        connectionId: connectionId,
+                        systemImage: "xmark.circle",
+                        severity: .info
+                    )
+                } else {
+                    let message = MobileDiagnosticsRedactor.redactSecrets(error ?? "Disconnect failed")
+                    if stillDisconnected {
+                        self.statuses[profile.id] = .failed(message)
+                    }
+                    MobileActivityLogStore.shared.record(
+                        title: "Disconnect failed",
+                        detail: "\(profile.name): \(message)",
+                        profileId: profile.id,
+                        connectionId: connectionId,
+                        systemImage: "exclamationmark.triangle.fill",
+                        severity: .warning
+                    )
+                }
+            }
         }
     }
 
@@ -210,6 +217,16 @@ final class MobileSessionStore: ObservableObject {
             } catch {
                 completion(.failure(error))
             }
+        }
+    }
+
+    private nonisolated func disconnectInBackground(
+        connectionId: String,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        DispatchQueue.global(qos: .utility).async {
+            let result = rshellDisconnect(connectionId: connectionId)
+            completion(result.success, result.error)
         }
     }
 }

@@ -39,6 +39,12 @@ struct MobileServerDashboardView: View {
                     color: loadColor(memoryPercent)
                 )
                 metricCard(
+                    title: "Swap",
+                    value: swapPercentText,
+                    detail: swapDetail,
+                    color: swapUsed > 0 ? loadColor(swapPercent) : .secondary
+                )
+                metricCard(
                     title: "Disk",
                     value: diskPercentText,
                     detail: diskDetail,
@@ -62,6 +68,9 @@ struct MobileServerDashboardView: View {
             MobileServiceInspectorView(connectionId: connectionId)
             MobileRunbooksView(connectionId: connectionId)
             MobileDevOpsPanelsView(connectionId: connectionId)
+            MobileDiskAnalyzerView(connectionId: connectionId)
+            MobileNetworkDiagnosticsView(connectionId: connectionId)
+            MobilePackageUpdatesView(connectionId: connectionId)
             MobileRuntimePanelsView(connectionId: connectionId)
             MobileConnectionMapView(connectionId: connectionId)
         }
@@ -160,45 +169,67 @@ struct MobileServerDashboardView: View {
                 }
             }
 
-            if topProcesses.isEmpty {
+            if processes.isEmpty {
                 Text("No process sample available.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(topProcesses, id: \.pid) { process in
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(process.command.isEmpty ? process.args : process.command)
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                            Text("#\(process.pid) - \(process.user)")
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("By CPU")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(topProcessesByCPU, id: \.pid) { process in
+                            processRow(process, metricText: String(format: "%.1f%%", process.cpuPercent), color: loadColor(process.cpuPercent))
                         }
-
-                        Spacer()
-
-                        Text(String(format: "%.1f%%", process.cpuPercent))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(loadColor(process.cpuPercent))
-                            .frame(width: 58, alignment: .trailing)
                     }
-                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("By Memory")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(topProcessesByMemory, id: \.pid) { process in
+                            processRow(process, metricText: String(format: "%.1f%%", process.memoryPercent), color: loadColor(process.memoryPercent))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
     }
 
-    private var topProcesses: [FfiProcess] {
+    private func processRow(_ process: FfiProcess, metricText: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(process.command.isEmpty ? process.args : process.command)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(process.user)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text(metricText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(color)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private var topProcessesByCPU: [FfiProcess] {
         Array(
             processes
-                .sorted { lhs, rhs in
-                    if lhs.cpuPercent == rhs.cpuPercent {
-                        return lhs.memoryPercent > rhs.memoryPercent
-                    }
-                    return lhs.cpuPercent > rhs.cpuPercent
-                }
+                .sorted { $0.cpuPercent > $1.cpuPercent }
+                .prefix(5)
+        )
+    }
+
+    private var topProcessesByMemory: [FfiProcess] {
+        Array(
+            processes
+                .sorted { $0.memoryPercent > $1.memoryPercent }
                 .prefix(5)
         )
     }
@@ -215,6 +246,25 @@ struct MobileServerDashboardView: View {
     private var memoryDetail: String {
         guard let stats else { return "Waiting for sample" }
         return "\(bytes(stats.memoryUsed)) / \(bytes(stats.memoryTotal))"
+    }
+
+    private var swapPercent: Double {
+        guard let stats, stats.swapTotal > 0 else { return 0 }
+        return Double(stats.swapUsed) / Double(stats.swapTotal) * 100
+    }
+
+    private var swapUsed: UInt64 {
+        stats?.swapUsed ?? 0
+    }
+
+    private var swapPercentText: String {
+        guard let stats, stats.swapTotal > 0 else { return "0%" }
+        return percent(swapPercent)
+    }
+
+    private var swapDetail: String {
+        guard let stats, stats.swapTotal > 0 else { return "No swap" }
+        return "\(bytes(stats.swapUsed)) / \(bytes(stats.swapTotal))"
     }
 
     private var primaryDisk: FfiDiskMount? {

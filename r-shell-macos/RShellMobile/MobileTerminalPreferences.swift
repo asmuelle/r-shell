@@ -24,6 +24,9 @@ final class MobileTerminalPreferences: ObservableObject {
     @Published var optionAsMeta: Bool {
         didSet { defaults.set(optionAsMeta, forKey: Keys.optionAsMeta) }
     }
+    @Published var copyOnSelect: Bool {
+        didSet { defaults.set(copyOnSelect, forKey: Keys.copyOnSelect) }
+    }
 
     private let defaults: UserDefaults
 
@@ -47,6 +50,7 @@ final class MobileTerminalPreferences: ObservableObject {
         self.cursorStyleId = defaults.string(forKey: Keys.cursorStyleId) ?? "blinkBlock"
         self.mouseReporting = defaults.object(forKey: Keys.mouseReporting) as? Bool ?? true
         self.optionAsMeta = defaults.object(forKey: Keys.optionAsMeta) as? Bool ?? true
+        self.copyOnSelect = defaults.object(forKey: Keys.copyOnSelect) as? Bool ?? false
     }
 
     private enum Keys {
@@ -56,6 +60,7 @@ final class MobileTerminalPreferences: ObservableObject {
         static let cursorStyleId = "mobileTerminalCursorStyle"
         static let mouseReporting = "mobileTerminalMouseReporting"
         static let optionAsMeta = "mobileTerminalOptionAsMeta"
+        static let copyOnSelect = "mobileTerminalCopyOnSelect"
     }
 }
 

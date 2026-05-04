@@ -202,6 +202,10 @@ struct MobileFileBrowserView: View {
                 description: Text("This remote directory is empty.")
             )
             .frame(maxWidth: .infinity, minHeight: 320)
+            .dropDestination(for: URL.self) { items, _ in
+                if !items.isEmpty { upload(urls: items) }
+                return true
+            }
         } else {
             List(rows) { row in
                 rowView(row)
@@ -216,6 +220,10 @@ struct MobileFileBrowserView: View {
             .frame(maxWidth: .infinity, minHeight: 420)
             .refreshable {
                 await refresh()
+            }
+            .dropDestination(for: URL.self) { items, _ in
+                if !items.isEmpty { upload(urls: items) }
+                return true
             }
         }
     }

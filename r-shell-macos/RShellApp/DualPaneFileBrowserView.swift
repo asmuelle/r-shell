@@ -24,6 +24,12 @@ import SwiftUI
 struct DualPaneFileBrowserView: View {
     let connectionId: String?
     let connectionLabel: String
+    /// SSH tabs have a real shell channel so remote permissions edits
+    /// (chmod/chown/chgrp) and safe-save backups work; SFTP-only tabs
+    /// must leave these off. Defaults match the original SFTP-only
+    /// caller so existing usages stay unchanged.
+    var canEditPermissions: Bool = false
+    var canRunRemoteCommands: Bool = false
 
     @EnvironmentObject var transfers: TransferQueueStore
 
@@ -45,7 +51,8 @@ struct DualPaneFileBrowserView: View {
                 connectionId: connectionId,
                 connectionLabel: connectionLabel,
                 downloadDirectory: localPath,
-                canEditPermissions: false,
+                canEditPermissions: canEditPermissions,
+                canRunRemoteCommands: canRunRemoteCommands,
                 onPathChange: { remotePath = $0 }
             )
             .frame(minWidth: 280)

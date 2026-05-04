@@ -18,6 +18,9 @@ struct MobileRuntimePanelsView: View {
         var id: String { rawValue }
     }
 
+    @State private var dockerActionResult: MobileDockerActionResult?
+    @State private var dockerActionInProgress: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
@@ -47,6 +50,9 @@ struct MobileRuntimePanelsView: View {
         .onChange(of: mode) { _ in
             search = ""
             Task { await refresh() }
+        }
+        .sheet(item: $dockerActionResult) { result in
+            MobileDockerActionResultSheet(result: result)
         }
     }
 
@@ -217,35 +223,86 @@ struct MobileRuntimePanelsView: View {
     }
 
     private func dockerContainerRow(_ container: MobileDockerContainer) -> some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(containerStatusColor(container))
-                .frame(width: 8, height: 8)
+        Button {
+            Task { await performDockerAction(.logs, on: container) }
+        } label: {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(containerStatusColor(container))
+                    .frame(width: 8, height: 8)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(container.name)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                Text(container.image)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let stats = container.stats {
-                    Text("\(stats.cpu) CPU - \(stats.memory)")
-                        .font(.caption2.monospaced())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(container.name)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+                    Text(container.image)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if let stats = container.stats {
+                        Text("\(stats.cpu) CPU - \(stats.memory)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                if dockerActionInProgress == container.id {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Text(container.state)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(containerStatusColor(container))
+                    .lineLimit(1)
+            }
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if container.state == "running" {
+                Button { Task { await performDockerAction(.stop, on: container) } } label: {
+                    Label("Stop", systemImage: "stop.circle")
+                }
+                Button { Task { await performDockerAction(.restart, on: container) } } label: {
+                    Label("Restart", systemImage: "arrow.clockwise")
+                }
+            } else {
+                Button { Task { await performDockerAction(.start, on: container) } } label: {
+                    Label("Start", systemImage: "play.circle")
                 }
             }
-
-            Spacer()
-
-            Text(container.state)
-                .font(.caption2.monospaced())
-                .foregroundStyle(containerStatusColor(container))
-                .lineLimit(1)
+            Button { Task { await performDockerAction(.logs, on: container) } } label: {
+                Label("View Logs", systemImage: "doc.text.magnifyingglass")
+            }
+            Button { Task { await performDockerAction(.inspect, on: container) } } label: {
+                Label("Inspect", systemImage: "info.circle")
+            }
+            Button { Task { await performDockerAction(.exec, on: container) } } label: {
+                Label("Shell Command", systemImage: "terminal")
+            }
         }
-        .padding(.vertical, 4)
+        .swipeActions(edge: .trailing) {
+            if container.state == "running" {
+                Button("Stop", systemImage: "stop.circle") {
+                    Task { await performDockerAction(.stop, on: container) }
+                }
+                .tint(.red)
+                Button("Restart", systemImage: "arrow.clockwise") {
+                    Task { await performDockerAction(.restart, on: container) }
+                }
+                .tint(.orange)
+            } else if container.state == "exited" || container.state == "dead" {
+                Button("Start", systemImage: "play.circle") {
+                    Task { await performDockerAction(.start, on: container) }
+                }
+                .tint(.green)
+            }
+        }
     }
 
     private func summaryCell(_ title: String, _ value: String, _ color: Color) -> some View {
@@ -404,6 +461,66 @@ struct MobileRuntimePanelsView: View {
             return .orange
         }
         return .secondary
+    }
+
+    @MainActor
+    private func performDockerAction(_ action: MobileDockerContainerAction, on container: MobileDockerContainer) async {
+        dockerActionInProgress = container.id
+        defer { dockerActionInProgress = nil }
+
+        let cmd: String
+        let label: String
+
+        switch action {
+        case .start:
+            cmd = "docker start \(shellQuote(container.name)) 2>&1"
+            label = "Start \(container.name)"
+        case .stop:
+            cmd = "docker stop \(shellQuote(container.name)) 2>&1"
+            label = "Stop \(container.name)"
+        case .restart:
+            cmd = "docker restart \(shellQuote(container.name)) 2>&1"
+            label = "Restart \(container.name)"
+        case .logs:
+            cmd = "docker logs --tail 200 --timestamps \(shellQuote(container.name)) 2>&1"
+            label = "Logs: \(container.name)"
+        case .inspect:
+            cmd = "docker inspect \(shellQuote(container.name)) 2>&1 | head -120"
+            label = "Inspect: \(container.name)"
+        case .exec:
+            cmd = "echo __MIDNIGHT_DOCKER_EXEC__; echo 'Run in terminal: docker exec -it \(container.name) sh'"
+            label = "Shell: \(container.name)"
+        }
+
+        do {
+            let output = try await MobileMonitorBridge.shared.executeCommand(
+                connectionId: connectionId,
+                command: cmd
+            )
+            dockerActionResult = MobileDockerActionResult(label: label, output: output)
+
+            MobileActivityLogStore.shared.record(
+                title: "Docker \(action.rawValue)",
+                detail: container.name,
+                connectionId: connectionId,
+                systemImage: "shippingbox",
+                severity: .info
+            )
+
+            if action != .logs, action != .inspect, action != .exec {
+                let updated = try? await loadDocker()
+                if let updated {
+                    dockerSnapshot = updated
+                }
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            dockerActionResult = MobileDockerActionResult(label: label, output: error.localizedDescription)
+        }
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
     }
 }
 
@@ -689,5 +806,53 @@ private enum MobileRuntimeError: Error, LocalizedError {
         case .unavailable(let message):
             return message
         }
+    }
+}
+
+private enum MobileDockerContainerAction: String {
+    case start
+    case stop
+    case restart
+    case logs
+    case inspect
+    case exec
+}
+
+private struct MobileDockerActionResult: Identifiable {
+    let id = UUID()
+    let label: String
+    let output: String
+}
+
+private struct MobileDockerActionResultSheet: View {
+    let result: MobileDockerActionResult
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(result.output)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
+            .padding()
+            .navigationTitle(result.label)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Copy") {
+                        UIPasteboard.general.string = result.output
+                    }
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

@@ -63,7 +63,7 @@ struct FileDiffReviewSheet: View {
             }
             .padding(14)
         }
-        .frame(width: 900, height: 620)
+        .frame(minWidth: 700, idealWidth: 900, minHeight: 480, idealHeight: 620)
     }
 
     private func stat(_ label: String, _ value: Int, _ color: Color) -> some View {

@@ -12,7 +12,6 @@ struct CommandPaletteView: View {
     let onCloseActive: () -> Void
     let onOpenDashboard: () -> Void
     let onToggleSidebar: () -> Void
-    let onToggleBottom: () -> Void
     let onToggleInspector: () -> Void
     let onExportDiagnostics: () -> Void
 
@@ -58,7 +57,6 @@ struct CommandPaletteView: View {
             run: onOpenDashboard
         ))
         result.append(PaletteAction(title: "Toggle Sidebar", subtitle: "Show or hide connections", icon: "sidebar.left", run: onToggleSidebar))
-        result.append(PaletteAction(title: "Toggle Bottom Panel", subtitle: "Logs, processes, services, and transfers", icon: "rectangle.bottomthird.inset.filled", run: onToggleBottom))
         result.append(PaletteAction(title: "Toggle Inspector", subtitle: "System monitor and server health", icon: "sidebar.right", run: onToggleInspector))
         result.append(PaletteAction(title: "Export Diagnostics", subtitle: "Create a redacted support bundle", icon: "square.and.arrow.up", run: onExportDiagnostics))
 
@@ -133,7 +131,7 @@ struct CommandPaletteView: View {
                 .padding(8)
             }
         }
-        .frame(width: 560, height: 520)
+        .frame(minWidth: 480, idealWidth: 560, minHeight: 420, idealHeight: 520)
     }
 
     private func profileSort(_ lhs: ConnectionProfile, _ rhs: ConnectionProfile) -> Bool {

@@ -8,6 +8,7 @@ struct FileEditView: View {
     let connectionId: String
     let path: String
     @State var content: String
+    var canRunRemoteCommands: Bool = true
     var onSave: (String) async throws -> Void
 
     @State private var originalContent = ""
@@ -83,7 +84,7 @@ struct FileEditView: View {
                     saveError = nil
                 }
         }
-        .frame(width: 560, height: 420)
+        .frame(minWidth: 480, idealWidth: 560, minHeight: 360, idealHeight: 420)
         .sheet(isPresented: $showingDiffReview) {
             FileDiffReviewSheet(
                 path: path,
@@ -108,10 +109,12 @@ struct FileEditView: View {
         isSaving = true
         Task { @MainActor in
             do {
-                let backup = try await MacSafeConfigSave.prepareIfNeeded(
-                    connectionId: connectionId,
-                    remotePath: path
-                )
+                let backup = canRunRemoteCommands
+                    ? try await MacSafeConfigSave.prepareIfNeeded(
+                        connectionId: connectionId,
+                        remotePath: path
+                    )
+                    : nil
                 try await onSave(content)
                 if let backup {
                     _ = try await MacSafeConfigSave.validate(
@@ -183,12 +186,8 @@ struct FileEditView: View {
     }
 
     private var safetySummary: String {
-        let fileName = (path as NSString).lastPathComponent
-        let ext = (path as NSString).pathExtension.lowercased()
-        if path.hasPrefix("/etc/")
-            || path.hasPrefix("/usr/local/etc/")
-            || (fileName.hasPrefix(".") && fileName != "." && fileName != "..")
-            || ["service", "sh", "yaml", "yml", "sql"].contains(ext) {
+        if MacSafeConfigSave.shouldBackup(path) {
+            guard canRunRemoteCommands else { return "Diff review before SFTP save" }
             return "Backup before save; validation when available"
         }
         return "Diff review before save"

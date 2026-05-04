@@ -136,56 +136,89 @@ struct LocalFileBrowserView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { refresh() }
-        .onChange(of: path) { _ in refresh() }
+        .modifier(PathChangeRefresh(path: path, refresh: refresh))
     }
 
     // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "internaldrive")
                     .foregroundStyle(.secondary)
                 Text("Local")
-                    .font(.subheadline.weight(.medium))
+                    .font(.headline)
                 Spacer()
                 Button {
                     revealInFinder(URL(fileURLWithPath: path))
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .help("Reveal in Finder")
                 Button { refresh() } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
+                .help("Refresh")
             }
+            // Match the remote pane's bordered/small control row so the
+            // two headers line up; otherwise the plain icon buttons here
+            // collapse to a shorter row and the panes look misaligned.
+            .frame(minHeight: 22)
             breadcrumb
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private var breadcrumb: some View {
-        let crumbs = breadcrumbCrumbs
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                ForEach(Array(crumbs.enumerated()), id: \.offset) { idx, crumb in
-                    Button(crumb.label) {
-                        path = crumb.path
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(idx == crumbs.count - 1 ? Color.primary : Color.secondary)
-                    if idx < crumbs.count - 1 {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+        HStack(spacing: 6) {
+            Button {
+                navigateUp()
+            } label: {
+                Image(systemName: "arrow.turn.left.up")
+            }
+            .buttonStyle(.plain)
+            .disabled(isAtRoot)
+            .help("Up one level")
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                let crumbs = breadcrumbCrumbs
+                HStack(spacing: 4) {
+                    ForEach(Array(crumbs.enumerated()), id: \.offset) { idx, crumb in
+                        Button(crumb.label) {
+                            path = crumb.path
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(idx == crumbs.count - 1 ? Color.primary : Color.secondary)
+                        if idx < crumbs.count - 1 {
+                            Text("/")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
             }
-            .font(.caption)
         }
+    }
+
+    /// `true` when the current path has no parent directory (the
+    /// filesystem root). Used to disable the "Up" button so it doesn't
+    /// silently no-op.
+    private var isAtRoot: Bool {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return standardized == "/" || standardized.isEmpty
+    }
+
+    private func navigateUp() {
+        let parent = URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .deletingLastPathComponent()
+            .path
+        guard !parent.isEmpty, parent != path else { return }
+        path = parent
     }
 
     /// Convert the current path into a list of (label, full-path)
@@ -250,14 +283,16 @@ struct LocalFileBrowserView: View {
         let rows = entries.sorted(using: sortOrder)
         return Table(rows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { entry in
-                HStack(spacing: 6) {
-                    Image(systemName: entry.isDirectory ? "folder.fill" : iconFor(entry.url))
-                        .foregroundStyle(entry.isDirectory
-                            ? AnyShapeStyle(.tint)
-                            : AnyShapeStyle(.secondary))
-                        .frame(width: 14)
-                    Text(entry.name)
-                        .lineLimit(1)
+                tapTarget(for: entry) {
+                    HStack(spacing: 6) {
+                        Image(systemName: entry.isDirectory ? "folder.fill" : iconFor(entry.url))
+                            .foregroundStyle(entry.isDirectory
+                                ? AnyShapeStyle(.tint)
+                                : AnyShapeStyle(.secondary))
+                            .frame(width: 14)
+                        Text(entry.name)
+                            .lineLimit(1)
+                    }
                 }
                 // Per-row draggable so the remote pane's existing
                 // `URL` drop destination accepts our files unchanged.
@@ -267,39 +302,39 @@ struct LocalFileBrowserView: View {
             }
 
             TableColumn("Size", value: \.size) { entry in
-                Text(entry.isDirectory ? "—" : ByteCountFormatter.string(
-                    fromByteCount: entry.size,
-                    countStyle: .file
-                ))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+                tapTarget(for: entry) {
+                    Text(entry.isDirectory ? "—" : ByteCountFormatter.string(
+                        fromByteCount: entry.size,
+                        countStyle: .file
+                    ))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                }
             }
             .width(min: 60, ideal: 80)
 
             TableColumn("Modified", value: \.modifiedUnix) { entry in
-                Text(entry.modifiedDisplay)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                tapTarget(for: entry) {
+                    Text(entry.modifiedDisplay)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .width(min: 90, ideal: 130)
 
             TableColumn("Owner", value: \.owner) { entry in
-                Text("\(entry.owner):\(entry.group)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                tapTarget(for: entry) {
+                    Text("\(entry.owner):\(entry.group)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             .width(min: 70, ideal: 100, max: 160)
         }
         .contextMenu(forSelectionType: String.self) { selectedNames in
             contextMenu(for: selectedNames, rows: rows)
-        } primaryAction: { selected in
-            // Double-click: drill into a directory or open the file.
-            if selected.count == 1, let name = selected.first,
-               let row = rows.first(where: { $0.name == name }) {
-                openRow(row)
-            }
         }
         // Drop target for remote files. The receiver hands back the
         // `RemoteFileDrag` payload; the host turns it into a queued
@@ -317,6 +352,23 @@ struct LocalFileBrowserView: View {
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    /// Wrap a cell so the entire row width is hit-testable and a
+    /// double-click drills into the row. Mirrors `FileBrowserView`'s
+    /// `folderDropTarget` shape so the two panes feel identical —
+    /// `Table.primaryAction:` is unreliable when paired with a
+    /// single-row optional selection binding, so we wire the gesture
+    /// per-cell instead.
+    @ViewBuilder
+    private func tapTarget<Content: View>(
+        for entry: LocalFileEntry,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { openRow(entry) }
     }
 
     private func acceptRemoteDrops(_ providers: [NSItemProvider]) -> Bool {
@@ -457,6 +509,23 @@ struct LocalFileBrowserView: View {
         case "zip", "tar", "gz", "bz2", "xz", "7z": return "archivebox"
         case "pdf": return "doc.richtext"
         default: return "doc"
+        }
+    }
+}
+
+/// Bridges the macOS 13 single-parameter `onChange` and the macOS 14
+/// zero-parameter form. The deployment target is still 13.0, but
+/// SourceKit flags the legacy signature as deprecated; the availability
+/// branch keeps both surfaces happy without an `@available`-stamped view.
+private struct PathChangeRefresh: ViewModifier {
+    let path: String
+    let refresh: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, iOS 17.0, *) {
+            content.onChange(of: path) { refresh() }
+        } else {
+            content.onChange(of: path) { _ in refresh() }
         }
     }
 }

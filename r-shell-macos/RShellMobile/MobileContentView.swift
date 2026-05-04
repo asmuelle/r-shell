@@ -23,6 +23,7 @@ struct MobileContentView: View {
     @State private var diagnosticsDocument = MobileDiagnosticsDocument()
     @State private var diagnosticsFilename = MobileDiagnosticsBundleFactory.defaultFilename()
     @State private var diagnosticsError: String?
+    @State private var showingKeyboardHUD = false
 
     private var selectedConnection: MobileConnectionProfile? {
         guard let selectedConnectionId else { return connectionStore.connections.first }
@@ -167,6 +168,27 @@ struct MobileContentView: View {
         }
         .onAppear {
             bridgeManager.initialize()
+        }
+        .overlay {
+            if showingKeyboardHUD {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture { showingKeyboardHUD = false }
+                KeyboardShortcutHUDView {
+                    showingKeyboardHUD = false
+                }
+                .transition(.opacity)
+                .animation(.easeOut(duration: 0.15), value: showingKeyboardHUD)
+            }
+        }
+        .background {
+            Button("Keyboard Shortcuts") {
+                showingKeyboardHUD.toggle()
+            }
+            .keyboardShortcut("/", modifiers: .command)
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
         }
         .background {
             Button("Command Palette") {
@@ -593,6 +615,100 @@ private struct MobileBridgeStatusView: View {
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .lineLimit(1)
+            }
+        }
+    }
+}
+
+private struct KeyboardShortcutHUDView: View {
+    let onDismiss: () -> Void
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("Keyboard Shortcuts")
+                        .font(.headline)
+                    Spacer()
+                    Button { onDismiss() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                ShortcutSection("Navigation") {
+                    ShortcutRow(key: ["⌘", "1"], action: "Inspect Mode")
+                    ShortcutRow(key: ["⌘", "2"], action: "Work Mode")
+                    ShortcutRow(key: ["⌘", "K"], action: "Command Palette")
+                    ShortcutRow(key: ["⌘", "/"], action: "This Shortcut HUD")
+                }
+
+                ShortcutSection("Connection") {
+                    ShortcutRow(key: ["⌘", "R"], action: "Reconnect")
+                    ShortcutRow(key: ["⌘", "L"], action: "Tail Logs")
+                }
+
+                ShortcutSection("Terminal") {
+                    ShortcutRow(key: ["⌘", "`"], action: "Focus Terminal")
+                    ShortcutRow(key: ["⌘", "⇧", "P"], action: "Terminal Commands")
+                    ShortcutRow(key: ["⌘", "V"], action: "Paste")
+                    ShortcutRow(key: ["⌘", "C"], action: "Copy Selection")
+                    ShortcutRow(key: ["⌘", "A"], action: "Select All")
+                    ShortcutRow(key: ["⌘", "K"], action: "Clear Screen")
+                    ShortcutRow(key: ["⌘", "."], action: "Interrupt (Ctrl+C)")
+                    ShortcutRow(key: ["⌘", "R"], action: "Restart Terminal")
+                    ShortcutRow(key: ["⌘", ","], action: "Terminal Settings")
+                }
+            }
+            .padding(24)
+        }
+        .frame(maxWidth: horizontalSizeClass == .compact ? 340 : 440)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(20)
+    }
+}
+
+private struct ShortcutSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(spacing: 4) {
+                content()
+            }
+        }
+    }
+}
+
+private struct ShortcutRow: View {
+    let key: [String]
+    let action: String
+
+    var body: some View {
+        HStack {
+            Text(action)
+                .font(.subheadline)
+            Spacer()
+            HStack(spacing: 3) {
+                ForEach(key, id: \.self) { k in
+                    Text(k)
+                        .font(.caption.monospaced().weight(.semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 4))
+                }
             }
         }
     }

@@ -57,6 +57,7 @@ struct MobileTerminalPane: View {
                             cursorStyleId: terminalPreferences.cursorStyleId,
                             mouseReporting: terminalPreferences.mouseReporting,
                             optionAsMeta: terminalPreferences.optionAsMeta,
+                            copyOnSelect: terminalPreferences.copyOnSelect,
                             commandRequest: $terminalViewCommand
                         )
                     } else if let terminalError {

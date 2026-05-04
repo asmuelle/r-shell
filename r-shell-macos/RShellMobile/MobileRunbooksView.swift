@@ -95,6 +95,178 @@ struct MobileRunbook: Identifiable {
         ) { ip in
             "sudo -n fail2ban-client set sshd banip \(shellQuote(ip.trimmingCharacters(in: .whitespacesAndNewlines)))"
         },
+        MobileRunbook(
+            id: "failed-services",
+            title: "List failed services",
+            detail: "Shows all systemd services in failed state.",
+            systemImage: "exclamationmark.triangle",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            "systemctl list-units --state=failed --no-pager --no-legend 2>/dev/null || echo 'systemctl not available'"
+        },
+        MobileRunbook(
+            id: "disk-inodes",
+            title: "Check disk inodes",
+            detail: "Shows inode usage across mounted filesystems (inode exhaustion causes 'no space' errors when disk isn't full).",
+            systemImage: "rectangle.stack",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            "df -i 2>/dev/null | awk 'NR==1 || $5+0 > 80 {print}' || echo 'df not available'"
+        },
+        MobileRunbook(
+            id: "zombie-procs",
+            title: "Find zombie processes",
+            detail: "Lists zombie (Z-state) processes that may need parent restart.",
+            systemImage: "text.badge.xmark",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            """
+            ps aux 2>/dev/null | awk '$8 ~ /Z/ {print $0}' || true
+            count=$(ps aux 2>/dev/null | awk '$8 ~ /Z/ {count++} END {print count}' || echo 0)
+            echo ""
+            if [ "$count" -eq 0 ]; then echo "No zombie processes found."; fi
+            """
+        },
+        MobileRunbook(
+            id: "listening-ports",
+            title: "Show listening services",
+            detail: "TCP listeners with process info (ss -tlnp).",
+            systemImage: "antenna.radiowaves.left.and.right",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            "ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo 'Neither ss nor netstat available'"
+        },
+        MobileRunbook(
+            id: "memory-pressure",
+            title: "Memory pressure check",
+            detail: "Shows free -h and a quick vmstat sample.",
+            systemImage: "memorychip",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            """
+            echo "=== Memory ==="
+            free -h 2>/dev/null || vm_stat 2>/dev/null || echo "memory info unavailable"
+            echo ""
+            echo "=== VM snapshot (3 x 1s) ==="
+            vmstat 1 3 2>/dev/null || true
+            """
+        },
+        MobileRunbook(
+            id: "cert-expiry",
+            title: "Check certificate expiry",
+            detail: "Shows end dates for Let's Encrypt and common certificate paths.",
+            systemImage: "calendar.badge.exclamationmark",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            """
+            if command -v openssl >/dev/null 2>&1; then
+              echo "=== Let's Encrypt ==="
+              for f in /etc/letsencrypt/live/*/cert.pem 2>/dev/null; do
+                printf '%s: ' "$(basename "$(dirname "$f")")"
+                openssl x509 -in "$f" -noout -enddate 2>/dev/null
+              done
+              echo ""
+              echo "=== Other common paths ==="
+              for f in /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/nginx/ssl/*.crt /etc/apache2/ssl/*.crt; do
+                if [ -r "$f" ]; then
+                  printf '%s: ' "$f"
+                  openssl x509 -in "$f" -noout -enddate 2>/dev/null
+                fi
+              done
+            else
+              echo "openssl not available"
+            fi
+            """
+        },
+        MobileRunbook(
+            id: "unattended-upgrades",
+            title: "Check unattended upgrades log",
+            detail: "Shows recent entries from unattended-upgrades log.",
+            systemImage: "clock.arrow.2.circlepath",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            """
+            if [ -r /var/log/unattended-upgrades/unattended-upgrades.log ]; then
+              tail -50 /var/log/unattended-upgrades/unattended-upgrades.log
+            elif [ -r /var/log/unattended-upgrades.log ]; then
+              tail -50 /var/log/unattended-upgrades.log
+            else
+              echo "No unattended-upgrades log found."
+            fi
+            """
+        },
+        MobileRunbook(
+            id: "kernel-info",
+            title: "Kernel & boot info",
+            detail: "Shows uname, OS release, dmesg tail, and last boot time.",
+            systemImage: "gearshape.2",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            """
+            echo "=== Kernel ==="
+            uname -a
+            echo ""
+            echo "=== OS Release ==="
+            cat /etc/os-release 2>/dev/null || lsb_release -a 2>/dev/null || echo "unknown"
+            echo ""
+            echo "=== Uptime ==="
+            uptime
+            echo ""
+            echo "=== Last boot ==="
+            who -b 2>/dev/null || uptime -s 2>/dev/null || echo "unknown"
+            echo ""
+            echo "=== Recent dmesg (tail 30) ==="
+            dmesg -T 2>/dev/null | tail -30 || dmesg 2>/dev/null | tail -30 || echo "dmesg not readable"
+            """
+        },
+        MobileRunbook(
+            id: "user-sessions",
+            title: "Active user sessions",
+            detail: "Shows who/w output for all logged-in users.",
+            systemImage: "person.2",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            "w 2>/dev/null || who -a 2>/dev/null || echo 'no user session info available'"
+        },
+        MobileRunbook(
+            id: "package-history",
+            title: "Recent package activity",
+            detail: "Shows last 30 dpkg or dnf operations.",
+            systemImage: "shippingbox.circle",
+            risk: .readOnly,
+            variableLabel: nil,
+            placeholder: nil
+        ) { _ in
+            """
+            if command -v dpkg >/dev/null 2>&1; then
+              grep -i ' install \\| upgrade \\| remove \\| purge ' /var/log/dpkg.log 2>/dev/null | tail -30 || echo "No dpkg log"
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf history list 2>/dev/null | head -20 || echo "No dnf history"
+            elif command -v yum >/dev/null 2>&1; then
+              yum history list 2>/dev/null | head -20 || echo "No yum history"
+            else
+              echo "Unsupported package manager"
+            fi
+            """
+        },
     ]
 
     private static func shellQuote(_ value: String) -> String {

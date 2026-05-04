@@ -96,6 +96,40 @@ struct ConnectionEditView: View {
     var isEditing: Bool { existingProfile != nil }
     var title: String { isEditing ? "Edit Connection" : "New Connection" }
 
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedHost: String {
+        host.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedPort: String {
+        port.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedUsername: String {
+        username.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var parsedPort: UInt16? {
+        guard let value = UInt16(trimmedPort), value > 0 else { return nil }
+        return value
+    }
+
+    private var portValidationMessage: String? {
+        guard !trimmedPort.isEmpty else { return "Port is required." }
+        guard parsedPort != nil else { return "Enter a port from 1 to 65535." }
+        return nil
+    }
+
+    private var canSave: Bool {
+        !trimmedName.isEmpty
+            && !trimmedHost.isEmpty
+            && !trimmedUsername.isEmpty
+            && portValidationMessage == nil
+    }
+
     private var kindCaption: String {
         switch kind {
         case .ssh:
@@ -142,6 +176,14 @@ struct ConnectionEditView: View {
                         TextField("22", text: $port)
                             .frame(width: 80)
                         Spacer()
+                    }
+                    if let portValidationMessage {
+                        HStack(spacing: 4) {
+                            Text("").frame(width: 80)
+                            Label(portValidationMessage, systemImage: "exclamationmark.circle")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
                     HStack {
                         Text("User:").frame(width: 80, alignment: .trailing)
@@ -224,15 +266,16 @@ struct ConnectionEditView: View {
                     .keyboardShortcut(.cancelAction)
 
                 Button(isEditing ? "Save" : "Add") {
-                    save()
-                    dismiss()
+                    if save() {
+                        dismiss()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.isEmpty || host.isEmpty || username.isEmpty)
+                .disabled(!canSave)
             }
         }
         .padding()
-        .frame(width: 680)
+        .frame(minWidth: 560, idealWidth: 680, minHeight: 480, idealHeight: 620)
         .onAppear {
             if let p = existingProfile {
                 name = p.name
@@ -372,7 +415,9 @@ struct ConnectionEditView: View {
         }
     }
 
-    private func save() {
+    private func save() -> Bool {
+        guard let validatedPort = parsedPort, canSave else { return false }
+
         var referenceToSave = sshKeyReference
         if authMethod == .publicKey,
            referenceToSave == nil {
@@ -384,10 +429,10 @@ struct ConnectionEditView: View {
 
         let p = ConnectionProfile(
             id: existingProfile?.id ?? UUID().uuidString,
-            name: name.trimmingCharacters(in: .whitespaces),
-            host: host.trimmingCharacters(in: .whitespaces),
-            port: UInt16(port) ?? 22,
-            username: username.trimmingCharacters(in: .whitespaces),
+            name: trimmedName,
+            host: trimmedHost,
+            port: validatedPort,
+            username: trimmedUsername,
             authMethod: authMethod,
             kind: kind,
             folderPath: folderPath.trimmingCharacters(in: .whitespaces).isEmpty ? nil : folderPath,
@@ -416,6 +461,7 @@ struct ConnectionEditView: View {
                 secret: passphrase
             )
         }
+        return true
     }
 
     private func importKeyIntoVault() {

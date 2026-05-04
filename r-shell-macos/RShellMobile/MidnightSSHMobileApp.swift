@@ -26,5 +26,29 @@ struct MidnightSSHMobileApp: App {
                     entitlementsStore.start()
                 }
         }
+        .commands {
+            SidebarCommands()
+            CommandMenu("Server") {
+                Button("Command Palette") {
+                    NotificationCenter.default.post(name: .mobileShowCommandPalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                Divider()
+                Button("Reconnect") {
+                    NotificationCenter.default.post(name: .mobileReconnectCurrent, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                Button("Tail Logs") {
+                    NotificationCenter.default.post(name: .mobileTailLogs, object: nil)
+                }
+                .keyboardShortcut("l", modifiers: .command)
+            }
+        }
     }
+}
+
+extension Notification.Name {
+    static let mobileShowCommandPalette = Notification.Name("mobileShowCommandPalette")
+    static let mobileReconnectCurrent = Notification.Name("mobileReconnectCurrent")
+    static let mobileTailLogs = Notification.Name("mobileTailLogs")
 }

@@ -32,6 +32,10 @@ struct FileBrowserView: View {
     /// browse files without shell access, so callers must disable this
     /// affordance when the active tab has no shell channel.
     var canEditPermissions: Bool = true
+    /// Safe-save backups and validators execute shell commands on the
+    /// remote host. SFTP-only accounts must keep inline editing on the
+    /// SFTP path and skip those shell-only checks.
+    var canRunRemoteCommands: Bool = true
     /// Fires whenever the user navigates to a new remote path. The
     /// dual-pane host uses this to mirror the cwd into the local
     /// pane's "Upload to Remote" target — without it, uploads
@@ -100,6 +104,7 @@ struct FileBrowserView: View {
     }
 
     private let logger = Logger(subsystem: "com.r-shell", category: "file-browser")
+    private static let maxInlineEditBytes: UInt64 = 1_048_576
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -146,11 +151,12 @@ struct FileBrowserView: View {
             )
             .frame(minWidth: 360, minHeight: 440)
         }
-        .sheet(item: $editorTarget) { target in
+        .sheet(item: $editorTarget, onDismiss: { refresh() }) { target in
             FileEditView(
                 connectionId: target.connectionId,
                 path: target.remotePath,
-                content: target.content
+                content: target.content,
+                canRunRemoteCommands: canRunRemoteCommands
             ) { updatedContent in
                 try await saveEditedRemoteFile(updatedContent, target: target)
             }
@@ -196,6 +202,7 @@ struct FileBrowserView: View {
                 .disabled(connectionId == nil || loading)
                 .help("Refresh")
             }
+            .frame(minHeight: 22)
 
             breadcrumb
         }
@@ -211,12 +218,12 @@ struct FileBrowserView: View {
                 Image(systemName: "arrow.turn.left.up")
             }
             .buttonStyle(.plain)
-            .disabled(path == "." || path == "/")
+            .disabled(path == "/")
             .help("Up one level")
 
             // Render the path as clickable segments. The first segment is
-            // either `~` (when path is "." — the SFTP server's home) or `/`
-            // (when the user has navigated to an absolute path).
+            // either `~` (relative to the SFTP server's login directory) or
+            // `/` (when the user has navigated to an absolute path).
             crumbSegments
         }
     }
@@ -224,11 +231,7 @@ struct FileBrowserView: View {
     @ViewBuilder
     private var crumbSegments: some View {
         HStack(spacing: 4) {
-            if path == "." {
-                Text("~")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
+            if path.hasPrefix("/") {
                 let segments = pathSegments(path)
                 ForEach(Array(segments.enumerated()), id: \.offset) { idx, segment in
                     Button {
@@ -247,6 +250,36 @@ struct FileBrowserView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+            } else {
+                let segments = relativePathSegments(path)
+                if segments.isEmpty {
+                    Text("~")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button {
+                        navigate(to: ".")
+                    } label: {
+                        Text("~")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+
+                    ForEach(Array(segments.enumerated()), id: \.offset) { idx, segment in
+                        Text("/")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Button {
+                            navigate(to: relativePathPrefix(segments, through: idx))
+                        } label: {
+                            Text(segment)
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(idx == segments.count - 1 ? .primary : .secondary)
+                    }
+                }
             }
             Spacer()
         }
@@ -257,6 +290,16 @@ struct FileBrowserView: View {
         // — the empty first element represents the root.
         let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
         return [""] + trimmed.split(separator: "/").map(String.init)
+    }
+
+    private func relativePathSegments(_ path: String) -> [String] {
+        guard path != ".", !path.isEmpty else { return [] }
+        return path.split(separator: "/").map(String.init)
+    }
+
+    private func relativePathPrefix(_ segments: [String], through index: Int) -> String {
+        let prefix = segments.prefix(index + 1).joined(separator: "/")
+        return prefix.isEmpty ? "." : prefix
     }
 
     // MARK: - Listing
@@ -599,8 +642,9 @@ struct FileBrowserView: View {
     }
 
     private func navigate(to newPath: String) {
-        path = newPath
-        onPathChange?(newPath)
+        let normalizedPath = newPath.isEmpty ? "." : newPath
+        path = normalizedPath
+        onPathChange?(normalizedPath)
         refresh()
     }
 
@@ -876,6 +920,11 @@ struct FileBrowserView: View {
         remotePath: String,
         expectedSize: UInt64
     ) async throws -> String {
+        let fileName = (remotePath as NSString).lastPathComponent
+        if expectedSize > Self.maxInlineEditBytes {
+            throw RemoteTextFileEditError.fileTooLarge(fileName: fileName, size: expectedSize)
+        }
+
         let tempURL = temporaryEditorURL(for: remotePath)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
@@ -888,6 +937,9 @@ struct FileBrowserView: View {
         )
 
         let data = try Data(contentsOf: tempURL)
+        if UInt64(data.count) > Self.maxInlineEditBytes {
+            throw RemoteTextFileEditError.fileTooLarge(fileName: fileName, size: UInt64(data.count))
+        }
         if let content = String(data: data, encoding: .utf8) {
             return content
         }
@@ -915,11 +967,6 @@ struct FileBrowserView: View {
             localPath: tempURL.path,
             remotePath: target.remotePath
         )
-
-        await MainActor.run {
-            editorTarget = nil
-            refresh()
-        }
     }
 
     private func temporaryEditorURL(for remotePath: String) -> URL {
@@ -1129,15 +1176,28 @@ struct FileBrowserView: View {
     }
 
     private func navigateUp() {
-        guard path != "." && path != "/" else { return }
-        if let lastSlash = path.lastIndex(of: "/") {
-            let parent = String(path[..<lastSlash])
-            path = parent.isEmpty ? "/" : parent
-        } else {
-            // Relative path with no slash — fall back to home.
-            path = "."
+        guard path != "/" else { return }
+        navigate(to: parentPath(for: path))
+    }
+
+    private func parentPath(for currentPath: String) -> String {
+        if currentPath == "." {
+            return ".."
         }
-        refresh()
+
+        if currentPath.hasPrefix("/") {
+            guard let lastSlash = currentPath.lastIndex(of: "/") else { return "/" }
+            let parent = String(currentPath[..<lastSlash])
+            return parent.isEmpty ? "/" : parent
+        }
+
+        let segments = relativePathSegments(currentPath)
+        guard !segments.isEmpty else { return ".." }
+        if segments.allSatisfy({ $0 == ".." }) {
+            return (segments + [".."]).joined(separator: "/")
+        }
+        guard segments.count > 1 else { return "." }
+        return segments.dropLast().joined(separator: "/")
     }
 
     // MARK: - Loading
@@ -1184,6 +1244,22 @@ struct FileBrowserView: View {
                     self.error = error.localizedDescription
                 }
             }
+        }
+    }
+}
+
+private enum RemoteTextFileEditError: LocalizedError {
+    case fileTooLarge(fileName: String, size: UInt64)
+
+    var errorDescription: String? {
+        switch self {
+        case .fileTooLarge(let fileName, let size):
+            let clampedSize = min(size, UInt64(Int64.max))
+            let formattedSize = ByteCountFormatter.string(
+                fromByteCount: Int64(clampedSize),
+                countStyle: .file
+            )
+            return "\(fileName) is too large to edit safely (\(formattedSize))."
         }
     }
 }
